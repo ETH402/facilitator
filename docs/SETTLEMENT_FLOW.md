@@ -1,6 +1,10 @@
 # Settlement flow
 
-Milestone 0 implements only the state model and persistence schema.
+Milestone 2 implements the verification portion through `/verify`. It performs
+strict scope checks, checks USDC `authorizationState`, verifies the EIP-712
+signature with the pinned official SDK, and simulates
+`transferWithAuthorization`. It never signs or broadcasts a transaction.
+Milestone 3 will implement the settlement portion shown below.
 
 ```mermaid
 sequenceDiagram

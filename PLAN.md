@@ -39,10 +39,20 @@ RPC-aware verification and a separate security review.
 
 ## Milestone 2 — x402 verification
 
-Pin and integrate official Go v2 types; implement `/supported` and `/verify`
-for only `exact` + `eip155:1` + canonical USDC + EIP-3009. Add signature,
-balance, authorization-state, time, amount, recipient, asset, and simulation
-checks; persist replay identity and verification metrics.
+Status: implementation complete on `milestone-2-verification`; final validation
+is recorded in the milestone report.
+
+- [x] pin official Go v2.19.0 types and exact-EVM verifier
+- [x] expose `/supported` and `/verify` without merchant authentication
+- [x] enforce only v2 + exact + eip155:1 + native USDC + EIP-3009
+- [x] validate exact amount/recipient, authorization time, EIP-712 signature,
+      payer type, asset code, on-chain nonce state, and transfer simulation
+- [x] persist aggregate verification attempts and successful payment identity
+- [x] converge concurrent duplicate records through PostgreSQL uniqueness
+- [x] expose verification metrics and document the stable HTTP contract
+
+Permit2, ERC-1271, ERC-6492, extensions, settlement, and transaction broadcast
+remain deliberately unavailable.
 
 ## Milestone 3 — settlement
 

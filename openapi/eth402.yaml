@@ -1,17 +1,52 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.2.0
+  version: 0.3.0
   description: >-
-    ETH402-specific merchant and operational APIs. Merchant authentication is
-    separate from standard x402 payment authorization. Standard facilitator
-    endpoints remain intentionally absent until Milestone 2.
+    ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
+    verification surface. Merchant authentication is separate from x402
+    payment authorization. Settlement is intentionally absent until Milestone 3.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
 servers:
   - url: https://eth402.org
 paths:
+  /supported:
+    get:
+      operationId: x402Supported
+      summary: Return the facilitator's deliberately narrow x402 v2 capabilities
+      responses:
+        "200":
+          description: Exact EIP-3009 payments in native Ethereum-mainnet USDC only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402Supported" }
+  /verify:
+    post:
+      operationId: x402Verify
+      summary: Verify an x402 v2 EIP-3009 authorization without broadcasting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/X402VerifyRequest" }
+      responses:
+        "200":
+          description: Protocol verification result; invalid authorizations also use this status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402VerifyResponse" }
+        "400":
+          description: The outer request is not valid x402 v2 JSON.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402VerifyResponse" }
+        "503":
+          description: Verification could not safely complete due to a dependency failure.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402VerifyResponse" }
   /v1/merchants/register:
     post:
       operationId: registerMerchant
@@ -341,6 +376,98 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    X402Supported:
+      type: object
+      additionalProperties: false
+      required: [kinds, extensions, signers]
+      properties:
+        kinds:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [x402Version, scheme, network]
+            properties:
+              x402Version: { const: 2 }
+              scheme: { const: exact }
+              network: { const: "eip155:1" }
+              extra:
+                type: object
+                properties:
+                  asset: { const: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }
+                  assetTransferMethod: { const: eip3009 }
+        extensions:
+          type: array
+          maxItems: 0
+        signers:
+          type: object
+          maxProperties: 0
+    X402PaymentRequirements:
+      type: object
+      additionalProperties: false
+      required: [scheme, network, asset, amount, payTo, maxTimeoutSeconds]
+      properties:
+        scheme: { const: exact }
+        network: { const: "eip155:1" }
+        asset: { const: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }
+        amount: { type: string, pattern: "^[0-9]+$" }
+        payTo: { $ref: "#/components/schemas/EthereumAddress" }
+        maxTimeoutSeconds: { type: integer }
+        extra:
+          type: object
+          required: [name, version]
+          properties:
+            name: { const: "USD Coin" }
+            version: { const: "2" }
+            assetTransferMethod: { const: eip3009 }
+    X402PaymentPayload:
+      type: object
+      additionalProperties: false
+      required: [x402Version, payload, accepted]
+      properties:
+        x402Version: { const: 2 }
+        accepted: { $ref: "#/components/schemas/X402PaymentRequirements" }
+        resource: { type: object }
+        extensions:
+          type: object
+          maxProperties: 0
+        payload:
+          type: object
+          additionalProperties: false
+          required: [signature, authorization]
+          properties:
+            signature: { type: string, pattern: "^0x[0-9a-fA-F]{130}$" }
+            authorization:
+              type: object
+              additionalProperties: false
+              required: [from, to, value, validAfter, validBefore, nonce]
+              properties:
+                from: { $ref: "#/components/schemas/EthereumAddress" }
+                to: { $ref: "#/components/schemas/EthereumAddress" }
+                value: { type: string, pattern: "^[0-9]+$" }
+                validAfter: { type: string, pattern: "^[0-9]+$" }
+                validBefore: { type: string, pattern: "^[0-9]+$" }
+                nonce: { type: string, pattern: "^0x[0-9a-fA-F]{64}$" }
+    X402VerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [x402Version, paymentPayload, paymentRequirements]
+      properties:
+        x402Version: { const: 2 }
+        paymentPayload: { $ref: "#/components/schemas/X402PaymentPayload" }
+        paymentRequirements: { $ref: "#/components/schemas/X402PaymentRequirements" }
+    X402VerifyResponse:
+      type: object
+      required: [isValid]
+      properties:
+        isValid: { type: boolean }
+        invalidReason: { type: string }
+        invalidMessage: { type: string }
+        payer: { $ref: "#/components/schemas/EthereumAddress" }
+        extensions: { type: object }
+        extra: { type: object }
     EthereumAddress:
       type: string
       pattern: "^0x[0-9a-fA-F]{40}$"

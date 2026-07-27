@@ -4,11 +4,11 @@ ETH402 is an open, self-hostable x402 v2 facilitator for exact payments in
 native USDC on Ethereum mainnet. It is a modular Go service designed for
 machine clients, APIs, merchants, and autonomous agents.
 
-Milestones 0 and 1 provide the validated architecture, database schema,
-operational skeleton, merchant onboarding, EIP-4361 wallet proof, API-key
-lifecycle, health checks, metrics, and database-backed public statistics.
-ETH402 still does **not** expose x402 `/verify` or `/settle`, sign transactions,
-or broadcast to Ethereum mainnet.
+Milestones 0–2 provide the validated architecture, merchant onboarding,
+operational APIs, and x402 v2 verification. ETH402 exposes `/supported` and
+`/verify` for exact EIP-3009 payments in native Ethereum-mainnet USDC. It still
+does **not** expose `/settle`, sign settlement transactions, or broadcast to
+Ethereum mainnet.
 
 Buyer USDC is designed to move directly from buyer to merchant through USDC's
 EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant
@@ -45,13 +45,16 @@ and [protocol research](docs/PROTOCOL_RESEARCH.md).
 - `GET /health/ready`
 - `GET /metrics`
 - `GET /stats`
+- `GET /supported`
+- `POST /verify`
 - merchant registration and email/wallet verification under `/v1/merchants/*`
 - authenticated profile, API-key, and recipient-change APIs under `/v1/*`
 - operator suspension and reinstatement under `/v1/admin/*`
 
 The OpenAPI contract is in [openapi/eth402.yaml](openapi/eth402.yaml).
 Wallet proof currently supports EOA/EIP-191 signatures. ERC-1271 contract
-wallet proof is an explicit future security review item.
+wallet proof and x402 payer signatures are explicit future security review
+items. `/verify` performs no settlement and requires no facilitator API key.
 
 ## Independence notice
 
