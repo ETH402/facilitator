@@ -1,0 +1,6 @@
+.git
+.env
+bin
+coverage
+email-outbox
+*.log

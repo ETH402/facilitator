@@ -1,0 +1,82 @@
+name: eth402
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: eth402
+      POSTGRES_USER: eth402
+      POSTGRES_PASSWORD: eth402_dev_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eth402 -d eth402"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:stable
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--chain-id", "1", "--silent"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "chain-id", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    entrypoint: ["/usr/local/bin/migrate"]
+    command: ["up"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  caddy:
+    image: caddy:2.10.0-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - app
+    read_only: true
+    tmpfs:
+      - /config
+      - /data
+
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+volumes:
+  postgres-data:
