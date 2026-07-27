@@ -71,8 +71,10 @@ GCP Cloud KMS, a single signer address, durable nonce allocation, recipient-gate
 
 ## Milestone 4 — public deployment
 
-Harden Caddy and image, document GCP deployment, integrate KMS/HSM/external
-signer, alerts, runbooks, public status, and privacy-preserving analytics.
+Harden Caddy and image, document GCP deployment, integrate Cloud KMS, alerts,
+runbooks, public status, and privacy-preserving analytics. Add the KMS-fronted
+policy signer deferred from Milestone 3, which moves the zero-value/USDC-selector
+allowlist out of the ETH402 process and into the signing boundary.
 
 ## Milestone 5 — public beta
 

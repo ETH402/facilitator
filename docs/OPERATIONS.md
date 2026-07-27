@@ -13,6 +13,16 @@ within bounds; transaction broadcast must not retry blindly. Alert on RPC/DB
 errors, worker health, confirmation lag, pending age, signer failures, revert
 rate, gas policy blocks, and stats-query failure.
 
+## Signer balance
+
+The settlement signer address holds a deliberately small working balance, topped
+up from a source ETH402 cannot spend from, with alerting on both absolute balance
+and burn rate. Cloud KMS signs digests and cannot inspect calldata, so a
+compromised process can have an arbitrary transaction signed; bounding the hot
+balance is what caps that loss. This is required before enabling any signer, and
+is not superseded by the in-process calldata allowlist. See
+[ADR-0004](decisions/0004-settlement-execution-model.md).
+
 Gas maximums are typed decimal configuration and remain zero/disabled in the
 current build. Enabling any non-disabled `ETH402_SIGNER_MODE` now requires
 non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and `ETH402_MAX_GAS_LIMIT`: zero means

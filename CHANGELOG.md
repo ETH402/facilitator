@@ -22,7 +22,9 @@ versioned where noted.
 - Milestone 3 settlement execution model as ADR-0004 (accepted), covering durable
   nonce allocation, a single signer address on GCP Cloud KMS, recipient-gated
   `/settle` admission, lease-based workers, ambiguous-broadcast handling, an
-  expiry margin, and the finality cut.
+  expiry margin, and the finality cut. A bounded signer hot balance is the
+  operative signer-compromise control; a KMS-fronted policy signer carrying the
+  calldata allowlist is deferred to Milestone 4.
 
 ### Changed
 

@@ -127,7 +127,7 @@ signer implementation cannot reach back for chain state.
 `signer.Disabled` remains the default and `TestSigner` remains deliberately
 non-broadcastable.
 
-### 8. Signer backend: GCP Cloud KMS
+### 8. Signer backend: GCP Cloud KMS, with a bounded hot balance
 
 Milestone 4 already targets GCP deployment, and Cloud KMS supports secp256k1.
 Key material never leaves KMS, and per-key IAM plus audit logging come with it.
@@ -138,14 +138,60 @@ RPC failure: a signing timeout leaves a committed `intent` row with no signed
 transaction, which recovery resolves by signing again — safe precisely because
 the nonce is already fixed and stored.
 
-**Important consequence:** a raw KMS cannot enforce a calldata allowlist. The
+#### What the calldata allowlist actually buys
+
+Cloud KMS signs digests and cannot inspect calldata, so the
 "zero-value/USDC selector allowlist" that `docs/THREAT_MODEL.md` lists as a
-signer-compromise control therefore lives **inside** ETH402, not inside the
-signing boundary. A compromised ETH402 process can ask KMS to sign an arbitrary
-transaction. This weakens that control from a boundary to an in-process check,
-and the threat model has been updated to say so. Moving the allowlist behind an
-external policy signer remains the upgrade path if that residual risk becomes
-unacceptable.
+signer-compromise control lives **inside** ETH402 rather than inside the signing
+boundary.
+
+The value of that control is narrower than it first appears. A compromised
+ETH402 can already settle payments of its choosing, because valid authorizations
+to registered merchants are exactly what policy permits; gas bleeds slowly and
+visibly. What the allowlist prevents is a single plain ETH transfer draining the
+**entire** balance at once. It converts instant total loss into bounded,
+observable bleed.
+
+#### The operative control for Milestone 3: bound the balance
+
+The signer address holds a deliberately small working balance, topped up from a
+source ETH402 cannot spend from, with alerting on balance and burn rate. This
+caps instant-drain loss at the hot balance **whether or not an allowlist
+exists**, needs no additional service, and is standard hot-wallet practice. It is
+required before any signer is enabled.
+
+#### Deferred to Milestone 4: a KMS-fronted policy signer
+
+A policy layer in front of KMS is **compatible with** KMS, not an alternative to
+it — an earlier draft of this ADR framed these as mutually exclusive, which was
+wrong. A small service can parse the unsigned transaction, assert
+`chainId == 1`, `to == USDC`, `selector == transferWithAuthorization`,
+`value == 0`, and the gas ceilings, then delegate signing to KMS. Key custody
+stays in KMS and the allowlist becomes a real boundary.
+
+This is deferred rather than rejected: the bounded balance delivers most of the
+protection immediately, so the policy signer is Milestone 4 hardening and does
+not block settlement.
+
+#### Rejected alternatives
+
+- **Cloud HSM.** Higher key-custody assurance (FIPS 140-2 Level 3, dedicated
+  hardware) but it also signs digests and is equally blind to calldata. More
+  cost, identical exposure.
+- **Safe with a transaction guard.** The strongest option, because enforcement
+  is on-chain and survives full compromise of ETH402; EIP-3009's
+  `transferWithAuthorization` is callable by anyone, so a Safe can be
+  `msg.sender`. Rejected on economics: roughly 40–80k additional gas on every
+  settlement, against an operation whose entire operating cost is gas.
+- **Managed wallet infrastructure** (Fireblocks, Turnkey, and similar). These
+  ship real transaction policy engines that do exactly what is wanted, but they
+  are proprietary SaaS and `VISION.md` commits to operating without proprietary
+  dependencies.
+- **HashiCorp Vault.** Fits the self-hostable ethos, and a transaction-parsing
+  plugin could enforce the allowlist. Not chosen for Milestone 3, and secp256k1
+  support in Vault's `transit` engine needs verification before anyone relies on
+  it — `transit` is built around the NIST P-curves, so this may require a
+  community or bespoke Ethereum plugin.
 
 ### 9. `/settle` admission: the recipient must be a registered merchant
 
@@ -207,6 +253,7 @@ New surface this implies, none of which exists yet:
 - `ETH402_SIGNER_ADDRESS` (or KMS key resolution) pinned at startup
 - `ETH402_SETTLEMENT_EXPIRY_MARGIN`, a signing timeout, and a per-merchant
   settlement quota
+- a minimum-balance threshold and burn-rate alert for the signer address
 - extended `signer.Transaction` per decision 7
 
 These configuration keys are deliberately **not** added ahead of the code that
