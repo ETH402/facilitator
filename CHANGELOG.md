@@ -16,9 +16,12 @@ versioned where noted.
 - Standard x402 v2 `/supported` and `/verify` endpoints, pinned official Go
   v2.19.0 types/verifier, durable verification attempts, and version 0.3
   OpenAPI contract.
-
-### Added
-
+- Worker lease primitive over the `claimed_by`/`claimed_until` columns: claim by
+  state with a bounded limit, renew only while still held, release, and automatic
+  reclaim of leases left behind by a dead worker. Claiming is one atomic statement
+  that re-checks ownership under the row lock, so two workers can never hold the
+  same payment. `ErrLeaseLost` tells an overrunning worker to stop rather than
+  risk duplicating work.
 - Durable settlement intent. One transaction locks the payment, applies admission
   (verified state, recipient is an active registered merchant, authorization not
   inside the expiry margin), allocates the nonce, moves the payment to

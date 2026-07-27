@@ -67,8 +67,9 @@ GCP Cloud KMS, a single signer address, durable nonce allocation, recipient-gate
 - [x] `signer_accounts` migration, worker lease columns, durable nonce allocation
 - [x] signer interface carrying nonce and EIP-1559 fields, with fail-closed validation
 - [x] settlement intent persisted atomically with nonce allocation and admission
+- [x] worker lease primitive: claim, renew, release, stale reclaim
 - [ ] Cloud KMS signer behind the existing interface
-- [ ] idempotent broadcast and lease-based confirmation workers
+- [ ] idempotent broadcast and confirmation workers over the lease
 - [ ] ambiguous-RPC recovery, replacements, dropped transactions, reorg handling
 - [ ] `/settle` endpoint and confirmed-only volume
 
