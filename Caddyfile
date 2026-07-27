@@ -1,6 +1,22 @@
+{
+	# Caddy must know which peers may assert a client address so that its own
+	# client_ip and the X-Forwarded-For chain stay trustworthy.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 :80 {
 	encode zstd gzip
-	reverse_proxy app:8080
+
+	# Replace rather than append: the application trusts this proxy, so the
+	# chain must contain only the address Caddy actually observed. Operators
+	# who add a CDN in front must instead append and extend
+	# ETH402_TRUSTED_PROXIES to cover every intermediate hop.
+	reverse_proxy app:8080 {
+		header_up X-Forwarded-For {http.request.remote.host}
+	}
+
 	header {
 		-Server
 		X-Content-Type-Options nosniff

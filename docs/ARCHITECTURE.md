@@ -24,6 +24,8 @@ flowchart LR
 ## Components and trust boundaries
 
 - `internal/httpapi`: untrusted HTTP boundary, request limits, errors, health.
+  Rate limits key on the client address resolved from the direct peer, or from
+  `X-Forwarded-For` when the peer is a configured trusted proxy.
 - `internal/config`: environment parsing and mainnet/USDC production invariants.
 - `internal/store` and migrations: durable truth and concurrency enforcement.
 - `internal/x402` and `verification`: deterministic identity plus the narrow

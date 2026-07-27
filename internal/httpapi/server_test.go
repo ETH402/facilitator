@@ -8,6 +8,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +102,7 @@ func TestWrongRPCChainNotReady(t *testing.T) {
 
 func TestRateLimiter(t *testing.T) {
 	t.Parallel()
-	handler := newRateLimiter(1).middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := newRateLimiter(1, nil).middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	for attempt, want := range []int{http.StatusNoContent, http.StatusTooManyRequests} {
@@ -110,6 +112,98 @@ func TestRateLimiter(t *testing.T) {
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != want {
 			t.Fatalf("attempt %d returned %d, want %d", attempt+1, recorder.Code, want)
+		}
+	}
+}
+
+// mustPrefixes builds a trusted-proxy list for tests.
+func mustPrefixes(t *testing.T, values ...string) []netip.Prefix {
+	t.Helper()
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			t.Fatalf("parse %q: %v", value, err)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
+}
+
+func TestRateLimiterUsesForwardedClientBehindTrustedProxy(t *testing.T) {
+	t.Parallel()
+	limiter := newRateLimiter(1, mustPrefixes(t, "10.0.0.0/8"))
+	handler := limiter.middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	// Two distinct clients arriving through the same proxy must not share a
+	// bucket, which is what keyed the limiter on the proxy address before.
+	for _, client := range []string{"192.0.2.10", "192.0.2.11"} {
+		request := httptest.NewRequest(http.MethodGet, "/limited", nil)
+		request.RemoteAddr = "10.1.2.3:4567"
+		request.Header.Set("X-Forwarded-For", client)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("client %s returned %d, want %d", client, recorder.Code, http.StatusNoContent)
+		}
+	}
+	// The same client must still be limited on its second request.
+	request := httptest.NewRequest(http.MethodGet, "/limited", nil)
+	request.RemoteAddr = "10.1.2.3:4567"
+	request.Header.Set("X-Forwarded-For", "192.0.2.10")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("repeat client returned %d, want %d", recorder.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestRateLimiterIgnoresForwardedHeaderFromUntrustedPeer(t *testing.T) {
+	t.Parallel()
+	limiter := newRateLimiter(1, mustPrefixes(t, "10.0.0.0/8"))
+	handler := limiter.middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	// A directly-connected client must not escape its bucket by rotating the
+	// header, so the second request is limited despite a fresh value.
+	for attempt, want := range []int{http.StatusNoContent, http.StatusTooManyRequests} {
+		request := httptest.NewRequest(http.MethodGet, "/limited", nil)
+		request.RemoteAddr = "198.51.100.7:9999"
+		request.Header.Set("X-Forwarded-For", "192.0.2."+strconv.Itoa(attempt+1))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("attempt %d returned %d, want %d", attempt+1, recorder.Code, want)
+		}
+	}
+}
+
+func TestRateLimiterUsesRightmostUntrustedForwardedEntry(t *testing.T) {
+	t.Parallel()
+	limiter := newRateLimiter(10, mustPrefixes(t, "10.0.0.0/8"))
+	request := httptest.NewRequest(http.MethodGet, "/limited", nil)
+	request.RemoteAddr = "10.1.2.3:4567"
+	// Everything left of the proxy-appended address is attacker controlled.
+	request.Header.Set("X-Forwarded-For", "203.0.113.9, garbage, 192.0.2.10")
+	if got := limiter.clientAddress(request); got != "192.0.2.10" {
+		t.Fatalf("client address = %q, want 192.0.2.10", got)
+	}
+}
+
+func TestRateLimiterGroupsIPv6BySlash64(t *testing.T) {
+	t.Parallel()
+	limiter := newRateLimiter(1, nil)
+	handler := limiter.middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for attempt, want := range []int{http.StatusNoContent, http.StatusTooManyRequests} {
+		request := httptest.NewRequest(http.MethodGet, "/limited", nil)
+		request.RemoteAddr = "[2001:db8::" + strconv.Itoa(attempt+1) + "]:443"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("address %d returned %d, want %d", attempt+1, recorder.Code, want)
 		}
 	}
 }

@@ -17,9 +17,18 @@ versioned where noted.
   v2.19.0 types/verifier, durable verification attempts, and version 0.3
   OpenAPI contract.
 
+### Changed
+
+- Rate limits key on the client address resolved through `ETH402_TRUSTED_PROXIES`
+  instead of the direct peer, which collapsed all traffic behind a reverse proxy
+  into a single bucket. IPv6 clients are grouped by `/64`.
+
 ### Security
 
 - Live settlement is intentionally absent and transaction signing defaults to disabled.
+- `X-Forwarded-For` is honoured only from configured trusted proxies, using the
+  rightmost untrusted entry, so a forged header cannot select another client's
+  rate-limit bucket. The bundled Caddy configuration replaces the header.
 - API keys are stored as keyed hashes; email tokens and wallet messages are
   stored only as hashes. Wallet challenges are single-use and time-bound.
 - Verification rejects non-mainnet networks, non-native-USDC assets, Permit2,

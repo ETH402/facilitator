@@ -9,8 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +41,9 @@ type Dependencies struct {
 	AllowedOrigin       string
 	OperatorToken       string
 	Verification        *verification.Service
+	// TrustedProxies lists reverse proxies permitted to assert a client
+	// address through X-Forwarded-For. Empty means the direct peer is used.
+	TrustedProxies []netip.Prefix
 }
 
 type Server struct {
@@ -57,7 +63,7 @@ func New(dep Dependencies) *Server {
 	dep.merchantRoutes(mux)
 	handler := secureHeaders(dep.AllowedOrigin, mux)
 	handler = requestLimit(handler)
-	handler = newRateLimiter(dep.PublicRatePerMinute).middleware(handler)
+	handler = newRateLimiter(dep.PublicRatePerMinute, dep.TrustedProxies).middleware(handler)
 	handler = observe(dep.Metrics, handler)
 	handler = recovery(dep.Logger, dep.Metrics, handler)
 	handler = requestID(handler)
@@ -247,6 +253,7 @@ func knownRoute(path string) string {
 
 type rateLimiter struct {
 	limit     int
+	trusted   []netip.Prefix
 	mu        sync.Mutex
 	clients   map[string]*rateWindow
 	lastSweep time.Time
@@ -257,8 +264,74 @@ type rateWindow struct {
 	count   int
 }
 
-func newRateLimiter(limit int) *rateLimiter {
-	return &rateLimiter{limit: limit, clients: make(map[string]*rateWindow)}
+func newRateLimiter(limit int, trusted []netip.Prefix) *rateLimiter {
+	return &rateLimiter{limit: limit, trusted: trusted, clients: make(map[string]*rateWindow)}
+}
+
+// clientAddress resolves the bucket key for a request. When the direct peer is
+// a trusted proxy, the rightmost X-Forwarded-For entry that is not itself a
+// trusted proxy wins: each proxy appends the peer it observed, so a forged
+// header can only prepend entries to the left of the real client address and
+// can never select another client's bucket. When the peer is untrusted the
+// header is ignored entirely.
+func (l *rateLimiter) clientAddress(r *http.Request) string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	peerAddress, err := netip.ParseAddr(strings.TrimSpace(peer))
+	if err != nil {
+		return peer
+	}
+	if !l.isTrusted(peerAddress) {
+		return bucketKey(peerAddress)
+	}
+	for _, entry := range forwardedFor(r) {
+		address, err := netip.ParseAddr(entry)
+		if err != nil {
+			// A malformed entry can only have been supplied by the client,
+			// which means every trustworthy hop has already been examined.
+			break
+		}
+		if !l.isTrusted(address) {
+			return bucketKey(address)
+		}
+	}
+	return bucketKey(peerAddress)
+}
+
+func (l *rateLimiter) isTrusted(address netip.Addr) bool {
+	candidate := address.Unmap()
+	for _, prefix := range l.trusted {
+		if prefix.Contains(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardedFor returns every X-Forwarded-For entry in right-to-left order.
+func forwardedFor(r *http.Request) []string {
+	var entries []string
+	for _, header := range r.Header.Values("X-Forwarded-For") {
+		for _, entry := range strings.Split(header, ",") {
+			entries = append(entries, strings.TrimSpace(entry))
+		}
+	}
+	slices.Reverse(entries)
+	return entries
+}
+
+// bucketKey groups IPv6 clients by /64 because a single subscriber is routinely
+// assigned the whole prefix and could otherwise obtain unlimited buckets.
+func bucketKey(address netip.Addr) string {
+	address = address.Unmap().WithZone("")
+	if address.Is6() {
+		if prefix, err := address.Prefix(64); err == nil {
+			return prefix.String()
+		}
+	}
+	return address.String()
 }
 
 func (l *rateLimiter) middleware(next http.Handler) http.Handler {
@@ -267,10 +340,7 @@ func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
+		host := l.clientAddress(r)
 		now := time.Now()
 		l.mu.Lock()
 		if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= time.Minute {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -56,6 +57,10 @@ type Config struct {
 	MetricsEnabled     bool
 	PublicRatePerMin   int
 	RegistrationRate   int
+	// TrustedProxies lists the reverse proxies permitted to assert a client
+	// address through X-Forwarded-For. Empty means the direct peer is always
+	// the client, which is correct only when the service is exposed directly.
+	TrustedProxies []netip.Prefix
 }
 
 func Load() (Config, error) {
@@ -100,6 +105,9 @@ func Load() (Config, error) {
 		RegistrationRate:   envInt("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
 	}
 	var parseErrors []error
+	trustedProxies, proxyErrors := parsePrefixes("ETH402_TRUSTED_PROXIES")
+	cfg.TrustedProxies = trustedProxies
+	parseErrors = append(parseErrors, proxyErrors...)
 	for _, key := range []string{
 		"ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", "ETH402_METRICS_ENABLED",
 		"ETH402_DISPOSABLE_EMAIL_BLOCK", "ETH402_FREE_EMAIL_RESTRICTION",
@@ -264,6 +272,30 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return -1
 	}
 	return d
+}
+
+// parsePrefixes reads trusted proxy entries given as CIDR prefixes or bare IP
+// addresses. A bare address becomes a single-host prefix.
+func parsePrefixes(key string) ([]netip.Prefix, []error) {
+	values := envCSV(key)
+	if len(values) == 0 {
+		return nil, nil
+	}
+	var errs []error
+	result := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		if prefix, err := netip.ParsePrefix(value); err == nil {
+			result = append(result, prefix.Masked())
+			continue
+		}
+		address, err := netip.ParseAddr(value)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s entry %q must be an IP address or CIDR prefix", key, value))
+			continue
+		}
+		result = append(result, netip.PrefixFrom(address, address.BitLen()))
+	}
+	return result, errs
 }
 
 func envCSV(key string) []string {
