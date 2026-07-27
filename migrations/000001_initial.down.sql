@@ -1,0 +1,18 @@
+DROP TRIGGER IF EXISTS audit_events_append_only ON audit_events;
+DROP TRIGGER IF EXISTS payment_transitions_append_only ON payment_transitions;
+DROP TRIGGER IF EXISTS settlement_attempts_append_only ON settlement_attempts;
+DROP TRIGGER IF EXISTS verification_attempts_append_only ON verification_attempts;
+DROP TRIGGER IF EXISTS recipient_history_append_only ON recipient_address_history;
+DROP FUNCTION IF EXISTS reject_append_only_mutation();
+DROP TABLE IF EXISTS merchant_suspensions;
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS ethereum_transactions;
+DROP TABLE IF EXISTS payment_transitions;
+DROP TABLE IF EXISTS settlement_attempts;
+DROP TABLE IF EXISTS verification_attempts;
+DROP TABLE IF EXISTS payment_records;
+DROP TABLE IF EXISTS recipient_address_history;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS wallet_verification_challenges;
+DROP TABLE IF EXISTS email_verification_tokens;
+DROP TABLE IF EXISTS merchants;
