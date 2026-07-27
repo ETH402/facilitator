@@ -21,7 +21,8 @@ provide honest chain data; external signer policy works. Residual risk remains.
 | DB race | idempotency | duplicate intent | unique constraints, transactions, row locks | constraint/audit alerts | application bug |
 | Record corruption | financial/audit state | incorrect stats/recovery | least privilege, checks, backups, append-only triggers | reconciliation/integrity checks | privileged DBA |
 | Insider abuse | all | theft/suppression/data leak | separation of duties, signer policy, immutable audit | access/audit review | collusion |
-| Signer compromise | facilitator ETH/reputation | arbitrary tx/gas loss | KMS/HSM policy, zero-value/USDC selector allowlist | chain monitoring | policy bypass/zero-day |
+| Signer compromise | facilitator ETH/reputation | arbitrary tx/gas loss | KMS-held key material, in-process zero-value/USDC selector allowlist | chain monitoring | Cloud KMS cannot enforce a calldata allowlist, so a compromised process can have any transaction signed ([ADR-0004](decisions/0004-settlement-execution-model.md)) |
+| Gas draining via valid authorization | facilitator ETH; attacker settles a genuine self-to-self payment | unbounded gas loss | `/settle` admits only payments whose recipient is an active registered merchant, plus per-merchant quotas and suspension | per-merchant spend dashboards | registration is not Sybil-resistant |
 | Denial of service | availability | outage | limits, timeouts, cache, circuit breaker, capacity | saturation/SLO alerts | volumetric attack |
 | Gas-price spike | ETH/availability | high cost or delayed settle | max-fee and admission policy | fee/pending alerts | payments expire |
 | Dependency compromise | build/runtime | code execution | minimal deps, checksums, pinned CI, review | vuln/SBOM scans | upstream compromise |

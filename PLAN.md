@@ -56,16 +56,16 @@ remain deliberately unavailable.
 
 ## Milestone 3 — settlement
 
-Status: design in progress on `milestone-3-settlement`. The execution model is
-recorded in [ADR-0004](docs/decisions/0004-settlement-execution-model.md), which
-still carries open questions that must be resolved before `/settle` is written.
+Status: design accepted on `milestone-3-settlement`. The execution model is
+recorded in [ADR-0004](docs/decisions/0004-settlement-execution-model.md):
+GCP Cloud KMS, a single signer address, durable nonce allocation, recipient-gated
+`/settle` admission, explicit worker leases, and a configurable expiry margin.
 
 - [x] mandatory gas policy before any signer can be enabled
-- [ ] resolve ADR-0004 open questions: signer backend, `/settle` authentication,
-      worker leasing, expiry semantics
-- [ ] durable nonce allocation and settlement intent
-- [ ] signer interface carrying nonce and EIP-1559 fields
-- [ ] idempotent broadcast and confirmation workers
+- [x] accepted execution model and resolved design questions
+- [ ] `signer_accounts` migration and durable nonce allocation with settlement intent
+- [ ] signer interface carrying nonce and EIP-1559 fields, and a Cloud KMS signer
+- [ ] idempotent broadcast and lease-based confirmation workers
 - [ ] ambiguous-RPC recovery, replacements, dropped transactions, reorg handling
 - [ ] `/settle` endpoint and confirmed-only volume
 

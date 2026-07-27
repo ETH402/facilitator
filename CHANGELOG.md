@@ -19,8 +19,10 @@ versioned where noted.
 
 ### Added
 
-- Milestone 3 settlement execution model as ADR-0004 (proposed), covering durable
-  nonce allocation, ambiguous-broadcast handling, and the finality cut.
+- Milestone 3 settlement execution model as ADR-0004 (accepted), covering durable
+  nonce allocation, a single signer address on GCP Cloud KMS, recipient-gated
+  `/settle` admission, lease-based workers, ambiguous-broadcast handling, an
+  expiry margin, and the finality cut.
 
 ### Changed
 

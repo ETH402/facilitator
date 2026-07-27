@@ -1,6 +1,6 @@
 # ADR 0004: Settlement execution model
 
-Status: **proposed** — 2026-07-27. Supersedes nothing. Extends
+Status: **accepted** — 2026-07-27. Extends
 [ADR-0002](0002-settlement-signer-boundary.md).
 
 Milestone 3 makes ETH402 spend money for the first time. This ADR fixes the
@@ -26,7 +26,7 @@ in-flight Ethereum transaction per payment" a database invariant rather than an
 application convention. The design below builds on it rather than adding
 coordination of its own.
 
-## Decision
+## Decisions
 
 ### 1. Ethereum nonce allocation
 
@@ -34,7 +34,7 @@ Settlement must assign each transaction a distinct account nonce for a single
 signer address, with no gaps and no reuse, across process restarts and
 concurrent requests.
 
-**Decided:** allocate from a dedicated durable row, not from the chain.
+**Allocate from a dedicated durable row, not from the chain.**
 
 Add a `signer_accounts` table keyed by signer address holding `next_nonce`.
 Allocation happens inside the settlement transaction with `SELECT … FOR UPDATE`,
@@ -52,12 +52,25 @@ Rejected alternatives:
   every historical row is still present and no row was ever created for a
   transaction that was never broadcast. Both assumptions fail during recovery.
 
-Consequence: the signer address becomes load-bearing configuration. It must be
-resolved once at startup and pinned, because `ethereum_transactions.signer_address`
-is `NOT NULL` and a mid-flight signer change would corrupt the nonce sequence.
-Replacements deliberately reuse the same nonce and so must *not* allocate.
+Replacements deliberately reuse the same nonce and so must **not** allocate.
 
-### 2. Commit before sign, sign before broadcast
+### 2. Signer account topology
+
+**One signer address to begin with.** One nonce sequence and one gas balance to
+fund, monitor, and alert on.
+
+The cost is head-of-line blocking: because nonces are strictly sequential, a
+stuck transaction at nonce N prevents every later settlement from mining until
+it clears or is replaced. Replacement (same nonce, higher fee) is the designed
+escape hatch, and it is why decision 1 forbids allocating a fresh nonce for a
+replacement.
+
+`signer_accounts` is keyed by address and `ethereum_transactions.signer_address`
+is already `NOT NULL`, so a pool of addresses can be introduced later without a
+painful migration. The signer address must be resolved once at startup and
+pinned; a mid-flight change would corrupt the nonce sequence.
+
+### 3. Commit before sign, sign before broadcast
 
 The order is: verify → allocate nonce and insert intent (`state = broadcasting`,
 `ethereum_transactions.status = intent`) → commit → sign → record
@@ -68,7 +81,7 @@ recovery can resolve. A crash after broadcast but before recording the hash is
 the ambiguous case below. Nothing is ever signed without a committed intent,
 which is what makes "never blindly retry" enforceable.
 
-### 3. Ambiguous broadcast
+### 4. Ambiguous broadcast
 
 An RPC error that leaves broadcast outcome unknown sets
 `ethereum_transactions.status = 'ambiguous'` and moves the payment to
@@ -80,64 +93,121 @@ already exists in the state machine. Recovery resolves ambiguity by looking up
 `raw_transaction_hash` on chain; it never re-signs and never re-broadcasts with
 a fresh nonce.
 
-### 4. Finality and reorgs
+### 5. Finality and reorgs
 
 `confirmed` is terminal, with **no** `confirmed → confirming` edge. Confirmation
 requires `ETH402_REQUIRED_CONFIRMATIONS` (default 12) canonical confirmations,
-and a reorg deeper than that is accepted as residual risk — it is already
-recorded as "deep reorg" in the threat model.
+and a reorg deeper than that is **accepted as residual risk** — already recorded
+as "deep reorg" in the threat model.
 
-This is a deliberate finality cut, stated here because
+This is a deliberate risk acceptance, stated here because
 `docs/ARCHITECTURE.md`'s "reorgs return non-final transactions to confirmation"
 reads more broadly than the state machine allows: it applies only to
 `broadcast`/`confirming`, never to `confirmed`. Reorg handling compares
 `block_hash` against the canonical chain and returns *non-final* transactions to
 `confirming`.
 
-### 5. Gas policy is mandatory
+### 6. Gas policy is mandatory
 
-Implemented ahead of this ADR: `Validate` now rejects any non-disabled
+Implemented ahead of this ADR: `Validate` rejects any non-disabled
 `ETH402_SIGNER_MODE` unless both `ETH402_MAX_FEE_PER_GAS_WEI` and
 `ETH402_MAX_GAS_LIMIT` are non-zero, and rejects a priority fee exceeding the
 total fee ceiling. Zero means unset, not unlimited, so the signer cannot be
 switched on with an unbounded spend ceiling.
 
-### 6. The signer interface must change
+### 7. The signer interface must change
 
 `signer.Transaction{ChainID, To, Data, Value}` cannot express a settlement
 transaction. It is missing `Nonce`, `GasLimit`, `MaxFeePerGas`, and
-`MaxPriorityFeePerGas`. Because ADR-0002 requires the nonce to be persisted
+`MaxPriorityFeePerGas`. Because decision 3 requires the nonce to be persisted
 before signing, the nonce is an **input** chosen by the caller, not something
-the signer may pick. The interface gains those fields and remains
-value-typed so a signer implementation cannot reach back for chain state.
+the signer may pick. The interface gains those fields and stays value-typed so a
+signer implementation cannot reach back for chain state.
 
-`signer.Disabled` stays the default and `TestSigner` stays deliberately
+`signer.Disabled` remains the default and `TestSigner` remains deliberately
 non-broadcastable.
 
-## Open questions
+### 8. Signer backend: GCP Cloud KMS
 
-These need a decision before implementation, and are not settled here:
+Milestone 4 already targets GCP deployment, and Cloud KMS supports secp256k1.
+Key material never leaves KMS, and per-key IAM plus audit logging come with it.
 
-1. **Signer backend.** ADR-0002 names "KMS/HSM/Vault/external policy signers"
-   without choosing. The choice determines whether signing is a local library
-   call or a network round trip inside the settlement path, which changes the
-   timeout and failure model materially.
-2. **`/settle` authentication.** `/verify` is deliberately unauthenticated.
-   `/settle` spends operator gas, so leaving it unauthenticated makes gas
-   draining trivially cheap, while requiring a merchant API key departs from the
-   x402 facilitator shape. This is the single most consequential open question
-   in Milestone 3.
-3. **Confirmation-worker leasing.** `FOR UPDATE SKIP LOCKED` against
-   `payment_records` versus a separate lease column. The former is simpler; the
-   latter survives long-running RPC calls without holding a transaction open.
-4. **Expiry.** `valid_before` can pass while a transaction is in flight. Whether
-   an expired-but-broadcast payment becomes `expired` or `failed` affects the
-   public `/stats` counters.
+Signing becomes a network round trip inside the settlement path, so the signer
+call needs its own timeout and must be treated as a failure mode distinct from
+RPC failure: a signing timeout leaves a committed `intent` row with no signed
+transaction, which recovery resolves by signing again — safe precisely because
+the nonce is already fixed and stored.
+
+**Important consequence:** a raw KMS cannot enforce a calldata allowlist. The
+"zero-value/USDC selector allowlist" that `docs/THREAT_MODEL.md` lists as a
+signer-compromise control therefore lives **inside** ETH402, not inside the
+signing boundary. A compromised ETH402 process can ask KMS to sign an arbitrary
+transaction. This weakens that control from a boundary to an in-process check,
+and the threat model has been updated to say so. Moving the allowlist behind an
+external policy signer remains the upgrade path if that residual risk becomes
+unacceptable.
+
+### 9. `/settle` admission: the recipient must be a registered merchant
+
+An attacker can construct a genuinely valid EIP-3009 authorization moving USDC
+between two wallets they control. Verification cannot reject it — nothing about
+the payment is invalid — and ETH402 pays the gas. Attacker cost is zero,
+operator cost is unbounded. **No protocol-level check can prevent this.**
+
+`/settle` therefore requires `payTo` to resolve to an **active registered
+merchant**: `payment_records.merchant_id` must be non-null. `internal/store`
+already performs that lookup; only the nullability is permissive today.
+
+This is a policy gate on the payment's destination, not authentication of the
+caller. `/settle` stays callable without merchant credentials, which preserves
+the x402 facilitator shape and keeps merchant identity separate from protocol
+logic per `AGENTS.md` #15. Gas spend becomes attributable to a party that
+accepted terms, can carry a quota, and can be suspended through the existing
+`merchant_suspensions` machinery.
+
+Residual risk: anyone completing email and wallet proof can still drain gas,
+bounded by per-merchant quotas. `docs/FAIR_USE_POLICY.md` already anticipates
+this, and ETH402 explicitly does not claim Sybil resistance.
+
+### 10. Worker leasing: an explicit lease
+
+Confirmation workers claim rows with `claimed_by` and `claimed_until` columns,
+take the lease, release the database transaction, and only then perform RPC
+work.
+
+`FOR UPDATE SKIP LOCKED` was rejected: it holds a transaction open across each
+RPC call, so with `ETH402_DATABASE_MAX_CONNS` at 10 and `ETH402_RPC_TIMEOUT` at
+5s, a handful of slow providers can starve the pool and take HTTP request
+handling down with it. Leases cost more code and require stale-lease reclaim for
+workers that die mid-lease.
+
+### 11. Expiry margin
+
+Settlement refuses to broadcast when `valid_before` falls inside a configured
+margin, defaulting conservatively (60s). EIP-3009 enforces `validBefore`
+on-chain, so a late transaction reverts and the operator pays gas for a
+predictably doomed transaction. The official verifier already applies a 6s
+margin, so this extends existing precedent rather than inventing policy;
+configurable because the safe window widens during gas spikes.
+
+A payment that expires before broadcast becomes `expired`. One already
+broadcast is left to its receipt, which yields `reverted` — the chain decides,
+not the application.
 
 ## Consequences
 
 Settlement becomes the first component that can lose money through a bug rather
-than merely return a wrong answer. The controls above are all database
-invariants or fail-closed configuration, chosen over application-level
-discipline for that reason. `/settle` remains absent until every item under
-"Open questions" is resolved.
+than merely return a wrong answer. The controls above are database invariants or
+fail-closed configuration wherever possible, chosen over application-level
+discipline for that reason.
+
+New surface this implies, none of which exists yet:
+
+- migrations for `signer_accounts` and the worker lease columns
+- `ETH402_SIGNER_ADDRESS` (or KMS key resolution) pinned at startup
+- `ETH402_SETTLEMENT_EXPIRY_MARGIN`, a signing timeout, and a per-merchant
+  settlement quota
+- extended `signer.Transaction` per decision 7
+
+These configuration keys are deliberately **not** added ahead of the code that
+reads them, so that no documented option silently does nothing.
