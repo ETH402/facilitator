@@ -36,6 +36,10 @@ versioned where noted.
   more than one merchant shares a recipient address.
 - Registration surfaces unexpected database errors instead of reporting success,
   while keeping duplicate registrations enumeration-resistant.
+- Concurrent duplicate verification now converges instead of deadlocking. Writers
+  for one authorization serialise on an advisory transaction lock, and transient
+  deadlock or serialization aborts are retried, so two simultaneous `/verify`
+  requests no longer risk one caller receiving `503`.
 
 ### Security
 

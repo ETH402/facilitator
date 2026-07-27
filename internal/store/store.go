@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/stats"
@@ -73,7 +77,48 @@ SELECT
 	return a, nil
 }
 
+// authorizationLockKey derives the advisory-lock key that serialises writers for
+// one buyer authorization. Collisions only cost extra serialisation, never
+// correctness.
+func authorizationLockKey(payer, nonce string) int64 {
+	digest := sha256.Sum256([]byte(strings.ToLower(payer) + "|" + strings.ToLower(nonce)))
+	// Masking to 63 bits keeps the conversion provably in range; any non-negative
+	// int64 is an equally valid advisory-lock key.
+	return int64(binary.BigEndian.Uint64(digest[:8]) & math.MaxInt64)
+}
+
+// retryableWrite reports whether PostgreSQL aborted the transaction for a reason
+// that is transient by definition, so retrying the whole transaction is correct.
+func retryableWrite(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		return false
+	}
+	// 40P01 deadlock_detected, 40001 serialization_failure.
+	return postgresError.Code == "40P01" || postgresError.Code == "40001"
+}
+
+// RecordVerification persists a verification attempt, and the payment identity
+// when the attempt succeeded.
+//
+// Concurrent duplicates converge rather than failing: two simultaneous verify
+// requests for the same authorization must both observe the same payment row.
+// The retry is defence in depth behind the advisory lock taken below, because a
+// transient abort would otherwise surface to the caller as a 503.
 func (s *Store) RecordVerification(ctx context.Context, attempt verification.Attempt) error {
+	const maxAttempts = 3
+	var err error
+	for range maxAttempts {
+		err = s.recordVerification(ctx, attempt)
+		if err == nil || !retryableWrite(err) {
+			return err
+		}
+		slog.WarnContext(ctx, "retrying verification record after transient database abort", "error", err)
+	}
+	return err
+}
+
+func (s *Store) recordVerification(ctx context.Context, attempt verification.Attempt) error {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -84,6 +129,16 @@ func (s *Store) RecordVerification(ctx context.Context, attempt verification.Att
 	if attempt.Result == "verified" {
 		if attempt.Payment == nil {
 			return errors.New("verified attempt requires payment data")
+		}
+		// Serialise every writer for this authorization before inserting. The
+		// duplicate row violates payment_identity and the
+		// (network, asset, payer, nonce) uniqueness simultaneously; ON CONFLICT
+		// resolves only its arbiter index speculatively while the other index takes
+		// an ordinary uniqueness wait, and two concurrent inserts can then deadlock.
+		// Settlement must take this same lock for the authorizations it writes.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+			authorizationLockKey(attempt.Payment.Payer, attempt.Payment.Nonce)); err != nil {
+			return err
 		}
 		const insertPayment = `
 INSERT INTO payment_records (
