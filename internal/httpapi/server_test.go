@@ -208,6 +208,26 @@ func TestRateLimiterGroupsIPv6BySlash64(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointGatedByConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, enabled := range []bool{true, false} {
+		handler := New(Dependencies{
+			Logger: slog.Default(), Database: fakeDB{}, Ethereum: fakeRPC{chain: 1},
+			Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: metrics.New(),
+			ExpectedChainID: 1, PublicRatePerMinute: 100, MetricsEnabled: enabled,
+		}).Handler()
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		want := http.StatusOK
+		if !enabled {
+			want = http.StatusNotFound
+		}
+		if recorder.Code != want {
+			t.Fatalf("metrics enabled=%v returned %d, want %d", enabled, recorder.Code, want)
+		}
+	}
+}
+
 func TestCORSDeniedByDefault(t *testing.T) {
 	t.Parallel()
 	request := httptest.NewRequest(http.MethodGet, "/stats", nil)

@@ -9,6 +9,12 @@
 :80 {
 	encode zstd gzip
 
+	# Prometheus scrapes app:8080 directly on the container network, so metrics
+	# are never served on the public interface.
+	handle /metrics {
+		respond "not found" 404
+	}
+
 	# Replace rather than append: the application trusts this proxy, so the
 	# chain must contain only the address Caddy actually observed. Operators
 	# who add a CDN in front must instead append and extend

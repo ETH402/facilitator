@@ -41,6 +41,7 @@ type Dependencies struct {
 	AllowedOrigin       string
 	OperatorToken       string
 	Verification        *verification.Service
+	MetricsEnabled      bool
 	// TrustedProxies lists reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is used.
 	TrustedProxies []netip.Prefix
@@ -57,7 +58,9 @@ func New(dep Dependencies) *Server {
 	})
 	mux.HandleFunc("GET /health/ready", dep.ready)
 	mux.HandleFunc("GET /stats", dep.stats)
-	mux.Handle("GET /metrics", dep.Metrics)
+	if dep.MetricsEnabled {
+		mux.Handle("GET /metrics", dep.Metrics)
+	}
 	mux.HandleFunc("GET /supported", dep.supported)
 	mux.HandleFunc("POST /verify", dep.verify)
 	dep.merchantRoutes(mux)

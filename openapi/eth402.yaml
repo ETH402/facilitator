@@ -350,7 +350,10 @@ paths:
   /metrics:
     get:
       operationId: prometheusMetrics
-      description: Operational Prometheus exposition; restrict in production.
+      description: >-
+        Operational Prometheus exposition; restrict in production. Disabled
+        when ETH402_METRICS_ENABLED is false, and refused by the bundled
+        reverse proxy on the public listener.
       responses:
         "200":
           description: Prometheus text exposition.
@@ -358,6 +361,8 @@ paths:
             text/plain:
               schema:
                 type: string
+        "404":
+          description: Metrics exposition is disabled by configuration.
 components:
   securitySchemes:
     MerchantAPIKey:

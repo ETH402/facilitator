@@ -53,6 +53,14 @@ append rather than replace and extend `ETH402_TRUSTED_PROXIES` to every hop,
 otherwise the CDN's address becomes the rate-limit key. IPv6 clients are grouped
 by `/64` because a single subscriber is routinely assigned the whole prefix.
 
+## Metrics exposure
+
+`ETH402_METRICS_ENABLED` controls whether `/metrics` is registered at all; when
+false the route returns 404. The bundled `Caddyfile` also refuses `/metrics` on
+the public listener, and Prometheus scrapes `app:8080` directly on the container
+network. Keep both controls in place: metrics are an operational disclosure
+boundary, not public data.
+
 ## Verification attempt retention
 
 Every `/verify` call appends a `verification_attempts` row, including malformed

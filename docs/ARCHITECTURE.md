@@ -40,7 +40,8 @@ flowchart LR
 RPC data is untrusted until cross-checked and confirmed. Email proves mailbox
 control, not business legitimacy. API keys authenticate merchant API calls, not
 x402 buyer authorizations. Metrics and public stats are separate disclosure
-boundaries.
+boundaries: `/stats` is a versioned public schema, while `/metrics` is gated by
+configuration and withheld at the proxy.
 
 ## Failure recovery
 

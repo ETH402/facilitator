@@ -318,6 +318,7 @@ func (c Config) RedactedSummary() map[string]any {
 		"environment": c.Environment, "http_addr": c.HTTPAddr, "network": c.Network,
 		"chain_id": c.ChainID, "usdc_contract": c.USDCContract, "signer_mode": c.SignerMode,
 		"database_configured": c.DatabaseURL != "", "rpc_configured": c.EthereumRPCURL != "",
+		"metrics_enabled": c.MetricsEnabled, "trusted_proxies": len(c.TrustedProxies),
 	}
 }
 

@@ -22,13 +22,16 @@ versioned where noted.
 - Rate limits key on the client address resolved through `ETH402_TRUSTED_PROXIES`
   instead of the direct peer, which collapsed all traffic behind a reverse proxy
   into a single bucket. IPv6 clients are grouped by `/64`.
+- `ETH402_METRICS_ENABLED` now actually gates the `/metrics` route; it was parsed
+  and validated but never read.
 
 ### Security
 
 - Live settlement is intentionally absent and transaction signing defaults to disabled.
 - `X-Forwarded-For` is honoured only from configured trusted proxies, using the
   rightmost untrusted entry, so a forged header cannot select another client's
-  rate-limit bucket. The bundled Caddy configuration replaces the header.
+  rate-limit bucket. The bundled Caddy configuration replaces the header and
+  refuses `/metrics` on the public listener.
 - API keys are stored as keyed hashes; email tokens and wallet messages are
   stored only as hashes. Wallet challenges are single-use and time-bound.
 - Verification rejects non-mainnet networks, non-native-USDC assets, Permit2,

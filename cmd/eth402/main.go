@@ -71,7 +71,8 @@ func main() {
 		Metrics: registry, ExpectedChainID: cfg.ChainID, PublicRatePerMinute: cfg.PublicRatePerMin,
 		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
 		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
-		Verification: verificationService, TrustedProxies: cfg.TrustedProxies,
+		Verification: verificationService, MetricsEnabled: cfg.MetricsEnabled,
+		TrustedProxies: cfg.TrustedProxies,
 	})
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.Handler(),
