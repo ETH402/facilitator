@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,143 @@ SELECT
 	conflict.Payment.PayloadHash = repeat("2", 64)
 	if err := store.RecordVerification(ctx, conflict); err == nil {
 		t.Fatal("same on-chain nonce with a different payment identity was accepted")
+	}
+}
+
+// TestConcurrentDuplicateVerificationConverges pins the Milestone 2 guarantee
+// that simultaneous verify requests for one authorization both succeed.
+//
+// The duplicate row violates payment_identity and the
+// (network, asset, payer, nonce) uniqueness at the same time. Before the advisory
+// lock, ON CONFLICT resolved only its arbiter index speculatively while the other
+// took an ordinary uniqueness wait, so two concurrent inserts deadlocked
+// (SQLSTATE 40P01) and one caller received a 503. Both goroutines start from a
+// barrier because connection-acquisition timing otherwise hides the race.
+func TestConcurrentDuplicateVerificationConverges(t *testing.T) {
+	databaseURL := os.Getenv("ETH402_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("ETH402_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, conn, migrations.Files); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, databaseURL, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	const rounds = 25
+	for round := range rounds {
+		if _, err := store.Pool.Exec(ctx, "TRUNCATE merchants, payment_records CASCADE"); err != nil {
+			t.Fatal(err)
+		}
+		identity := "pay_" + repeat("d", 64)
+		attempt := verification.Attempt{
+			PaymentIdentity: identity,
+			Result:          "verified",
+			Payment: &verification.Payment{
+				Identity:  identity,
+				Asset:     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+				Payer:     "0x3333333333333333333333333333333333333333",
+				Recipient: "0x1111111111111111111111111111111111111111",
+				Amount:    "42", Nonce: "0x" + repeat("e", 64),
+				ValidAfter: time.Now().Add(-time.Minute), ValidBefore: time.Now().Add(time.Minute),
+				PayloadHash: repeat("f", 64),
+			},
+		}
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		failures := make([]error, 2)
+		for i := range 2 {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				failures[i] = store.RecordVerification(ctx, attempt)
+			}()
+		}
+		close(start)
+		wait.Wait()
+		for i, err := range failures {
+			if err != nil {
+				t.Fatalf("round %d caller %d failed to converge: %v", round, i, err)
+			}
+		}
+		var payments, attempts, transitions int
+		if err := store.Pool.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM payment_records WHERE payment_identity=$1),
+  (SELECT count(*) FROM verification_attempts WHERE payment_identity=$1),
+  (SELECT count(*) FROM payment_transitions t JOIN payment_records p ON p.id=t.payment_id WHERE p.payment_identity=$1)
+`, identity).Scan(&payments, &attempts, &transitions); err != nil {
+			t.Fatal(err)
+		}
+		// Exactly one payment and one transition however the two callers interleave.
+		if payments != 1 || attempts != 2 || transitions != 1 {
+			t.Fatalf("round %d: payments=%d attempts=%d transitions=%d", round, payments, attempts, transitions)
+		}
+	}
+}
+
+// A different authorization sharing a nonce is a genuine conflict, not a
+// duplicate, and must still be rejected rather than converged.
+func TestDistinctPaymentSharingNonceStillConflicts(t *testing.T) {
+	databaseURL := os.Getenv("ETH402_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("ETH402_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, conn, migrations.Files); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, databaseURL, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Pool.Exec(ctx, "TRUNCATE merchants, payment_records CASCADE"); err != nil {
+		t.Fatal(err)
+	}
+	base := verification.Attempt{
+		PaymentIdentity: "pay_" + repeat("7", 64),
+		Result:          "verified",
+		Payment: &verification.Payment{
+			Identity:  "pay_" + repeat("7", 64),
+			Asset:     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+			Payer:     "0x4444444444444444444444444444444444444444",
+			Recipient: "0x1111111111111111111111111111111111111111",
+			Amount:    "42", Nonce: "0x" + repeat("8", 64),
+			ValidAfter: time.Now().Add(-time.Minute), ValidBefore: time.Now().Add(time.Minute),
+			PayloadHash: repeat("9", 64),
+		},
+	}
+	if err := store.RecordVerification(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	other := base
+	other.PaymentIdentity = "pay_" + repeat("a", 64)
+	payment := *base.Payment
+	payment.Identity = other.PaymentIdentity
+	payment.PayloadHash = repeat("b", 64)
+	other.Payment = &payment
+	if err := store.RecordVerification(ctx, other); !errors.Is(err, verification.ErrAuthorizationConflict) {
+		t.Fatalf("reused nonce returned %v, want ErrAuthorizationConflict", err)
 	}
 }
 

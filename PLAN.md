@@ -48,7 +48,8 @@ is recorded in the milestone report.
 - [x] validate exact amount/recipient, authorization time, EIP-712 signature,
       payer type, asset code, on-chain nonce state, and transfer simulation
 - [x] persist aggregate verification attempts and successful payment identity
-- [x] converge concurrent duplicate records through PostgreSQL uniqueness
+- [x] converge concurrent duplicate records through an authorization advisory lock
+      plus PostgreSQL uniqueness
 - [x] expose verification metrics and document the stable HTTP contract
 
 Permit2, ERC-1271, ERC-6492, extensions, settlement, and transaction broadcast
