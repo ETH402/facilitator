@@ -91,7 +91,7 @@ func (s *Service) Get(ctx context.Context) (Response, error) {
 		lag = a.LatestIndexedBlock - a.LastConfirmedBlock
 	}
 	response := Response{
-		SchemaVersion: SchemaVersion, Service: "ETH402", Version: "0.1.0",
+		SchemaVersion: SchemaVersion, Service: "ETH402", Version: "0.2.0",
 		Network: "eip155:1", Asset: "USDC", UptimeSeconds: max(0, int64(now.Sub(s.started).Seconds())),
 		RegisteredMerchants: a.RegisteredMerchants, VerifiedMerchants: a.VerifiedMerchants,
 		TotalVerifications: a.TotalVerifications, SuccessfulVerifications: a.SuccessfulVerifications,

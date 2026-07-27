@@ -12,11 +12,15 @@ import (
 )
 
 type Registry struct {
-	httpRequests atomic.Uint64
-	httpDuration atomic.Int64
-	panicCount   atomic.Uint64
-	mu           sync.Mutex
-	status       map[string]uint64
+	httpRequests   atomic.Uint64
+	httpDuration   atomic.Int64
+	panicCount     atomic.Uint64
+	registrations  atomic.Uint64
+	emailVerified  atomic.Uint64
+	walletVerified atomic.Uint64
+	walletFailures atomic.Uint64
+	mu             sync.Mutex
+	status         map[string]uint64
 }
 
 func New() *Registry { return &Registry{status: make(map[string]uint64)} }
@@ -32,7 +36,11 @@ func (r *Registry) ObserveHTTP(method, route string, status int, duration time.D
 	r.mu.Unlock()
 }
 
-func (r *Registry) IncPanic() { r.panicCount.Add(1) }
+func (r *Registry) IncPanic()                     { r.panicCount.Add(1) }
+func (r *Registry) IncRegistration()              { r.registrations.Add(1) }
+func (r *Registry) IncEmailVerification()         { r.emailVerified.Add(1) }
+func (r *Registry) IncWalletVerification()        { r.walletVerified.Add(1) }
+func (r *Registry) IncWalletVerificationFailure() { r.walletFailures.Add(1) }
 
 func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -48,10 +56,17 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	for _, name := range []string{
 		"verification_total", "verification_failures_total", "settlement_requests_total",
 		"settlements_confirmed_total", "settlements_failed_total", "rpc_errors_total",
-		"database_errors_total", "registrations_total", "email_verifications_total",
-		"wallet_verifications_total",
+		"database_errors_total",
 	} {
 		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s 0\n", name, name)
+	}
+	for name, value := range map[string]uint64{
+		"registrations_total":                r.registrations.Load(),
+		"email_verifications_total":          r.emailVerified.Load(),
+		"wallet_verifications_total":         r.walletVerified.Load(),
+		"wallet_verification_failures_total": r.walletFailures.Load(),
+	} {
+		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s %d\n", name, name, value)
 	}
 	_, _ = io.WriteString(w, "# TYPE eth402_confirmation_lag_blocks gauge\neth402_confirmation_lag_blocks 0\n# TYPE eth402_worker_healthy gauge\neth402_worker_healthy 0\n")
 	_, _ = io.WriteString(w, "# TYPE eth402_settlement_latency_seconds histogram\neth402_settlement_latency_seconds_bucket{le=\"+Inf\"} 0\neth402_settlement_latency_seconds_sum 0\neth402_settlement_latency_seconds_count 0\n")

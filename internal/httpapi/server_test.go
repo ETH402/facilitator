@@ -90,3 +90,30 @@ func TestWrongRPCChainNotReady(t *testing.T) {
 		t.Fatalf("wrong chain returned %d", rec.Code)
 	}
 }
+
+func TestRateLimiter(t *testing.T) {
+	t.Parallel()
+	handler := newRateLimiter(1).middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for attempt, want := range []int{http.StatusNoContent, http.StatusTooManyRequests} {
+		request := httptest.NewRequest(http.MethodGet, "/limited", nil)
+		request.RemoteAddr = "192.0.2.1:1234"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("attempt %d returned %d, want %d", attempt+1, recorder.Code, want)
+		}
+	}
+}
+
+func TestCORSDeniedByDefault(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	request.Header.Set("Origin", "https://attacker.example")
+	recorder := httptest.NewRecorder()
+	testServer(nil, nil, 1).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin request returned %d", recorder.Code)
+	}
+}

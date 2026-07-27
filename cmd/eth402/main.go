@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/ETH402/facilitator/internal/config"
+	"github.com/ETH402/facilitator/internal/email"
 	"github.com/ETH402/facilitator/internal/ethereum"
 	"github.com/ETH402/facilitator/internal/httpapi"
+	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
 	"github.com/ETH402/facilitator/internal/stats"
 	"github.com/ETH402/facilitator/internal/store"
@@ -39,9 +41,22 @@ func main() {
 	rpc := ethereum.NewClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL, cfg.RPCTimeout, cfg.RPCReadRetries)
 	registry := metrics.New()
 	statsService := stats.NewService(database, time.Now(), cfg.StatsCacheTTL)
+	var sender email.Sender = email.LogSender{Logger: logger}
+	if cfg.EmailBackend == "file" {
+		sender = email.FileSender{Directory: cfg.EmailFileDir}
+	}
+	merchantService := merchant.New(database.Pool, sender, merchant.Config{
+		BaseURL: cfg.PublicBaseURL, TermsVersion: cfg.TermsVersion,
+		EmailTTL: cfg.EmailTokenTTL, Resend: cfg.EmailResend,
+		WalletTTL: cfg.WalletChallengeTTL, RecipientCooldown: cfg.RecipientCooldown,
+		Pepper: []byte(cfg.APIKeyPepper), BlockDisposable: cfg.BlockDisposable,
+		RestrictFree: cfg.RestrictFreeEmail, Allowlist: cfg.EmailAllowlist, Denylist: cfg.EmailDenylist,
+	})
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,
 		Metrics: registry, ExpectedChainID: cfg.ChainID, PublicRatePerMinute: cfg.PublicRatePerMin,
+		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
+		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
 	})
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.Handler(),

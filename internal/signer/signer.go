@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-var ErrDisabled = errors.New("transaction signing is disabled in Milestone 0")
+var ErrDisabled = errors.New("transaction signing is disabled in this build")
 
 type Transaction struct {
 	ChainID uint64

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ETH402/facilitator/internal/ethereum"
+	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
 	"github.com/ETH402/facilitator/internal/stats"
 )
@@ -31,6 +32,10 @@ type Dependencies struct {
 	Metrics             *metrics.Registry
 	ExpectedChainID     uint64
 	PublicRatePerMinute int
+	RegistrationRate    int
+	Merchant            *merchant.Service
+	AllowedOrigin       string
+	OperatorToken       string
 }
 
 type Server struct {
@@ -45,12 +50,13 @@ func New(dep Dependencies) *Server {
 	mux.HandleFunc("GET /health/ready", dep.ready)
 	mux.HandleFunc("GET /stats", dep.stats)
 	mux.Handle("GET /metrics", dep.Metrics)
-	handler := secureHeaders(mux)
+	dep.merchantRoutes(mux)
+	handler := secureHeaders(dep.AllowedOrigin, mux)
 	handler = requestLimit(handler)
-	handler = requestID(handler)
-	handler = recovery(dep.Logger, dep.Metrics, handler)
-	handler = observe(dep.Metrics, handler)
 	handler = newRateLimiter(dep.PublicRatePerMinute).middleware(handler)
+	handler = observe(dep.Metrics, handler)
+	handler = recovery(dep.Logger, dep.Metrics, handler)
+	handler = requestID(handler)
 	return &Server{handler: handler}
 }
 
@@ -125,16 +131,19 @@ func requestIDFrom(ctx context.Context) string {
 	return value
 }
 
-func secureHeaders(next http.Handler) http.Handler {
+func secureHeaders(allowedOrigin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if r.Header.Get("Origin") != "" {
+		if origin := r.Header.Get("Origin"); origin != "" && origin != allowedOrigin {
 			writeError(w, http.StatusForbidden, "cors_denied", "cross-origin requests are not allowed", requestIDFrom(r.Context()))
 			return
+		} else if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -181,7 +190,11 @@ func observe(registry *metrics.Registry, next http.Handler) http.Handler {
 
 func knownRoute(path string) string {
 	switch path {
-	case "/health/live", "/health/ready", "/metrics", "/stats":
+	case "/health/live", "/health/ready", "/metrics", "/stats",
+		"/v1/merchants/register", "/v1/merchants/verify-email",
+		"/v1/merchants/wallet-challenge", "/v1/merchants/verify-wallet",
+		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",
+		"/v1/me/recipient-change/verify":
 		return path
 	default:
 		return "unknown"
@@ -189,9 +202,10 @@ func knownRoute(path string) string {
 }
 
 type rateLimiter struct {
-	limit   int
-	mu      sync.Mutex
-	clients map[string]*rateWindow
+	limit     int
+	mu        sync.Mutex
+	clients   map[string]*rateWindow
+	lastSweep time.Time
 }
 
 type rateWindow struct {
@@ -215,7 +229,19 @@ func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 		}
 		now := time.Now()
 		l.mu.Lock()
+		if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= time.Minute {
+			for client, candidate := range l.clients {
+				if now.Sub(candidate.started) >= time.Minute {
+					delete(l.clients, client)
+				}
+			}
+			l.lastSweep = now
+		}
 		window := l.clients[host]
+		if window == nil && len(l.clients) >= 100_000 {
+			host = "overflow"
+			window = l.clients[host]
+		}
 		if window == nil || now.Sub(window.started) >= time.Minute {
 			window = &rateWindow{started: now}
 			l.clients[host] = window
