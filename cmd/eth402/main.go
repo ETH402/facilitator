@@ -18,6 +18,8 @@ import (
 	"github.com/ETH402/facilitator/internal/metrics"
 	"github.com/ETH402/facilitator/internal/stats"
 	"github.com/ETH402/facilitator/internal/store"
+	"github.com/ETH402/facilitator/internal/verification"
+	exactfacilitator "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/facilitator"
 )
 
 func main() {
@@ -39,6 +41,18 @@ func main() {
 	defer database.Close()
 
 	rpc := ethereum.NewClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL, cfg.RPCTimeout, cfg.RPCReadRetries)
+	verificationRPC, err := ethereum.NewVerificationClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL)
+	if err != nil {
+		logger.Error("verification RPC initialization failed", "error", err)
+		os.Exit(1)
+	}
+	defer verificationRPC.Close()
+	verificationService := verification.New(
+		exactfacilitator.NewExactEvmScheme(verificationRPC, nil),
+		verificationRPC,
+		database,
+		cfg.RPCTimeout,
+	)
 	registry := metrics.New()
 	statsService := stats.NewService(database, time.Now(), cfg.StatsCacheTTL)
 	var sender email.Sender = email.LogSender{Logger: logger}
@@ -57,6 +71,7 @@ func main() {
 		Metrics: registry, ExpectedChainID: cfg.ChainID, PublicRatePerMinute: cfg.PublicRatePerMin,
 		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
 		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
+		Verification: verificationService,
 	})
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.Handler(),

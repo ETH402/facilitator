@@ -19,6 +19,8 @@ type Registry struct {
 	emailVerified  atomic.Uint64
 	walletVerified atomic.Uint64
 	walletFailures atomic.Uint64
+	verifications  atomic.Uint64
+	verifyFailures atomic.Uint64
 	mu             sync.Mutex
 	status         map[string]uint64
 }
@@ -41,6 +43,8 @@ func (r *Registry) IncRegistration()              { r.registrations.Add(1) }
 func (r *Registry) IncEmailVerification()         { r.emailVerified.Add(1) }
 func (r *Registry) IncWalletVerification()        { r.walletVerified.Add(1) }
 func (r *Registry) IncWalletVerificationFailure() { r.walletFailures.Add(1) }
+func (r *Registry) IncVerification()              { r.verifications.Add(1) }
+func (r *Registry) IncVerificationFailure()       { r.verifyFailures.Add(1) }
 
 func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -54,7 +58,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(w, "# HELP eth402_http_request_duration_microseconds_total Aggregate HTTP request duration.\n# TYPE eth402_http_request_duration_microseconds_total counter\neth402_http_request_duration_microseconds_total %d\n", r.httpDuration.Load())
 	_, _ = fmt.Fprintf(w, "# HELP eth402_panics_total Recovered HTTP panics.\n# TYPE eth402_panics_total counter\neth402_panics_total %d\n", r.panicCount.Load())
 	for _, name := range []string{
-		"verification_total", "verification_failures_total", "settlement_requests_total",
+		"settlement_requests_total",
 		"settlements_confirmed_total", "settlements_failed_total", "rpc_errors_total",
 		"database_errors_total",
 	} {
@@ -65,6 +69,8 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		"email_verifications_total":          r.emailVerified.Load(),
 		"wallet_verifications_total":         r.walletVerified.Load(),
 		"wallet_verification_failures_total": r.walletFailures.Load(),
+		"verification_total":                 r.verifications.Load(),
+		"verification_failures_total":        r.verifyFailures.Load(),
 	} {
 		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s %d\n", name, name, value)
 	}

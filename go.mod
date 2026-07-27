@@ -9,6 +9,7 @@ require github.com/jackc/pgx/v5 v5.10.0
 require (
 	github.com/ethereum/go-ethereum v1.17.2
 	github.com/signinwithethereum/siwe-go v1.0.0
+	github.com/x402-foundation/x402/go/v2 v2.19.0
 	golang.org/x/crypto v0.54.0
 )
 

@@ -18,6 +18,7 @@ import (
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
 	"github.com/ETH402/facilitator/internal/stats"
+	"github.com/ETH402/facilitator/internal/verification"
 )
 
 const maxRequestBody = 1 << 20
@@ -36,6 +37,7 @@ type Dependencies struct {
 	Merchant            *merchant.Service
 	AllowedOrigin       string
 	OperatorToken       string
+	Verification        *verification.Service
 }
 
 type Server struct {
@@ -50,6 +52,8 @@ func New(dep Dependencies) *Server {
 	mux.HandleFunc("GET /health/ready", dep.ready)
 	mux.HandleFunc("GET /stats", dep.stats)
 	mux.Handle("GET /metrics", dep.Metrics)
+	mux.HandleFunc("GET /supported", dep.supported)
+	mux.HandleFunc("POST /verify", dep.verify)
 	dep.merchantRoutes(mux)
 	handler := secureHeaders(dep.AllowedOrigin, mux)
 	handler = requestLimit(handler)
@@ -58,6 +62,45 @@ func New(dep Dependencies) *Server {
 	handler = recovery(dep.Logger, dep.Metrics, handler)
 	handler = requestID(handler)
 	return &Server{handler: handler}
+}
+
+func (d Dependencies) supported(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, verification.Supported())
+}
+
+func (d Dependencies) verify(w http.ResponseWriter, r *http.Request) {
+	if d.Verification == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"isValid": false, "invalidReason": "service_unavailable",
+		})
+		return
+	}
+	var request verification.Request
+	if err := DecodeStrict(w, r, &request); err != nil {
+		d.Metrics.IncVerification()
+		d.Metrics.IncVerificationFailure()
+		if recordErr := d.Verification.RecordInvalidRequest(r.Context()); recordErr != nil {
+			d.Logger.ErrorContext(r.Context(), "invalid verification request recording failed", "error", recordErr)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"isValid": false, "invalidReason": "invalid_request",
+		})
+		return
+	}
+	d.Metrics.IncVerification()
+	response, err := d.Verification.Verify(r.Context(), request)
+	if err != nil {
+		d.Metrics.IncVerificationFailure()
+		d.Logger.ErrorContext(r.Context(), "payment verification failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"isValid": false, "invalidReason": "service_unavailable",
+		})
+		return
+	}
+	if !response.IsValid {
+		d.Metrics.IncVerificationFailure()
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
@@ -191,6 +234,7 @@ func observe(registry *metrics.Registry, next http.Handler) http.Handler {
 func knownRoute(path string) string {
 	switch path {
 	case "/health/live", "/health/ready", "/metrics", "/stats",
+		"/supported", "/verify",
 		"/v1/merchants/register", "/v1/merchants/verify-email",
 		"/v1/merchants/wallet-challenge", "/v1/merchants/verify-wallet",
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",

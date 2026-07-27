@@ -8,8 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ETH402/facilitator/internal/migrate"
+	"github.com/ETH402/facilitator/internal/verification"
 	"github.com/ETH402/facilitator/migrations"
 	"github.com/jackc/pgx/v5"
 )
@@ -93,6 +95,56 @@ func TestMigrationsConstraintsAndStats(t *testing.T) {
 		got.TotalVerifications != 2 || got.ConfirmedSettlements != 1 ||
 		got.TotalPaymentVolumeAtomic != "1000001" {
 		t.Fatalf("unexpected database aggregate: %+v", got)
+	}
+
+	attempt := verification.Attempt{
+		PaymentIdentity: "pay_" + repeat("d", 64),
+		Result:          "verified",
+		Payment: &verification.Payment{
+			Identity:  "pay_" + repeat("d", 64),
+			Asset:     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+			Payer:     "0x3333333333333333333333333333333333333333",
+			Recipient: "0x1111111111111111111111111111111111111111",
+			Amount:    "42", Nonce: "0x" + repeat("e", 64),
+			ValidAfter: time.Now().Add(-time.Minute), ValidBefore: time.Now().Add(time.Minute),
+			PayloadHash: repeat("f", 64),
+		},
+	}
+	var recordWait sync.WaitGroup
+	var recordFailures atomic.Int32
+	for range 2 {
+		recordWait.Add(1)
+		go func() {
+			defer recordWait.Done()
+			if err := store.RecordVerification(ctx, attempt); err != nil {
+				recordFailures.Add(1)
+			}
+		}()
+	}
+	recordWait.Wait()
+	if recordFailures.Load() != 0 {
+		t.Fatalf("duplicate verification recording failed %d times", recordFailures.Load())
+	}
+	var payments, attempts, transitions int
+	if err := store.Pool.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM payment_records WHERE payment_identity=$1),
+  (SELECT count(*) FROM verification_attempts WHERE payment_identity=$1),
+  (SELECT count(*) FROM payment_transitions t JOIN payment_records p ON p.id=t.payment_id WHERE p.payment_identity=$1)
+`, attempt.PaymentIdentity).Scan(&payments, &attempts, &transitions); err != nil {
+		t.Fatal(err)
+	}
+	if payments != 1 || attempts != 2 || transitions != 1 {
+		t.Fatalf("payments=%d attempts=%d transitions=%d", payments, attempts, transitions)
+	}
+	conflict := attempt
+	conflict.PaymentIdentity = "pay_" + repeat("1", 64)
+	conflict.Payment = &verification.Payment{}
+	*conflict.Payment = *attempt.Payment
+	conflict.Payment.Identity = conflict.PaymentIdentity
+	conflict.Payment.PayloadHash = repeat("2", 64)
+	if err := store.RecordVerification(ctx, conflict); err == nil {
+		t.Fatal("same on-chain nonce with a different payment identity was accepted")
 	}
 }
 
