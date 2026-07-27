@@ -13,9 +13,11 @@ within bounds; transaction broadcast must not retry blindly. Alert on RPC/DB
 errors, worker health, confirmation lag, pending age, signer failures, revert
 rate, gas policy blocks, and stats-query failure.
 
-Gas maximums are typed decimal configuration but remain zero/disabled in the
-current build. Milestone 3 must require explicit non-zero policy before enabling
-any settlement signer.
+Gas maximums are typed decimal configuration and remain zero/disabled in the
+current build. Enabling any non-disabled `ETH402_SIGNER_MODE` now requires
+non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and `ETH402_MAX_GAS_LIMIT`: zero means
+unset, not unlimited, so a signer cannot be switched on without an explicit
+spend ceiling. A priority fee above the total fee ceiling is also rejected.
 
 Logs are structured JSON. Never log keys, tokens, signatures, raw
 authorizations, signed transactions, or unredacted email. Back up PostgreSQL,

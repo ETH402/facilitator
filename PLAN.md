@@ -56,10 +56,18 @@ remain deliberately unavailable.
 
 ## Milestone 3 — settlement
 
-Implement `/settle`, durable intent, transaction nonce coordination,
-simulation, gas estimation and policy, signer integration, idempotent
-broadcast/confirmation workers, ambiguous-RPC recovery, replacements, dropped
-transactions, reorg handling, and confirmed-only volume.
+Status: design in progress on `milestone-3-settlement`. The execution model is
+recorded in [ADR-0004](docs/decisions/0004-settlement-execution-model.md), which
+still carries open questions that must be resolved before `/settle` is written.
+
+- [x] mandatory gas policy before any signer can be enabled
+- [ ] resolve ADR-0004 open questions: signer backend, `/settle` authentication,
+      worker leasing, expiry semantics
+- [ ] durable nonce allocation and settlement intent
+- [ ] signer interface carrying nonce and EIP-1559 fields
+- [ ] idempotent broadcast and confirmation workers
+- [ ] ambiguous-RPC recovery, replacements, dropped transactions, reorg handling
+- [ ] `/settle` endpoint and confirmed-only volume
 
 ## Milestone 4 — public deployment
 

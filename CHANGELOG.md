@@ -17,7 +17,15 @@ versioned where noted.
   v2.19.0 types/verifier, durable verification attempts, and version 0.3
   OpenAPI contract.
 
+### Added
+
+- Milestone 3 settlement execution model as ADR-0004 (proposed), covering durable
+  nonce allocation, ambiguous-broadcast handling, and the finality cut.
+
 ### Changed
+
+- Enabling a settlement signer now requires non-zero max fee per gas and max gas
+  limit, and a priority fee may not exceed the total fee ceiling.
 
 - Rate limits key on the client address resolved through `ETH402_TRUSTED_PROXIES`
   instead of the direct peer, which collapsed all traffic behind a reverse proxy

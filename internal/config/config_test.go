@@ -49,6 +49,42 @@ func TestProductionSafety(t *testing.T) {
 	}
 }
 
+func TestSignerRequiresExplicitGasCeiling(t *testing.T) {
+	t.Parallel()
+	// Zero means unset, so a signer must not be enablable without a ceiling.
+	for _, mode := range []string{"development", "external"} {
+		cfg := validConfig()
+		cfg.SignerMode = mode
+		cfg.DevSignerKey = "development-only-placeholder"
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("signer mode %q accepted with zero gas policy", mode)
+		}
+		cfg.MaxFeePerGasWei = "30000000000"
+		cfg.MaxGasLimit = 120000
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("signer mode %q rejected with explicit gas policy: %v", mode, err)
+		}
+	}
+	// The disabled signer keeps working with the zero placeholders.
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("disabled signer rejected: %v", err)
+	}
+}
+
+func TestPriorityFeeCannotExceedMaxFee(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.MaxFeePerGasWei = "1000"
+	cfg.MaxPriorityFeeWei = "1001"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("priority fee above max fee accepted")
+	}
+	cfg.MaxPriorityFeeWei = "1000"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("priority fee equal to max fee rejected: %v", err)
+	}
+}
+
 func TestUnknownEmailBackendRejected(t *testing.T) {
 	t.Parallel()
 	cfg := validConfig()

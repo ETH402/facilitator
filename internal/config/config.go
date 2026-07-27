@@ -152,13 +152,23 @@ func (c Config) Validate() error {
 	if c.EmailBackend != "log" && c.EmailBackend != "file" {
 		errs = append(errs, errors.New("email backend must be log or file in this build"))
 	}
-	for name, value := range map[string]string{
-		"max fee per gas": c.MaxFeePerGasWei, "max priority fee per gas": c.MaxPriorityFeeWei,
-	} {
-		n, ok := new(big.Int).SetString(value, 10)
-		if !ok || n.Sign() < 0 {
-			errs = append(errs, fmt.Errorf("%s must be an unsigned decimal integer", name))
-		}
+	maxFee, maxFeeOK := new(big.Int).SetString(c.MaxFeePerGasWei, 10)
+	priorityFee, priorityFeeOK := new(big.Int).SetString(c.MaxPriorityFeeWei, 10)
+	if !maxFeeOK || maxFee.Sign() < 0 {
+		errs = append(errs, errors.New("max fee per gas must be an unsigned decimal integer"))
+	}
+	if !priorityFeeOK || priorityFee.Sign() < 0 {
+		errs = append(errs, errors.New("max priority fee per gas must be an unsigned decimal integer"))
+	}
+	// EIP-1559 requires the priority fee to fit inside the total fee ceiling. A
+	// zero ceiling means "unset" and is checked by the signer gate below.
+	if maxFeeOK && priorityFeeOK && maxFee.Sign() > 0 && priorityFee.Cmp(maxFee) > 0 {
+		errs = append(errs, errors.New("max priority fee per gas must not exceed max fee per gas"))
+	}
+	// A settlement signer must never operate without an explicit spend ceiling:
+	// zero means unset, not unlimited. See docs/OPERATIONS.md.
+	if c.SignerMode != "disabled" && (!maxFeeOK || maxFee.Sign() <= 0 || c.MaxGasLimit == 0) {
+		errs = append(errs, errors.New("enabling a settlement signer requires non-zero max fee per gas and max gas limit"))
 	}
 	seenDomains := make(map[string]bool, len(c.EmailAllowlist))
 	for _, domain := range c.EmailAllowlist {
