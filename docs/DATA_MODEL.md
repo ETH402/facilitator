@@ -15,6 +15,19 @@ Migration `000001_initial` creates:
 - `audit_events`: append-only security events with secret-free JSON metadata.
 - `merchant_suspensions`: operator reason and reinstatement history.
 
+Migration `000002_signer_accounts` adds:
+
+- `signer_accounts`: one row per settlement signer address holding `next_nonce`.
+  Allocation is a single `UPDATE … RETURNING` inside the caller's transaction, so
+  the row lock serialises concurrent allocations and a rolled-back settlement
+  reissues rather than burns its nonce. The chain seeds and reconciles this value
+  but never allocates from it; two concurrent reads of `eth_getTransactionCount`
+  return the same nonce and one of the resulting transactions is silently
+  dropped. See [ADR-0004](decisions/0004-settlement-execution-model.md).
+- `payment_records.claimed_by` and `claimed_until`: worker leases, so a worker
+  does not hold a database transaction open across Ethereum RPC calls. The pair
+  is constrained to be set or unset together.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

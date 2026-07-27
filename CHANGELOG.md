@@ -19,6 +19,13 @@ versioned where noted.
 
 ### Added
 
+- Durable Ethereum nonce allocation (`signer_accounts`) and worker lease columns
+  in migration `000002`. Allocation joins the caller's transaction, so a nonce is
+  never consumed without a durable record and a rolled-back settlement reissues
+  rather than gaps the sequence.
+- `signer.Transaction` now carries nonce and EIP-1559 fields with fail-closed
+  validation rejecting non-mainnet chains, non-zero ether value, absent gas
+  ceilings, and a priority fee above the total fee.
 - Milestone 3 settlement execution model as ADR-0004 (accepted), covering durable
   nonce allocation, a single signer address on GCP Cloud KMS, recipient-gated
   `/settle` admission, lease-based workers, ambiguous-broadcast handling, an
