@@ -37,7 +37,6 @@ versioned where noted.
 
 - Enabling a settlement signer now requires non-zero max fee per gas and max gas
   limit, and a priority fee may not exceed the total fee ceiling.
-
 - Rate limits key on the client address resolved through `ETH402_TRUSTED_PROXIES`
   instead of the direct peer, which collapsed all traffic behind a reverse proxy
   into a single bucket. IPv6 clients are grouped by `/64`.
