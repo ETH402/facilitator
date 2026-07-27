@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	siwe "github.com/signinwithethereum/siwe-go"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -81,10 +82,45 @@ func NewChallenge(merchantID, address, action string, now time.Time, ttl time.Du
 	}, nil
 }
 
-// Message returns an EIP-4361-style human-readable challenge. Signature
-// verification is intentionally deferred to Milestone 1.
+// Message returns the EIP-4361 human-readable challenge verified by
+// VerifyMessage.
 func (c Challenge) Message() string {
 	return fmt.Sprintf("%s wants you to sign in with your Ethereum account:\n%s\n\nAuthorize ETH402 recipient control\n\nURI: https://%s\nVersion: 1\nChain ID: %d\nNonce: %s\nIssued At: %s\nExpiration Time: %s\nRequest ID: %s\nResources:\n- urn:eth402:action:%s",
 		Domain, c.Address, Domain, c.ChainID, c.Nonce,
 		c.IssuedAt.Format(time.RFC3339), c.ExpiresAt.Format(time.RFC3339), c.MerchantID, c.Action)
+}
+
+func VerifyMessage(message, signature, merchantID, expectedAddress, action string, now time.Time) error {
+	parsed, err := siwe.ParseMessage(message)
+	if err != nil {
+		return fmt.Errorf("parse SIWE message: %w", err)
+	}
+	normalized, err := NormalizeAddress(expectedAddress)
+	if err != nil {
+		return err
+	}
+	if parsed.Domain != Domain || parsed.URI != "https://"+Domain || parsed.ChainID != 1 ||
+		parsed.RequestID == nil || *parsed.RequestID != merchantID ||
+		strings.ToLower(parsed.Address.Hex()) != normalized {
+		return errors.New("SIWE challenge binding mismatch")
+	}
+	resource := "urn:eth402:action:" + action
+	if len(parsed.Resources) != 1 || parsed.Resources[0] != resource {
+		return errors.New("SIWE action binding mismatch")
+	}
+	issued, err := time.Parse(time.RFC3339, parsed.IssuedAt)
+	if err != nil || issued.After(now.Add(time.Minute)) {
+		return errors.New("invalid SIWE issue time")
+	}
+	if parsed.ExpirationTime == nil {
+		return errors.New("SIWE expiration is required")
+	}
+	expires, err := time.Parse(time.RFC3339, *parsed.ExpirationTime)
+	if err != nil || !now.Before(expires) {
+		return errors.New("SIWE challenge expired")
+	}
+	if _, err := parsed.VerifyEIP191(signature); err != nil {
+		return fmt.Errorf("verify SIWE signature: %w", err)
+	}
+	return nil
 }

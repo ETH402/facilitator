@@ -12,6 +12,7 @@ func validConfig() Config {
 		SignerMode: "disabled", EmailBackend: "log", EmailTokenTTL: 1,
 		EmailResend: 1, WalletChallengeTTL: 1, WorkerInterval: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
+		TermsVersion: "test", APIKeyPepper: "01234567890123456789012345678901",
 	}
 }
 
@@ -42,5 +43,23 @@ func TestProductionSafety(t *testing.T) {
 	cfg.DevSignerKey = "secret"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("unsafe production config accepted")
+	}
+}
+
+func TestUnknownEmailBackendRejected(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.EmailBackend = "smtp"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unimplemented email backend accepted")
+	}
+}
+
+func TestPublicBaseURLMustBeOrigin(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.PublicBaseURL = "https://eth402.org/path?token=unsafe"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("public base URL with path and query accepted")
 	}
 }

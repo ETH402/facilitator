@@ -26,7 +26,7 @@ type Sender interface {
 type LogSender struct{ Logger *slog.Logger }
 
 func (s LogSender) Send(_ context.Context, m Message) error {
-	s.Logger.Info("development email delivery", "to", m.To, "subject", m.Subject, "body_redacted", true)
+	s.Logger.Info("development email delivery", "to", m.To, "subject", m.Subject, "body", m.TextBody)
 	return nil
 }
 

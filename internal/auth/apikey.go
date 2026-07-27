@@ -2,11 +2,13 @@ package auth
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ETH402/facilitator/internal/secret"
 )
 
 const keyPrefix = "eth402_live_"
+const lookupCharacters = 12
 
 type GeneratedKey struct {
 	FullValue string
@@ -23,5 +25,14 @@ func GenerateAPIKey(pepper []byte) (GeneratedKey, error) {
 		return GeneratedKey{}, err
 	}
 	full := keyPrefix + random
-	return GeneratedKey{FullValue: full, Prefix: secret.Prefix(full), Hash: secret.KeyedHash(pepper, full)}, nil
+	return GeneratedKey{FullValue: full, Prefix: LookupPrefix(full), Hash: secret.KeyedHash(pepper, full)}, nil
+}
+
+// LookupPrefix returns a non-secret 72-bit identifier used to select the
+// candidate database row before constant-time hash comparison.
+func LookupPrefix(value string) string {
+	if !strings.HasPrefix(value, keyPrefix) || len(value) < len(keyPrefix)+lookupCharacters {
+		return ""
+	}
+	return value[:len(keyPrefix)+lookupCharacters]
 }

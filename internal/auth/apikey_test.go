@@ -22,6 +22,9 @@ func TestGenerateAPIKey(t *testing.T) {
 	if a.FullValue == b.FullValue || a.Prefix == "" || a.Hash == a.FullValue {
 		t.Fatal("key generation properties violated")
 	}
+	if len(a.Prefix) != len("eth402_live_")+lookupCharacters || LookupPrefix(a.FullValue) != a.Prefix {
+		t.Fatal("lookup prefix does not contain the expected entropy")
+	}
 	got, _ := hex.DecodeString(secret.KeyedHash(pepper, a.FullValue))
 	want, _ := hex.DecodeString(a.Hash)
 	if subtle.ConstantTimeCompare(got, want) != 1 {

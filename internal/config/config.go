@@ -42,6 +42,10 @@ type Config struct {
 	EmailTokenTTL      time.Duration
 	EmailResend        time.Duration
 	WalletChallengeTTL time.Duration
+	RecipientCooldown  time.Duration
+	TermsVersion       string
+	APIKeyPepper       string
+	OperatorToken      string
 	BlockDisposable    bool
 	RestrictFreeEmail  bool
 	EmailAllowlist     []string
@@ -80,6 +84,10 @@ func Load() (Config, error) {
 		EmailTokenTTL:      envDuration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
 		EmailResend:        envDuration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
 		WalletChallengeTTL: envDuration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
+		RecipientCooldown:  envDuration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
+		TermsVersion:       env("ETH402_TERMS_VERSION", "2026-07-27"),
+		APIKeyPepper:       env("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
+		OperatorToken:      os.Getenv("ETH402_OPERATOR_TOKEN"),
 		BlockDisposable:    envBool("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
 		RestrictFreeEmail:  envBool("ETH402_FREE_EMAIL_RESTRICTION", false),
 		EmailAllowlist:     envCSV("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
@@ -113,8 +121,10 @@ func (c Config) Validate() error {
 	if c.HTTPAddr == "" {
 		errs = append(errs, errors.New("HTTP address is required"))
 	}
-	if u, err := url.Parse(c.PublicBaseURL); err != nil || u.Scheme == "" || u.Host == "" {
-		errs = append(errs, errors.New("public base URL must be absolute"))
+	if u, err := url.Parse(c.PublicBaseURL); err != nil || u.Scheme == "" || u.Host == "" ||
+		(u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" ||
+		u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		errs = append(errs, errors.New("public base URL must be an HTTP(S) origin without credentials, query, or path"))
 	}
 	if c.DatabaseURL == "" {
 		errs = append(errs, errors.New("database URL is required"))
@@ -134,8 +144,17 @@ func (c Config) Validate() error {
 	if c.PublicRatePerMin < 1 || c.RegistrationRate < 1 {
 		errs = append(errs, errors.New("rate limits must be positive"))
 	}
-	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
+	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.RecipientCooldown < 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
 		errs = append(errs, errors.New("durations must be positive (stats cache may be zero)"))
+	}
+	if len(c.APIKeyPepper) < 32 {
+		errs = append(errs, errors.New("API key pepper must be at least 32 bytes"))
+	}
+	if c.TermsVersion == "" {
+		errs = append(errs, errors.New("terms version is required"))
+	}
+	if c.EmailBackend != "log" && c.EmailBackend != "file" {
+		errs = append(errs, errors.New("email backend must be log or file in this build"))
 	}
 	for name, value := range map[string]string{
 		"max fee per gas": c.MaxFeePerGasWei, "max priority fee per gas": c.MaxPriorityFeeWei,
@@ -169,6 +188,12 @@ func (c Config) Validate() error {
 		}
 		if (c.SignerMode == "development" || c.DevSignerKey != "") && !c.AllowUnsafeSigner {
 			errs = append(errs, errors.New("raw development signer is forbidden in production"))
+		}
+		if c.APIKeyPepper == "eth402-development-pepper-change-me" {
+			errs = append(errs, errors.New("development API key pepper is forbidden in production"))
+		}
+		if c.OperatorToken != "" && len(c.OperatorToken) < 32 {
+			errs = append(errs, errors.New("production operator token must be at least 32 bytes"))
 		}
 	}
 	return errors.Join(errs...)

@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"strings"
 )
 
 func Token(bytes int) (string, error) {
@@ -46,14 +45,4 @@ func Redact(value string) string {
 		return "[REDACTED]"
 	}
 	return value[:5] + "…" + value[len(value)-3:]
-}
-
-func Prefix(value string) string {
-	if i := strings.IndexByte(value, '_'); i >= 0 && len(value) >= i+9 {
-		return value[:i+9]
-	}
-	if len(value) > 8 {
-		return value[:8]
-	}
-	return value
 }

@@ -1,9 +1,13 @@
 package walletproof
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/crypto"
+	siwe "github.com/signinwithethereum/siwe-go"
 )
 
 func TestChallengeBindsSecurityContext(t *testing.T) {
@@ -17,6 +21,57 @@ func TestChallengeBindsSecurityContext(t *testing.T) {
 		if !strings.Contains(c.Message(), value) {
 			t.Fatalf("challenge does not bind %q", value)
 		}
+	}
+}
+
+func TestVerifyMessage(t *testing.T) {
+	t.Parallel()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge, err := NewChallenge("merchant-123", address, "verify-recipient", now, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := siwe.ParseMessage(challenge.Message())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := crypto.Sign(parsed.EIP191Hash().Bytes(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig[64] += 27
+	signature := "0x" + hex.EncodeToString(sig)
+	if err := VerifyMessage(challenge.Message(), signature, "merchant-123", address, "verify-recipient", now); err != nil {
+		t.Fatalf("valid signature rejected: %v", err)
+	}
+	if err := VerifyMessage(challenge.Message()+" ", signature, "merchant-123", address, "verify-recipient", now); err == nil {
+		t.Fatal("modified challenge accepted")
+	}
+	if err := VerifyMessage(challenge.Message(), signature, "wrong-merchant", address, "verify-recipient", now); err == nil {
+		t.Fatal("wrong merchant binding accepted")
+	}
+	if err := VerifyMessage(challenge.Message(), "0xdeadbeef", "merchant-123", address, "verify-recipient", now); err == nil {
+		t.Fatal("malformed signature accepted")
+	}
+	wrongKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSignature, err := crypto.Sign(parsed.EIP191Hash().Bytes(), wrongKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSignature[64] += 27
+	if err := VerifyMessage(challenge.Message(), "0x"+hex.EncodeToString(wrongSignature), "merchant-123", address, "verify-recipient", now); err == nil {
+		t.Fatal("wrong signer accepted")
+	}
+	if err := VerifyMessage(challenge.Message(), signature, "merchant-123", address, "verify-recipient", now.Add(11*time.Minute)); err == nil {
+		t.Fatal("expired signature accepted")
 	}
 }
 
