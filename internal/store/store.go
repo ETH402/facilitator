@@ -93,7 +93,10 @@ INSERT INTO payment_records (
 )
 VALUES (
   $1,
-  (SELECT id FROM merchants WHERE recipient_address = $2 AND status = 'active' LIMIT 1),
+  -- Recipient addresses are not unique across merchants, so attribution is
+  -- pinned to the oldest active claimant to stay stable across retries.
+  (SELECT id FROM merchants WHERE recipient_address = $2 AND status = 'active'
+     ORDER BY created_at, id LIMIT 1),
   2, 'exact', 'eip155:1', $3, $4, $2, $5, $6, $7, $8, $9, 'pending', 'received'
 )
 ON CONFLICT (payment_identity) DO NOTHING

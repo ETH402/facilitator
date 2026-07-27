@@ -27,7 +27,7 @@ provide honest chain data; external signer policy works. Residual risk remains.
 | Dependency compromise | build/runtime | code execution | minimal deps, checksums, pinned CI, review | vuln/SBOM scans | upstream compromise |
 | Supply-chain attack | release image | fleet compromise | minimal CI permissions, SHA actions, signed artifacts | provenance verification | maintainer account loss |
 | Secret leakage | keys/tokens | account/fund loss | redaction, secret manager, no raw logs/tests | secret scanning | memory/host forensics |
-| Metrics leakage | merchant/privacy | correlation | no high-cardinality labels, `ETH402_METRICS_ENABLED` gate, proxy refuses `/metrics` | schema review | traffic inference |
+| Metrics leakage | merchant/privacy | correlation | no high-cardinality labels, bounded route labels, `ETH402_METRICS_ENABLED` gate, proxy refuses `/metrics` | schema review | traffic inference |
 | Public-stats abuse | availability/privacy | scraping/DoS/inference | aggregate-only, cache, rate limits | request alerts | coarse business inference |
 | Rate-limit evasion | availability; client forges `X-Forwarded-For` or rotates addresses | limit bypass, shared-bucket DoS | trusted-proxy allowlist, rightmost-untrusted selection, header ignored from untrusted peers, IPv6 grouped by `/64` | limit-rejection alerts | misconfigured proxy list; large address pools |
 | Verification-record growth | storage/availability; unauthenticated `/verify` flood | disk exhaustion, stats noise | per-client rate limits, aggregate-only rows, no payment row before success | table-size and attempt-rate alerts | append-only table cannot be pruned by the runtime role |

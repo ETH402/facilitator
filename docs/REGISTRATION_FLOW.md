@@ -24,4 +24,7 @@ throttled. Disposable/free-provider and domain lists are operator controls,
 not proof of legitimacy. A determined actor can create multiple accounts.
 
 Recipient changes require API-key authentication, a fresh challenge for the
-new address, policy cooldown, append-only history, and an audit event.
+new address, policy cooldown, append-only history, and an audit event. The
+cooldown is measured from the most recent verified recipient proof in
+`recipient_address_history`, so unrelated merchant writes such as operator
+suspension and reinstatement neither extend nor reset it.

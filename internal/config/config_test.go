@@ -67,6 +67,26 @@ func requiredEnv(t *testing.T) {
 	t.Setenv("ETH402_API_KEY_PEPPER", "01234567890123456789012345678901")
 }
 
+func TestMalformedNumericValueIsReportedByName(t *testing.T) {
+	requiredEnv(t)
+	// A silent fallback here previously reported an unrelated validation
+	// failure, or none at all when zero happened to be permitted.
+	t.Setenv("ETH402_MAX_GAS_LIMIT", "not-a-number")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "ETH402_MAX_GAS_LIMIT") {
+		t.Fatalf("error = %v, want one naming ETH402_MAX_GAS_LIMIT", err)
+	}
+}
+
+func TestMalformedDurationIsReportedByName(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("ETH402_RPC_TIMEOUT", "5 seconds")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "ETH402_RPC_TIMEOUT") {
+		t.Fatalf("error = %v, want one naming ETH402_RPC_TIMEOUT", err)
+	}
+}
+
 func TestTrustedProxiesParsing(t *testing.T) {
 	requiredEnv(t)
 	t.Setenv("ETH402_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.5, 2001:db8::/32")

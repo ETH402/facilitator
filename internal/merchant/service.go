@@ -124,8 +124,13 @@ func (s *Service) Register(ctx context.Context, in Registration, requestID strin
 		ON CONFLICT DO NOTHING RETURNING id`, in.Name, in.Email, domain, in.Website, in.Description, recipient, s.cfg.TermsVersion, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT id FROM merchants WHERE business_email=$1 AND status <> 'rejected'`, in.Email).Scan(&id)
-		if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The conflicting row was rejected between the insert and this
+			// read. Stay silent so the response cannot distinguish states.
 			return nil
+		}
+		if err != nil {
+			return err
 		}
 		var last time.Time
 		err = tx.QueryRow(ctx, `SELECT coalesce(max(sent_at),'-infinity') FROM email_verification_tokens WHERE merchant_id=$1`, id).Scan(&last)
@@ -325,11 +330,19 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 		}
 	} else {
 		var previous string
-		var updated time.Time
-		if err = tx.QueryRow(ctx, `SELECT recipient_address,updated_at FROM merchants WHERE id=$1 AND status='active' FOR UPDATE`, merchantID).Scan(&previous, &updated); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT recipient_address FROM merchants WHERE id=$1 AND status='active' FOR UPDATE`, merchantID).Scan(&previous); err != nil {
 			return "", ErrForbidden
 		}
-		if now.Sub(updated) < s.cfg.RecipientCooldown {
+		// The cooldown is anchored to the last recipient proof rather than to
+		// merchants.updated_at, which unrelated writes such as operator
+		// reinstatement would otherwise push forward.
+		var lastChange time.Time
+		if err = tx.QueryRow(ctx,
+			`SELECT coalesce(max(verified_at),'-infinity') FROM recipient_address_history WHERE merchant_id=$1`,
+			merchantID).Scan(&lastChange); err != nil {
+			return "", err
+		}
+		if now.Sub(lastChange) < s.cfg.RecipientCooldown {
 			return "", ErrThrottled
 		}
 		if _, err = tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,wallet_verified_at=$3,updated_at=$3 WHERE id=$1`, merchantID, strings.ToLower(address), now); err != nil {

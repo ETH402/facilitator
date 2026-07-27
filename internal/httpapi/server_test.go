@@ -228,6 +228,24 @@ func TestMetricsEndpointGatedByConfiguration(t *testing.T) {
 	}
 }
 
+func TestKnownRouteCollapsesIdentifiers(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"/v1/api-keys": "/v1/api-keys",
+		"/v1/api-keys/7c9e6679-7425-40de-944b-e07fc1f90ae7": "/v1/api-keys/{id}",
+		"/v1/admin/merchants/abc/suspend":                   "/v1/admin/merchants/{id}/suspend",
+		"/v1/admin/merchants/abc/reinstate":                 "/v1/admin/merchants/{id}/reinstate",
+		"/v1/admin/merchants/abc/delete":                    "unknown",
+		"/v1/api-keys/abc/extra":                            "unknown",
+		"/nonsense":                                         "unknown",
+	}
+	for path, want := range cases {
+		if got := knownRoute(path); got != want {
+			t.Fatalf("knownRoute(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestCORSDeniedByDefault(t *testing.T) {
 	t.Parallel()
 	request := httptest.NewRequest(http.MethodGet, "/stats", nil)

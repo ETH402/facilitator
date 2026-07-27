@@ -249,9 +249,41 @@ func knownRoute(path string) string {
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",
 		"/v1/me/recipient-change/verify":
 		return path
-	default:
-		return "unknown"
 	}
+	// Routes carrying an identifier are reported as their registered pattern so
+	// that per-route metrics stay bounded and do not leak merchant or key IDs.
+	for _, pattern := range []string{
+		"/v1/api-keys/{id}",
+		"/v1/admin/merchants/{id}/suspend",
+		"/v1/admin/merchants/{id}/reinstate",
+	} {
+		if matchesPattern(path, pattern) {
+			return pattern
+		}
+	}
+	return "unknown"
+}
+
+// matchesPattern reports whether path has the same shape as a ServeMux pattern
+// whose only wildcard is a single non-empty path segment.
+func matchesPattern(path, pattern string) bool {
+	pathSegments := strings.Split(strings.Trim(path, "/"), "/")
+	patternSegments := strings.Split(strings.Trim(pattern, "/"), "/")
+	if len(pathSegments) != len(patternSegments) {
+		return false
+	}
+	for i, segment := range patternSegments {
+		if strings.HasPrefix(segment, "{") {
+			if pathSegments[i] == "" {
+				return false
+			}
+			continue
+		}
+		if pathSegments[i] != segment {
+			return false
+		}
+	}
+	return true
 }
 
 type rateLimiter struct {

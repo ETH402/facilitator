@@ -24,6 +24,18 @@ versioned where noted.
   into a single bucket. IPv6 clients are grouped by `/64`.
 - `ETH402_METRICS_ENABLED` now actually gates the `/metrics` route; it was parsed
   and validated but never read.
+- The recipient-change cooldown is measured from the last verified recipient
+  proof rather than `merchants.updated_at`, which unrelated writes such as
+  operator reinstatement silently pushed forward.
+- Malformed numeric, duration, and boolean environment values are reported by
+  variable name instead of collapsing to a sentinel that validation either
+  misattributed or accepted.
+- Per-route metrics report identifier-bearing paths as their registered pattern
+  rather than `unknown`.
+- Payment-to-merchant attribution orders active claimants deterministically when
+  more than one merchant shares a recipient address.
+- Registration surfaces unexpected database errors instead of reporting success,
+  while keeping duplicate registrations enumeration-resistant.
 
 ### Security
 
