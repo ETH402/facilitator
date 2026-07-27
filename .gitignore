@@ -1,0 +1,9 @@
+.env
+.DS_Store
+/bin/
+/coverage/
+*.out
+*.log
+email-outbox/
+.idea/
+.vscode/
