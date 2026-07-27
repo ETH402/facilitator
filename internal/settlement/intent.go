@@ -1,0 +1,82 @@
+package settlement
+
+import (
+	"errors"
+	"time"
+)
+
+// Reason codes recorded against a rejected settlement attempt. They are part of
+// the durable record, so they are stable strings rather than error text.
+const (
+	ReasonPaymentNotFound       = "payment_not_found"
+	ReasonPaymentNotVerified    = "payment_not_verified"
+	ReasonRecipientNotMerchant  = "recipient_not_registered"
+	ReasonAuthorizationExpiring = "authorization_expiring"
+)
+
+var (
+	// ErrPaymentNotFound means no verified payment exists for the identity.
+	ErrPaymentNotFound = errors.New("payment record not found")
+
+	// ErrPaymentNotVerified means the payment is not in a state from which
+	// settlement may begin. Retrying will not help without operator action.
+	ErrPaymentNotVerified = errors.New("payment is not awaiting settlement")
+
+	// ErrRecipientNotMerchant means payTo does not resolve to an active
+	// registered merchant. ADR-0004 decision 9: an attacker can always produce a
+	// valid authorization moving USDC between wallets they own, which verification
+	// cannot reject, so gas is only ever spent on behalf of a party that accepted
+	// terms and can be suspended.
+	ErrRecipientNotMerchant = errors.New("payment recipient is not an active registered merchant")
+
+	// ErrAuthorizationExpiring means valid_before falls inside the configured
+	// margin. EIP-3009 enforces validBefore on-chain, so broadcasting now would
+	// pay gas for a transaction that predictably reverts.
+	ErrAuthorizationExpiring = errors.New("authorization expires within the settlement margin")
+)
+
+// IntentRequest asks for a durable settlement intent. The margin and clock are
+// inputs so the policy is testable and owned by the caller rather than buried in
+// persistence.
+type IntentRequest struct {
+	PaymentIdentity string
+	SignerAddress   string
+	ExpiryMargin    time.Duration
+	Now             time.Time
+}
+
+// Intent is a committed settlement intent. Its nonce is durably owned by the
+// transaction identified by TransactionID, which is what allows a crash between
+// commit and broadcast to be resolved by reconciliation instead of by signing
+// something new (ADR-0004 decision 3).
+type Intent struct {
+	PaymentID       string
+	PaymentIdentity string
+	TransactionID   string
+	SignerAddress   string
+	Nonce           uint64
+
+	// Duplicate reports that an active transaction already existed for this
+	// payment, so no new nonce was allocated and the existing intent is returned
+	// unchanged. Settlement is idempotent per payment.
+	Duplicate bool
+}
+
+// Validate checks the request shape before any database work.
+func (r IntentRequest) Validate() error {
+	var errs []error
+	if r.PaymentIdentity == "" {
+		errs = append(errs, errors.New("payment identity is required"))
+	}
+	if r.SignerAddress == "" {
+		errs = append(errs, errors.New("signer address is required"))
+	}
+	if r.ExpiryMargin <= 0 {
+		// Zero would mean broadcasting an authorization that expires this second.
+		errs = append(errs, errors.New("expiry margin must be positive"))
+	}
+	if r.Now.IsZero() {
+		errs = append(errs, errors.New("current time is required"))
+	}
+	return errors.Join(errs...)
+}

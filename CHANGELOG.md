@@ -19,6 +19,13 @@ versioned where noted.
 
 ### Added
 
+- Durable settlement intent. One transaction locks the payment, applies admission
+  (verified state, recipient is an active registered merchant, authorization not
+  inside the expiry margin), allocates the nonce, moves the payment to
+  `broadcasting`, and writes the `intent` transaction row. Idempotent per payment:
+  a second request returns the existing intent and its nonce rather than
+  allocating another. Refusals are committed as `settlement_attempts` rows with a
+  stable reason code and consume no nonce. Nothing is signed or broadcast.
 - Durable Ethereum nonce allocation (`signer_accounts`) and worker lease columns
   in migration `000002`. Allocation joins the caller's transaction, so a nonce is
   never consumed without a durable record and a rolled-back settlement reissues
