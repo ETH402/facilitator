@@ -411,7 +411,10 @@ components:
       properties:
         scheme: { const: exact }
         network: { const: "eip155:1" }
-        asset: { const: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }
+        asset:
+          allOf:
+            - { $ref: "#/components/schemas/EthereumAddress" }
+          description: Canonical Ethereum-mainnet USDC; comparison is case-insensitive.
         amount: { type: string, pattern: "^[0-9]+$" }
         payTo: { $ref: "#/components/schemas/EthereumAddress" }
         maxTimeoutSeconds: { type: integer }
