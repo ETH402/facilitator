@@ -15,9 +15,11 @@ curl http://localhost/health/ready
 curl http://localhost/stats
 ```
 
-The logging email backend records only delivery metadata. The file backend
-writes mode-0600 JSON under `email-outbox/` and is forbidden in production.
-No development private key is supplied by default and signing is disabled.
+The logging email backend emits the verification body so the development link
+can be used; the file backend writes mode-0600 JSON under `email-outbox/`.
+Both expose raw email tokens by design and are forbidden in production. Never
+copy these logs or files to shared systems. No development private key is
+supplied by default and signing is disabled.
 
 Use `docker compose down -v` only when intentionally discarding local database
 state.

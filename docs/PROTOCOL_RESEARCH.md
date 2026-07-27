@@ -22,7 +22,8 @@ as current; Go module metadata identified `pgx/v5 v5.10.0`,
 | [EIP-712](https://eips.ethereum.org/EIPS/eip-712) | Typed signing binds domain fields such as chain ID and verifying contract. EIP-712 itself does not provide replay protection. | Use USDC's exact domain (`name`, `version`, chain ID 1, contract); rely on EIP-3009 nonce and durable uniqueness for replay protection. | Token proxy upgrades could affect observed domain behavior; read domain/name/version and contract implementation during Milestone 2 validation. |
 | [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) | Native Ethereum-mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`. | Fail-fast constant; normalized comparison; no bridged USDC or other asset. USDC has 6 decimal places and monetary storage is integer atomic units. | Circle can update documentation or contracts. Re-verify before deployment; configuration cannot silently substitute another address. |
 | [EIP-2228](https://eips.ethereum.org/EIPS/eip-2228) and [Ethereum network docs](https://ethereum.org/developers/docs/networks/) | Ethereum Mainnet has chain ID/network ID 1. | Only chain ID `1` and CAIP-2 `eip155:1`; readiness calls `eth_chainId` and refuses mismatches. | Local Anvil uses chain ID 1 solely to exercise this guard; it is not mainnet and carries no real funds. |
-| [ERC-4361](https://eips.ethereum.org/EIPS/eip-4361) | SIWE defines a human-readable, domain-bound message with address, URI, version, chain ID, random nonce, issued time, optional expiration/request ID/resources; EOA uses ERC-191 and contract accounts use ERC-1271 resolution. | Milestone 1 wallet proof will use a conforming SIWE parser/verifier and bind merchant ID/action through request ID/resources. Challenges are single-use and hashed. | Milestone 0 constructs the message but does not verify signatures. Exact EIP-55 handling and ERC-1271 support must be completed and tested in Milestone 1. |
+| [ERC-4361](https://eips.ethereum.org/EIPS/eip-4361) | SIWE defines a human-readable, domain-bound message with address, URI, version, chain ID, random nonce, issued time, optional expiration/request ID/resources; EOA uses ERC-191 and contract accounts use ERC-1271 resolution. | Milestone 1 uses SIWE with domain `eth402.org`, URI `https://eth402.org`, chain ID 1, merchant UUID as request ID, and an action resource. Challenges are random, expiring, hashed, and consumed once. | Milestone 1 accepts EOA/ERC-191 signatures only. ERC-1271 contract-recipient proof requires RPC-aware verification and remains deliberately unsupported until its threat model and failure behavior are implemented. |
+| [official SIWE Go implementation](https://github.com/signinwithethereum/siwe-go) | Module version `v1.0.0` parses EIP-4361 messages, computes the EIP-191 digest, recovers EOA signers, and offers optional ERC-1271 verification through an Ethereum client. | Pin `github.com/signinwithethereum/siwe-go v1.0.0`; use its parser and EIP-191 verifier instead of custom signature recovery. Independently enforce ETH402 domain, URI, chain, merchant, action, issue time, and expiration. | The package transitively imports go-ethereum and materially increases the dependency graph. It is retained because wallet signature parsing is security-critical; dependency scanning is mandatory. |
 
 ## Exact v2 shapes to preserve
 
@@ -77,3 +78,36 @@ recover by deriving/querying the signed transaction hash and signer nonce.
    facilitator to pay gas, but ETH402's commercial model is intentionally open.
 5. Establish confirmation depth, maximum fee, stuck-transaction, and
    replacement policies after mainnet measurements and security review.
+
+## Comparative note: Primev FastRPC facilitator
+
+Reviewed the primary
+[Primev mainnet facilitator repository](https://github.com/primev/mainnet-x402-facilitator)
+and [FastRPC documentation](https://docs.primev.xyz/v1.1.0/get-started/fastrpc)
+on 2026-07-27. Its latency claim comes from sending the facilitator-signed
+USDC transaction through mev-commit FastRPC, where opted-in builders can issue
+a preconfirmation before the next Ethereum block. The implementation also
+parallelizes the independent USDC balance and authorization-state reads.
+
+Important differences prevent copying its result directly:
+
+- its `/settle` code returns success when `eth_sendRawTransaction` returns a
+  transaction hash; it does not itself fetch a receipt, query commitments, or
+  wait for canonical Ethereum confirmations;
+- FastRPC preconfirmation depends on an opted-in next proposer and a pre-funded
+  gas/bid tank, and is not equivalent to canonical inclusion or finality;
+- the repository defines protocol types locally, with `scheme` and `network`
+  at the payment-payload top level, rather than importing the current official
+  v2 Go types; compatibility must therefore be independently tested;
+- its amount check accepts `value >= amount`, whereas ETH402's exact-only
+  policy requires the official exact-scheme behavior;
+- nonce coordination is an RPC fetch-and-retry loop with no durable intent or
+  database uniqueness, which does not meet ETH402 restart and ambiguity
+  requirements.
+
+ETH402 should adopt parallel safe reads and low-latency RPC placement. A
+preconfirmation provider may later be an optional broadcast transport, but
+`preconfirmed`, `included`, and `canonically confirmed` must remain distinct
+states. No preconfirmation result may bypass durable idempotency, simulation,
+receipt processing, reorganization handling, or the configured confirmation
+policy.

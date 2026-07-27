@@ -1,16 +1,271 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.1.0
+  version: 0.2.0
   description: >-
-    ETH402-specific operational and merchant APIs. Standard x402 facilitator
-    endpoints are intentionally absent from Milestone 0.
+    ETH402-specific merchant and operational APIs. Merchant authentication is
+    separate from standard x402 payment authorization. Standard facilitator
+    endpoints remain intentionally absent until Milestone 2.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
 servers:
   - url: https://eth402.org
 paths:
+  /v1/merchants/register:
+    post:
+      operationId: registerMerchant
+      summary: Start merchant registration
+      description: Returns the same accepted response for new and duplicate valid registrations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegistrationRequest" }
+      responses:
+        "202":
+          description: Email verification is pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pending" }
+        "400": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/merchants/verify-email:
+    post:
+      operationId: verifyMerchantEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 20 }
+      responses:
+        "200":
+          description: Email token was consumed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [merchant_id, status]
+                properties:
+                  merchant_id: { type: string, format: uuid }
+                  status: { const: email_verified }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/merchants/wallet-challenge:
+    post:
+      operationId: createInitialWalletChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [merchant_id]
+              properties:
+                merchant_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: EIP-4361 challenge for the registered recipient.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletChallenge" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/merchants/verify-wallet:
+    post:
+      operationId: verifyInitialWallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WalletVerificationRequest" }
+      responses:
+        "200":
+          description: Merchant activated; the API key is returned exactly once.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, api_key]
+                properties:
+                  status: { const: active }
+                  api_key: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/me:
+    get:
+      operationId: getMerchant
+      security: [{ MerchantAPIKey: [] }]
+      responses:
+        "200":
+          description: Authenticated merchant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Merchant" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/api-keys:
+    get:
+      operationId: listAPIKeys
+      security: [{ MerchantAPIKey: [] }]
+      responses:
+        "200":
+          description: Key metadata; full secret values are never listed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: "#/components/schemas/APIKey" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createAPIKey
+      security: [{ MerchantAPIKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+      responses:
+        "201":
+          description: New full API key returned exactly once.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, api_key]
+                properties:
+                  key: { $ref: "#/components/schemas/APIKey" }
+                  api_key: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/api-keys/{id}:
+    delete:
+      operationId: revokeAPIKey
+      security: [{ MerchantAPIKey: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Key revoked. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/me/recipient-change:
+    post:
+      operationId: createRecipientChangeChallenge
+      security: [{ MerchantAPIKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [new_address]
+              properties:
+                new_address: { $ref: "#/components/schemas/EthereumAddress" }
+      responses:
+        "201":
+          description: Challenge bound to the new recipient address.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletChallenge" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/me/recipient-change/verify:
+    post:
+      operationId: verifyRecipientChange
+      security: [{ MerchantAPIKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id, message, signature]
+              properties:
+                challenge_id: { type: string, format: uuid }
+                message: { type: string }
+                signature: { type: string }
+      responses:
+        "200":
+          description: Recipient changed and history appended.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { const: recipient_changed }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/admin/merchants/{id}/suspend:
+    post:
+      operationId: suspendMerchant
+      description: Operator-only endpoint. Disabled when no operator token is configured.
+      security: [{ OperatorToken: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason_code]
+              properties:
+                reason_code: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Merchant suspended.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { const: suspended }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/admin/merchants/{id}/reinstate:
+    post:
+      operationId: reinstateMerchant
+      description: Operator-only endpoint. Disabled when no operator token is configured.
+      security: [{ OperatorToken: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Merchant reinstated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { const: active }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /health/live:
     get:
       operationId: liveness
@@ -69,6 +324,15 @@ paths:
               schema:
                 type: string
 components:
+  securitySchemes:
+    MerchantAPIKey:
+      type: http
+      scheme: bearer
+      bearerFormat: ETH402 API key
+    OperatorToken:
+      type: apiKey
+      in: header
+      name: X-Operator-Token
   responses:
     Error:
       description: Structured service error.
@@ -77,6 +341,71 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    EthereumAddress:
+      type: string
+      pattern: "^0x[0-9a-fA-F]{40}$"
+    RegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [name, business_email, recipient_address, accept_terms]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        business_email: { type: string, format: email }
+        recipient_address: { $ref: "#/components/schemas/EthereumAddress" }
+        accept_terms: { const: true }
+        website: { type: string, format: uri }
+        description: { type: string }
+    Pending:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { const: verification_pending }
+    WalletChallenge:
+      type: object
+      additionalProperties: false
+      required: [id, message, address, action, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        message: { type: string }
+        address: { $ref: "#/components/schemas/EthereumAddress" }
+        action: { enum: [verify-recipient, change-recipient] }
+        expires_at: { type: string, format: date-time }
+    WalletVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [merchant_id, challenge_id, message, signature]
+      properties:
+        merchant_id: { type: string, format: uuid }
+        challenge_id: { type: string, format: uuid }
+        message: { type: string }
+        signature: { type: string }
+    Merchant:
+      type: object
+      additionalProperties: false
+      required: [id, name, business_email, recipient_address, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        business_email: { type: string, format: email }
+        recipient_address: { $ref: "#/components/schemas/EthereumAddress" }
+        status: { enum: [pending, manual_review, active, suspended, rejected] }
+        website: { type: string, format: uri }
+        description: { type: string }
+        email_verified_at: { type: string, format: date-time }
+        wallet_verified_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    APIKey:
+      type: object
+      additionalProperties: false
+      required: [id, name, prefix, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
     Health:
       type: object
       additionalProperties: false

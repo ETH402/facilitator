@@ -13,8 +13,8 @@ within bounds; transaction broadcast must not retry blindly. Alert on RPC/DB
 errors, worker health, confirmation lag, pending age, signer failures, revert
 rate, gas policy blocks, and stats-query failure.
 
-Gas maximums are typed decimal configuration but remain zero/disabled in
-Milestone 0. Milestone 3 must require explicit non-zero policy before enabling
+Gas maximums are typed decimal configuration but remain zero/disabled in the
+current build. Milestone 3 must require explicit non-zero policy before enabling
 any settlement signer.
 
 Logs are structured JSON. Never log keys, tokens, signatures, raw

@@ -13,8 +13,8 @@ provide honest chain data; external signer policy works. Residual risk remains.
 | Malicious buyer | merchant/gas; malformed or expiring signatures | DoS/gas loss | strict parse, expiry margin, simulation, limits | failure metrics | adaptive abuse |
 | Sybil registration | service capacity; determined actor | quota evasion | domain controls, throttles, review | linked-abuse analysis | no global Sybil proof |
 | API-key theft | merchant account | recipient/key abuse | keyed hashes, one-time display, scoped auth, rotation | last-use/audit alerts | endpoint compromise |
-| Email takeover | onboarding/recovery | account takeover | wallet proof, cooldown, no email-only recipient change | change notifications | both factors compromised |
-| Recipient takeover | merchant revenue | redirected payments | fresh SIWE proof, history, cooldown | audit/notifications | compromised wallet |
+| Email takeover | onboarding/recovery | account takeover | wallet proof, cooldown, no email-only recipient change | audit review | both factors compromised |
+| Recipient takeover | merchant revenue | redirected payments | fresh SIWE proof, history, cooldown | append-only history/audit | compromised wallet |
 | RPC manipulation | payment truth; RPC provider | false verify/receipt/head | fallback providers, chain check, confirmations | cross-provider mismatch | correlated providers |
 | Chain reorg | finality | reversed payment | canonical hash checks, confirmations | reorg worker/lag alert | deep reorg |
 | Transaction replacement | pending tx | stuck/replaced settlement | signer nonce ownership, linked replacements | mempool/receipt checks | provider mempool gaps |

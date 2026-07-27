@@ -11,5 +11,5 @@ allows; no bounty is currently promised.
 Never send private keys, seed phrases, API keys, email tokens, or funded
 authorizations. Use unfunded, local-only test material.
 
-Milestone 0 does not process x402 payments. See the
+The current implementation does not process x402 payments. See the
 [threat model](docs/THREAT_MODEL.md) and [incident response](docs/INCIDENT_RESPONSE.md).

@@ -23,9 +23,19 @@ No live x402 verification or settlement is implemented in Milestone 0.
 
 ## Milestone 1 — merchant onboarding
 
-Registration, provider-backed email verification, SIWE recipient proof,
-API-key issuance/rotation/revocation, append-only recipient changes, operator
-suspension/reinstatement, audit events, domain controls, and abuse limits.
+Status: complete in the `milestone-1-onboarding` branch, subject to the
+validation record in the milestone report.
+
+- [x] enumeration-resistant registration and provider-neutral email delivery
+- [x] hashed, expiring, one-time email tokens with resend throttling
+- [x] EIP-4361 EOA recipient proof bound to domain, chain, merchant, and action
+- [x] API-key issuance, multiple named keys, rotation, revocation, and last use
+- [x] authenticated, cooldown-controlled recipient changes with append-only history
+- [x] operator suspension/reinstatement and append-only audit events
+- [x] domain controls, registration rate limits, OpenAPI, and integration tests
+
+ERC-1271 contract-wallet recipient proof is not included; it requires
+RPC-aware verification and a separate security review.
 
 ## Milestone 2 — x402 verification
 

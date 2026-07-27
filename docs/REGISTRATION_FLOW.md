@@ -10,7 +10,7 @@ sequenceDiagram
   E->>DB: pending merchant + hashed email token + audit
   E->>Mail: one-time verification link
   M->>E: raw token
-  E->>DB: constant-time verify and consume once
+  E->>DB: hash raw token, match stored hash, and consume once
   M->>E: request recipient challenge
   E->>DB: hashed SIWE challenge, nonce, expiry
   M->>E: signed SIWE message
