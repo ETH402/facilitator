@@ -22,7 +22,7 @@ const (
 var transitions = map[State]map[State]bool{
 	StateReceived:     {StateVerificationFailed: true, StateVerified: true, StateExpired: true, StateManualReview: true},
 	StateVerified:     {StateBroadcasting: true, StateExpired: true, StateManualReview: true},
-	StateBroadcasting: {StateBroadcast: true, StateFailed: true, StateManualReview: true},
+	StateBroadcasting: {StateBroadcast: true, StateFailed: true, StateExpired: true, StateManualReview: true},
 	StateBroadcast:    {StateConfirming: true, StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
 	StateConfirming:   {StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
 	StateReplaced:     {StateConfirming: true, StateConfirmed: true, StateReverted: true, StateManualReview: true},
