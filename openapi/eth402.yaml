@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.3.0
+  version: 0.4.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
-    verification surface. Merchant authentication is separate from x402
-    payment authorization. Settlement is intentionally absent until Milestone 3.
+    verification and settlement surface. Merchant authentication is separate
+    from x402 payment authorization. Settlement requires a prior verification
+    and a configured settlement signer.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -47,6 +48,41 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/X402VerifyResponse" }
+  /settle:
+    post:
+      operationId: x402Settle
+      summary: Settle a previously verified x402 v2 EIP-3009 payment
+      description: >-
+        Requires a prior successful /verify for the same payment: admission is
+        gated on the durable verification record, which is what binds the
+        recipient to an active registered merchant (ADR-0004). The request
+        shape is identical to /verify and is parsed by the same strict rules.
+        On success the facilitator has broadcast transferWithAuthorization and
+        returns its transaction hash; confirmation completes asynchronously
+        (12 confirmations by default). Calls are idempotent per payment: a
+        repeat settles to the same transaction hash. Policy rejections return
+        HTTP 200 with success=false and a stable errorReason.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/X402SettleRequest" }
+      responses:
+        "200":
+          description: Settlement outcome, including policy rejections with success=false.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402SettleResponse" }
+        "400":
+          description: The outer request is not valid x402 v2 JSON.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402SettleResponse" }
+        "503":
+          description: Settlement is unavailable (signer disabled or a dependency failure).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X402SettleResponse" }
   /v1/merchants/register:
     post:
       operationId: registerMerchant
@@ -474,6 +510,39 @@ components:
         invalidReason: { type: string }
         invalidMessage: { type: string }
         payer: { $ref: "#/components/schemas/EthereumAddress" }
+        extensions: { type: object }
+        extra: { type: object }
+    X402SettleRequest:
+      type: object
+      additionalProperties: false
+      required: [x402Version, paymentPayload, paymentRequirements]
+      properties:
+        x402Version: { const: 2 }
+        paymentPayload: { $ref: "#/components/schemas/X402PaymentPayload" }
+        paymentRequirements: { $ref: "#/components/schemas/X402PaymentRequirements" }
+    X402SettleResponse:
+      type: object
+      required: [success, transaction, network]
+      properties:
+        success: { type: boolean }
+        errorReason:
+          type: string
+          enum:
+            - invalid_request
+            - payment_not_found
+            - payment_not_verified
+            - recipient_not_registered
+            - authorization_expiring
+            - broadcast_failed
+            - settlement_unavailable
+        errorMessage: { type: string }
+        payer: { $ref: "#/components/schemas/EthereumAddress" }
+        transaction:
+          type: string
+          description: Broadcast transaction hash; empty when success is false.
+          pattern: "^(0x[0-9a-f]{64})?$"
+        network: { const: eip155:1 }
+        amount: { type: string, pattern: "^[0-9]+$" }
         extensions: { type: object }
         extra: { type: object }
     EthereumAddress:

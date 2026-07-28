@@ -28,6 +28,15 @@ Migration `000002_signer_accounts` adds:
   does not hold a database transaction open across Ethereum RPC calls. The pair
   is constrained to be set or unset together.
 
+Migration `000003_settlement_signature` adds:
+
+- `payment_records.payer_signature`: the EIP-3009 signature the deterministic
+  payment identity binds, written atomically with the settlement intent (never
+  at verification time). `transferWithAuthorization` calldata needs it, and
+  storing it with the intent lets the broadcast worker rebuild calldata after a
+  crash without trusting a caller twice. Normalized lowercase with a shape
+  constraint (`0x` + 130 hex).
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,
@@ -36,4 +45,5 @@ active suspension.
 
 Deletion is restrictive for security history. Retention/anonymization must be
 implemented explicitly with legal review; audit metadata must never contain
-raw secrets or payment signatures.
+raw secrets. Payment signatures live only in `payment_records.payer_signature`,
+never in audit metadata.

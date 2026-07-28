@@ -16,6 +16,8 @@ import (
 	"github.com/ETH402/facilitator/internal/httpapi"
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
+	"github.com/ETH402/facilitator/internal/settlement"
+	"github.com/ETH402/facilitator/internal/signer"
 	"github.com/ETH402/facilitator/internal/stats"
 	"github.com/ETH402/facilitator/internal/store"
 	"github.com/ETH402/facilitator/internal/verification"
@@ -66,12 +68,58 @@ func main() {
 		Pepper: []byte(cfg.APIKeyPepper), BlockDisposable: cfg.BlockDisposable,
 		RestrictFree: cfg.RestrictFreeEmail, Allowlist: cfg.EmailAllowlist, Denylist: cfg.EmailDenylist,
 	})
+
+	// Settlement is wired only when a signer is enabled; with the signer
+	// disabled /settle reports settlement_unavailable and no workers run.
+	var settlementService *settlement.Service
+	if cfg.SignerMode != "disabled" {
+		var transactionSigner signer.Signer
+		switch cfg.SignerMode {
+		case "development":
+			development, err := signer.NewDevelopment(cfg.DevSignerKey)
+			if err != nil {
+				logger.Error("development signer initialization failed", "error", err)
+				os.Exit(1)
+			}
+			transactionSigner = development
+		default:
+			// Config validation rejects every other mode; this is defense in
+			// depth so a future mode cannot start without its backend.
+			logger.Error("no signer backend implements the configured mode", "mode", cfg.SignerMode)
+			os.Exit(1)
+		}
+		signerAddress, err := transactionSigner.Address(root)
+		if err != nil {
+			logger.Error("signer address resolution failed", "error", err)
+			os.Exit(1)
+		}
+		chainNonce, err := rpc.TransactionCount(root, signerAddress)
+		if err != nil {
+			logger.Error("signer nonce seeding failed", "error", err)
+			os.Exit(1)
+		}
+		seeded, err := store.SeedSignerAccount(root, database.Pool, signerAddress, chainNonce)
+		if err != nil {
+			logger.Error("signer account seeding failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("settlement signer enabled", "address", signerAddress, "next_nonce", seeded)
+		settlementService = settlement.NewService(database, transactionSigner, rpc, settlement.Config{
+			SignerAddress: signerAddress, ExpiryMargin: cfg.SettlementExpiryMargin,
+			SigningTimeout: cfg.SigningTimeout, LeaseDuration: cfg.SettlementLeaseDuration,
+			WorkerInterval: cfg.WorkerInterval, Confirmations: cfg.Confirmations,
+			GasLimit: cfg.MaxGasLimit, MaxFeePerGas: cfg.MaxFeePerGasWei,
+			MaxPriorityFeeGas: cfg.MaxPriorityFeeWei,
+		}, logger)
+		go settlementService.BroadcastWorker().Run(root)
+		go settlementService.ConfirmationWorker().Run(root)
+	}
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,
 		Metrics: registry, ExpectedChainID: cfg.ChainID, PublicRatePerMinute: cfg.PublicRatePerMin,
 		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
 		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
-		Verification: verificationService, MetricsEnabled: cfg.MetricsEnabled,
+		Verification: verificationService, Settlement: settlementService, MetricsEnabled: cfg.MetricsEnabled,
 		TrustedProxies: cfg.TrustedProxies,
 	})
 	server := &http.Server{

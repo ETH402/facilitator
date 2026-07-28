@@ -30,9 +30,11 @@ flowchart LR
 - `internal/store` and migrations: durable truth and concurrency enforcement.
 - `internal/x402` and `verification`: deterministic identity plus the narrow
   v2/EIP-3009 verifier, built on the pinned official x402 Go implementation.
-- `internal/settlement`: explicit state rules; live settlement remains future.
+- `internal/settlement`: state rules, `/settle` admission, the broadcast
+  pipeline shared by HTTP and workers, and confirmation.
 - `internal/ethereum`: bounded health reads, read-only verification calls,
-  primary/fallback RPC, and a future non-blind broadcast path.
+  primary/fallback RPC reads, and the single-attempt broadcast path (a failed
+  send is ambiguous, so it never rotates providers).
 - `internal/signer`: transaction-signing boundary. Raw keys are development-only.
 - `internal/email`, `walletproof`, `auth`, `merchant`: onboarding boundary.
 - workers: database-leased/idempotent confirmation and recovery loops.

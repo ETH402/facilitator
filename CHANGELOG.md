@@ -42,6 +42,35 @@ versioned where noted.
   expiry margin, and the finality cut. A bounded signer hot balance is the
   operative signer-compromise control; a KMS-fronted policy signer carrying the
   calldata allowlist is deferred to Milestone 4.
+- `POST /settle` (version 0.4 OpenAPI contract). Admission reuses the strict
+  `/verify` parser and requires a prior verified payment record — the durable
+  row is what binds the recipient to an active registered merchant (ADR-0004
+  decision 9). The endpoint claims the payment lease and runs the broadcast
+  pipeline inline: EIP-3009 `transferWithAuthorization` calldata is built from
+  the durable record, signed under `ETH402_SIGNING_TIMEOUT`, broadcast once
+  against the primary RPC, and the transaction hash is returned in the official
+  `SettleResponse`. Calls are idempotent per payment; policy rejections return
+  HTTP 200 with `success: false` and a stable `errorReason`.
+- `payment_records.payer_signature` (migration `000003`): the EIP-3009
+  signature the payment identity binds, persisted atomically with the
+  settlement intent so calldata can be rebuilt after a crash.
+- Broadcast and confirmation workers over the worker lease. The broadcast
+  worker retries committed intents on `ETH402_WORKER_INTERVAL`; a signing
+  failure leaves the intent untouched, an unknown broadcast outcome marks the
+  transaction `ambiguous` and moves the payment to `manual_review` (never a
+  re-sign, never a fresh nonce), and an authorization expiring before broadcast
+  retires the intent as `expired` with the transaction `dropped`. The
+  confirmation worker advances receipts to `confirming`, `confirmed` at
+  `ETH402_REQUIRED_CONFIRMATIONS`, or `reverted`.
+- Development signer backend (raw key, EIP-1559) behind the existing signer
+  interface for local use against Anvil; production rejects it without
+  `ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER`. The `external` mode is reserved for
+  the Cloud KMS backend and now rejected at startup.
+- `ETH402_SETTLEMENT_EXPIRY_MARGIN` (60s), `ETH402_SIGNING_TIMEOUT` (10s), and
+  `ETH402_SETTLEMENT_LEASE_DURATION` (2m). Settlement transactions use the
+  configured gas limit and fee ceilings verbatim.
+- Real `eth402_settlement_requests_total` and `eth402_settlement_failures_total`
+  metrics replacing the zero placeholders.
 
 ### Changed
 

@@ -23,11 +23,30 @@ balance is what caps that loss. This is required before enabling any signer, and
 is not superseded by the in-process calldata allowlist. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).
 
-Gas maximums are typed decimal configuration and remain zero/disabled in the
-current build. Enabling any non-disabled `ETH402_SIGNER_MODE` now requires
-non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and `ETH402_MAX_GAS_LIMIT`: zero means
-unset, not unlimited, so a signer cannot be switched on without an explicit
-spend ceiling. A priority fee above the total fee ceiling is also rejected.
+Gas maximums are typed decimal configuration. Enabling any non-disabled
+`ETH402_SIGNER_MODE` requires non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and
+`ETH402_MAX_GAS_LIMIT`: zero means unset, not unlimited, so a signer cannot be
+switched on without an explicit spend ceiling. A priority fee above the total
+fee ceiling is also rejected. Settlement transactions use these configured
+values verbatim as their gas limit and fee caps — they are the spend, not just
+a bound — so the effective per-settlement cost is always known in advance.
+
+## Settlement workers
+
+With a signer enabled, two workers run in-process on `ETH402_WORKER_INTERVAL`
+(default 15s): the broadcast worker retries durable intents whose inline
+`/settle` broadcast did not happen, and the confirmation worker advances
+broadcast transactions to `confirming`, `confirmed` (at
+`ETH402_REQUIRED_CONFIRMATIONS`), or `reverted`. Workers claim payments with
+leases of `ETH402_SETTLEMENT_LEASE_DURATION` (default 2m); a dead worker's
+payments are reclaimed when the lease lapses. A signing failure leaves the
+intent untouched for the next tick; a broadcast failure marks the transaction
+`ambiguous` and moves the payment to `manual_review`, where it stays until
+recovery tooling reconciles it on chain — alert on payments entering
+`manual_review`, since each one is a possible spent gas transaction without a
+recorded hash. `ETH402_SETTLEMENT_EXPIRY_MARGIN` (default 60s) retires intents
+whose authorization would expire before broadcast as `expired` instead of
+buying a predictable revert.
 
 Logs are structured JSON. Never log keys, tokens, signatures, raw
 authorizations, signed transactions, or unredacted email. Back up PostgreSQL,

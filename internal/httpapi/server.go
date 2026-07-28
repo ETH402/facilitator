@@ -20,6 +20,7 @@ import (
 	"github.com/ETH402/facilitator/internal/ethereum"
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
+	"github.com/ETH402/facilitator/internal/settlement"
 	"github.com/ETH402/facilitator/internal/stats"
 	"github.com/ETH402/facilitator/internal/verification"
 )
@@ -41,6 +42,7 @@ type Dependencies struct {
 	AllowedOrigin       string
 	OperatorToken       string
 	Verification        *verification.Service
+	Settlement          *settlement.Service
 	MetricsEnabled      bool
 	// TrustedProxies lists reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is used.
@@ -63,6 +65,7 @@ func New(dep Dependencies) *Server {
 	}
 	mux.HandleFunc("GET /supported", dep.supported)
 	mux.HandleFunc("POST /verify", dep.verify)
+	mux.HandleFunc("POST /settle", dep.settle)
 	dep.merchantRoutes(mux)
 	handler := secureHeaders(dep.AllowedOrigin, mux)
 	handler = requestLimit(handler)
@@ -108,6 +111,38 @@ func (d Dependencies) verify(w http.ResponseWriter, r *http.Request) {
 	}
 	if !response.IsValid {
 		d.Metrics.IncVerificationFailure()
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (d Dependencies) settle(w http.ResponseWriter, r *http.Request) {
+	if d.Settlement == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success": false, "errorReason": settlement.WireReasonSettlementUnavailable,
+		})
+		return
+	}
+	var request settlement.SettleRequest
+	if err := DecodeStrict(w, r, &request); err != nil {
+		d.Metrics.IncSettlement()
+		d.Metrics.IncSettlementFailure()
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false, "errorReason": "invalid_request",
+		})
+		return
+	}
+	d.Metrics.IncSettlement()
+	response, err := d.Settlement.Settle(r.Context(), request)
+	if err != nil {
+		d.Metrics.IncSettlementFailure()
+		d.Logger.ErrorContext(r.Context(), "payment settlement failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success": false, "errorReason": settlement.WireReasonSettlementUnavailable,
+		})
+		return
+	}
+	if !response.Success {
+		d.Metrics.IncSettlementFailure()
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -243,7 +278,7 @@ func observe(registry *metrics.Registry, next http.Handler) http.Handler {
 func knownRoute(path string) string {
 	switch path {
 	case "/health/live", "/health/ready", "/metrics", "/stats",
-		"/supported", "/verify",
+		"/supported", "/verify", "/settle",
 		"/v1/merchants/register", "/v1/merchants/verify-email",
 		"/v1/merchants/wallet-challenge", "/v1/merchants/verify-wallet",
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",

@@ -14,6 +14,7 @@ func validConfig() Config {
 		MaxFeePerGasWei: "0", MaxPriorityFeeWei: "0",
 		SignerMode: "disabled", EmailBackend: "log", EmailTokenTTL: 1,
 		EmailResend: 1, WalletChallengeTTL: 1, WorkerInterval: 1,
+		SettlementExpiryMargin: 1, SigningTimeout: 1, SettlementLeaseDuration: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
 		TermsVersion: "test", APIKeyPepper: "01234567890123456789012345678901",
 	}
@@ -52,22 +53,33 @@ func TestProductionSafety(t *testing.T) {
 func TestSignerRequiresExplicitGasCeiling(t *testing.T) {
 	t.Parallel()
 	// Zero means unset, so a signer must not be enablable without a ceiling.
-	for _, mode := range []string{"development", "external"} {
-		cfg := validConfig()
-		cfg.SignerMode = mode
-		cfg.DevSignerKey = "development-only-placeholder"
-		if err := cfg.Validate(); err == nil {
-			t.Fatalf("signer mode %q accepted with zero gas policy", mode)
-		}
-		cfg.MaxFeePerGasWei = "30000000000"
-		cfg.MaxGasLimit = 120000
-		if err := cfg.Validate(); err != nil {
-			t.Fatalf("signer mode %q rejected with explicit gas policy: %v", mode, err)
-		}
+	cfg := validConfig()
+	cfg.SignerMode = "development"
+	cfg.DevSignerKey = "development-only-placeholder"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("development signer accepted with zero gas policy")
+	}
+	cfg.MaxFeePerGasWei = "30000000000"
+	cfg.MaxGasLimit = 120000
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("development signer rejected with explicit gas policy: %v", err)
 	}
 	// The disabled signer keeps working with the zero placeholders.
 	if err := validConfig().Validate(); err != nil {
 		t.Fatalf("disabled signer rejected: %v", err)
+	}
+}
+
+func TestExternalSignerReservedForKMS(t *testing.T) {
+	t.Parallel()
+	// The external backend (Cloud KMS, ADR-0004) is not implemented yet, so the
+	// mode must fail closed even with an otherwise complete gas policy.
+	cfg := validConfig()
+	cfg.SignerMode = "external"
+	cfg.MaxFeePerGasWei = "30000000000"
+	cfg.MaxGasLimit = 120000
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("reserved external signer mode accepted")
 	}
 }
 
