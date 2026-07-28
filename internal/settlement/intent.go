@@ -2,6 +2,7 @@ package settlement
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -41,8 +42,12 @@ var (
 type IntentRequest struct {
 	PaymentIdentity string
 	SignerAddress   string
-	ExpiryMargin    time.Duration
-	Now             time.Time
+	// PayerSignature is the EIP-3009 signature the payment identity binds. It
+	// is persisted atomically with the intent so calldata can be rebuilt after
+	// a crash without trusting a caller twice.
+	PayerSignature string
+	ExpiryMargin   time.Duration
+	Now            time.Time
 }
 
 // Intent is a committed settlement intent. Its nonce is durably owned by the
@@ -70,6 +75,9 @@ func (r IntentRequest) Validate() error {
 	}
 	if r.SignerAddress == "" {
 		errs = append(errs, errors.New("signer address is required"))
+	}
+	if len(r.PayerSignature) != 132 || !strings.HasPrefix(r.PayerSignature, "0x") {
+		errs = append(errs, errors.New("payer signature must be 0x-prefixed 65-byte hex"))
 	}
 	if r.ExpiryMargin <= 0 {
 		// Zero would mean broadcasting an authorization that expires this second.

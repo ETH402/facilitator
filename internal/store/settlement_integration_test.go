@@ -109,7 +109,8 @@ func seedPayment(t *testing.T, store *Store, fixture paymentFixture) string {
 func intentRequest(identity string) settlement.IntentRequest {
 	return settlement.IntentRequest{
 		PaymentIdentity: identity, SignerAddress: intentSigner,
-		ExpiryMargin: time.Minute, Now: time.Now(),
+		PayerSignature: "0x" + repeat("1", 64) + repeat("2", 64) + "1b",
+		ExpiryMargin:   time.Minute, Now: time.Now(),
 	}
 }
 

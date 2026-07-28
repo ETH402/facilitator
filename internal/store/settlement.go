@@ -46,13 +46,13 @@ func (s *Store) CreateSettlementIntent(ctx context.Context, request settlement.I
 	// allocation is deliberately deferred until after every admission check so a
 	// rejected request cannot consume a nonce and gap the sequence.
 	var paymentID, state string
-	var merchantID *string
+	var merchantID, storedSignature *string
 	var validBefore time.Time
 	err = tx.QueryRow(ctx, `
-SELECT id, state, merchant_id, valid_before
+SELECT id, state, merchant_id, valid_before, payer_signature
 FROM payment_records
 WHERE payment_identity = $1
-FOR UPDATE`, request.PaymentIdentity).Scan(&paymentID, &state, &merchantID, &validBefore)
+FOR UPDATE`, request.PaymentIdentity).Scan(&paymentID, &state, &merchantID, &validBefore, &storedSignature)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return settlement.Intent{}, rejectSettlement(ctx, tx, nil, request.PaymentIdentity,
 			settlement.ReasonPaymentNotFound, settlement.ErrPaymentNotFound)
@@ -104,6 +104,12 @@ VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
 		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
 			settlement.ReasonAuthorizationExpiring, settlement.ErrAuthorizationExpiring)
 	}
+	// The payment identity hash binds the signature, so a stored value can only
+	// ever equal the request's. A mismatch means the durable record was written
+	// by something outside this flow; fail loudly rather than sign over it.
+	if storedSignature != nil && *storedSignature != request.PayerSignature {
+		return settlement.Intent{}, fmt.Errorf("payment %s: stored payer signature conflicts with the settlement request", request.PaymentIdentity)
+	}
 
 	nonce, err := AllocateNonce(ctx, tx, signerAddress)
 	if err != nil {
@@ -112,8 +118,9 @@ VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
 
 	tag, err := tx.Exec(ctx, `
 UPDATE payment_records
-SET state = 'broadcasting', settlement_requested_at = now(), updated_at = now()
-WHERE id = $1 AND state = $2`, paymentID, state)
+SET state = 'broadcasting', settlement_requested_at = now(),
+    payer_signature = $3, updated_at = now()
+WHERE id = $1 AND state = $2`, paymentID, state, request.PayerSignature)
 	if err != nil {
 		return settlement.Intent{}, err
 	}
