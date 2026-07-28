@@ -5,7 +5,7 @@ strict scope checks, checks USDC `authorizationState`, verifies the EIP-712
 signature with the pinned official SDK, and simulates
 `transferWithAuthorization`. It never signs or broadcasts a transaction.
 Milestone 3 implements settlement as shown below; the Cloud KMS signer backend
-and ambiguous-broadcast recovery remain open on the milestone checklist.
+remains the only open item on the milestone checklist.
 
 ```mermaid
 sequenceDiagram
@@ -24,6 +24,10 @@ sequenceDiagram
   loop confirmation worker
     F->>RPC: receipt + canonical block
     F->>DB: idempotent transition
+  end
+  loop recovery worker
+    F->>RPC: receipt / mempool lookup, fee-bump, gap fill
+    F->>DB: re-attach hash / replace / reorg out
   end
   F-->>R: official settlement response
 ```
@@ -53,16 +57,43 @@ re-sign or a fresh nonce (ADR-0004 decision 4). An intent whose authorization
 expires before broadcast is retired as `expired` with its transaction `dropped`
 rather than buying a predictable revert (decision 11).
 
-The confirmation worker leases payments in `broadcast`/`confirming`, reads the
-receipt, and finalizes at `ETH402_REQUIRED_CONFIRMATIONS` (default 12)
-canonical confirmations; a `status=0` receipt becomes `reverted`. Gas fields on
-the transaction come from configuration verbatim — the configured ceilings are
-the spend, so settlement cost never depends on chain fee conditions.
+The confirmation worker leases payments in `broadcast`/`confirming`/`replaced`,
+reads the receipt, and finalizes at `ETH402_REQUIRED_CONFIRMATIONS` (default
+12) canonical confirmations; a `status=0` receipt becomes `reverted`. A
+transaction previously seen mined whose receipt disappears from the canonical
+chain was reorged out: it returns to `broadcast` and is observed from scratch.
+
+Gas fields are estimated, not copied from configuration: the initial max fee is
+`min(2·baseFee + tip, ETH402_MAX_FEE_PER_GAS_WEI)` against the latest block,
+with `ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI` as the tip. The configured values
+remain the hard spend ceiling and the gas limit — estimation only avoids
+overpaying beneath the ceiling and leaves headroom for replacement bumps. The
+persisted gas limit and fee pair are what recovery may ever re-sign.
+
+The recovery worker resolves what the broadcast and confirmation pipelines
+cannot (ADR-0004 decision 4). An `ambiguous` transaction is first reconciled
+on chain — the signed transaction's keccak is its transaction hash, so a
+receipt or mempool sighting re-attaches the hash and returns the payment to
+the broadcast pipeline. Only after `ETH402_SETTLEMENT_RECOVERY_GRACE` (default
+2m) without a sighting may the identical transaction be re-signed from the
+stored nonce, gas, and fee fields and re-broadcast; the recomputed hash must
+equal the stored one, otherwise the record is treated as corrupt and left in
+`manual_review`. Rows written before migration `000004` lack the stored fee
+fields and are resolved by on-chain lookup only. A broadcast still pending
+after `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced by a
+fee-bumped transaction on the same nonce (tip ×1.125, ceiling-capped); when
+the ceiling leaves no headroom the transaction is left pending for an operator
+decision. If the network mines the original instead, recovery records the
+original as the truth and drops the never-minable replacement. A `dropped`
+nonce blocking a later in-flight nonce of the same signer is filled by
+re-broadcasting the original expired intent, whose predictable revert consumes
+the nonce. Recovery never finalizes a payment itself — it re-attaches hashes
+or returns transactions to the broadcast pipeline, and the confirmation worker
+observes them from there.
 
 Valid states and edges are encoded in `internal/settlement/state.go`. Confirmed
-and failed states are terminal. Ambiguous RPC results require hash/nonce
-reconciliation (recovery remains unimplemented). A duplicate request
-returns/converges on the existing payment; unique structured identity and
+and failed states are terminal. A duplicate request returns/converges on the
+existing payment; unique structured identity and
 `(network, asset, payer, authorization_nonce)` constraints are final
 enforcement.
 

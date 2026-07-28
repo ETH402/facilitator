@@ -67,8 +67,25 @@ versioned where noted.
   `ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER`. The `external` mode is reserved for
   the Cloud KMS backend and now rejected at startup.
 - `ETH402_SETTLEMENT_EXPIRY_MARGIN` (60s), `ETH402_SIGNING_TIMEOUT` (10s), and
-  `ETH402_SETTLEMENT_LEASE_DURATION` (2m). Settlement transactions use the
-  configured gas limit and fee ceilings verbatim.
+  `ETH402_SETTLEMENT_LEASE_DURATION` (2m).
+- Settlement recovery worker and migration `000004`. Ambiguous broadcasts are
+  reconciled on chain by their signed-transaction hash and, after
+  `ETH402_SETTLEMENT_RECOVERY_GRACE` (2m) without a sighting, re-broadcast as
+  the byte-identical transaction — same nonce, gas, and fees, proven by hash —
+  never a fresh nonce. Broadcasts pending beyond
+  `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (5m) are replaced by fee-bumped
+  transactions on the same nonce (tip ×1.125, capped by the configured
+  ceiling); an original the network mines anyway becomes the recorded truth
+  and its replacement is dropped. Dropped nonces blocking a later in-flight
+  nonce are filled by re-broadcasting the original expired intent, and
+  reorged-out transactions return to `broadcast`. Migration `000004` persists
+  the signing gas limit and fee pair at signing time and drops the
+  `(payment_id, transaction_nonce)` uniqueness that replacement chains
+  violate.
+- EIP-1559 fee estimation: the initial max fee is `min(2·baseFee + tip,
+  ETH402_MAX_FEE_PER_GAS_WEI)` from the latest block instead of the configured
+  ceiling verbatim, so settlement no longer overpays beneath its own cap and
+  replacements have bump headroom. The ceiling remains the hard spend bound.
 - Real `eth402_settlement_requests_total` and `eth402_settlement_failures_total`
   metrics replacing the zero placeholders.
 
@@ -97,6 +114,15 @@ versioned where noted.
   for one authorization serialise on an advisory transaction lock, and transient
   deadlock or serialization aborts are retried, so two simultaneous `/verify`
   requests no longer risk one caller receiving `503`.
+
+### Fixed
+
+- Worker-driven payment transitions no longer fail the
+  `payment_transitions.actor_type` check: workers audited transitions with
+  their full lease identity (for example `confirmation/host/pid`), which the
+  schema rejects, so every worker-side transition would have rolled back in
+  production. Transitions are now audited with the coarse `worker` actor type;
+  the full identity stays on the lease.
 
 ### Security
 

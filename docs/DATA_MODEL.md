@@ -37,6 +37,19 @@ Migration `000003_settlement_signature` adds:
   crash without trusting a caller twice. Normalized lowercase with a shape
   constraint (`0x` + 130 hex).
 
+Migration `000004_settlement_recovery` changes:
+
+- `ethereum_transactions` gains nullable `max_fee_per_gas` and
+  `max_priority_fee_per_gas`: the exact fee pair a transaction was signed
+  with, persisted before broadcast. Recovery may only ever re-sign the
+  identical transaction, so the signing inputs must be durable; rows written
+  before this migration lack them and are resolved by on-chain lookup only.
+- The `UNIQUE (payment_id, transaction_nonce)` constraint is dropped: a
+  fee-bumped replacement shares its original's nonce, so nonce uniqueness now
+  holds only within the active set, which the
+  `ethereum_transactions_active_payment_unique` partial index already bounds
+  to one row per payment.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

@@ -10,10 +10,10 @@ operational APIs, and x402 v2 verification. ETH402 exposes `/supported`,
 EIP-3009 payments in native Ethereum-mainnet USDC. `/settle` requires a prior
 successful `/verify` for the same payment and broadcasts
 `transferWithAuthorization` once, returning the transaction hash; confirmation
-completes asynchronously at 12 confirmations by default. The Cloud KMS signer
-backend and ambiguous-broadcast recovery remain open Milestone 3 work, so the
-available signer backends are the disabled default and the development key
-signer for local use.
+completes asynchronously at 12 confirmations by default, with a recovery worker
+reconciling ambiguous broadcasts, stuck pendings, nonce gaps, and reorgs. The
+Cloud KMS signer backend remains open Milestone 3 work, so the available signer
+backends are the disabled default and the development key signer for local use.
 
 Buyer USDC is designed to move directly from buyer to merchant through USDC's
 EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant

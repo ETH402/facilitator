@@ -59,12 +59,15 @@ Verification attempts remain append-only, including malformed outer requests.
 Settlement intent is committed before signing/broadcast. Workers claim durable
 rows with transactional locking; repeated execution checks current state.
 
-An ambiguous broadcast records signed-transaction identity and enters manual
-reconciliation rather than sending a new transaction. Receipt observations
-record block hash/number; finalization requires canonical confirmations.
-Reorgs return non-final transactions to confirmation. Replacement uses the
-same Ethereum account nonce, is linked explicitly, and never changes USDC
-calldata. Process or database restart resumes from durable states.
+An ambiguous broadcast records signed-transaction identity and is reconciled
+by the recovery worker: on-chain lookup first, then — after a grace window and
+only from the stored nonce, gas, and fee fields — an identical re-broadcast
+whose recomputed hash must match the stored one. Receipt observations record
+block hash/number; finalization requires canonical confirmations. Reorgs
+return non-final transactions to broadcast. Replacement uses the same Ethereum
+account nonce, is linked explicitly, bumps fees within the configured ceiling,
+and never changes USDC calldata; whichever version mines becomes the recorded
+truth. Process or database restart resumes from durable states.
 
 See [settlement flow](SETTLEMENT_FLOW.md), [data model](DATA_MODEL.md), and
 [ADR-0001](decisions/0001-modular-monolith-and-scope.md).

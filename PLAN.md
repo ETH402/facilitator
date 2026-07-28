@@ -61,8 +61,8 @@ Status: implementation in progress on `milestone-3-settlement`. The execution
 model is recorded in [ADR-0004](docs/decisions/0004-settlement-execution-model.md):
 GCP Cloud KMS, a single signer address, durable nonce allocation, recipient-gated
 `/settle` admission, explicit worker leases, and a configurable expiry margin.
-The endpoint, broadcast pipeline, workers, and development signer backend are
-implemented; the KMS backend and broadcast recovery remain.
+The endpoint, broadcast pipeline, workers, development signer backend, and
+recovery are implemented; the KMS backend remains.
 
 - [x] mandatory gas policy before any signer can be enabled
 - [x] accepted execution model and resolved design questions
@@ -72,15 +72,19 @@ implemented; the KMS backend and broadcast recovery remain.
 - [x] worker lease primitive: claim, renew, release, stale reclaim
 - [ ] Cloud KMS signer behind the existing interface
 - [x] idempotent broadcast and confirmation workers over the lease
-- [ ] ambiguous-RPC recovery, replacements, dropped transactions, reorg handling
+- [x] ambiguous-RPC recovery, replacements, dropped transactions, reorg handling
 - [x] `/settle` endpoint and confirmed-only volume
 
 The `/settle` endpoint requires a prior `/verify` and runs the broadcast
 pipeline inline (sign once, broadcast once, record the hash), returning the
 official `SettleResponse`; the broadcast worker retries durable intents and the
-confirmation worker finalizes at the configured depth. The development key
-signer is the only non-disabled backend until the Cloud KMS signer lands, and
-`external` mode is rejected at startup in the meantime.
+confirmation worker finalizes at the configured depth. The recovery worker
+reconciles ambiguous broadcasts on chain (identical re-broadcast after a grace
+window, proven by hash), replaces stuck pendings with same-nonce fee bumps,
+fills dropped nonce gaps that block later transactions, and returns reorged
+transactions to broadcast. The development key signer is the only non-disabled
+backend until the Cloud KMS signer lands, and `external` mode is rejected at
+startup in the meantime.
 
 ## Milestone 4 — public deployment
 
