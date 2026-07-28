@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,24 +20,28 @@ const (
 )
 
 type Config struct {
-	Environment        string
-	HTTPAddr           string
-	PublicBaseURL      string
-	DatabaseURL        string
-	DatabaseMaxConns   int32
-	EthereumRPCURL     string
-	FallbackRPCURL     string
-	ChainID            uint64
-	Network            string
-	USDCContract       string
-	RPCTimeout         time.Duration
-	RPCReadRetries     int
-	Confirmations      uint64
-	MaxFeePerGasWei    string
-	MaxPriorityFeeWei  string
-	MaxGasLimit        uint64
-	SignerMode         string
-	DevSignerKey       string
+	Environment       string
+	HTTPAddr          string
+	PublicBaseURL     string
+	DatabaseURL       string
+	DatabaseMaxConns  int32
+	EthereumRPCURL    string
+	FallbackRPCURL    string
+	ChainID           uint64
+	Network           string
+	USDCContract      string
+	RPCTimeout        time.Duration
+	RPCReadRetries    int
+	Confirmations     uint64
+	MaxFeePerGasWei   string
+	MaxPriorityFeeWei string
+	MaxGasLimit       uint64
+	SignerMode        string
+	DevSignerKey      string
+	// KMSKeyName is the Cloud KMS key version resource (projects/…/locations/…/
+	// keyRings/…/cryptoKeys/…/cryptoKeyVersions/N) used by the external signer
+	// backend. Credentials come from Application Default Credentials.
+	KMSKeyName         string
 	AllowUnsafeSigner  bool
 	EmailBackend       string
 	EmailFileDir       string
@@ -100,6 +105,7 @@ func Load() (Config, error) {
 		MaxGasLimit:                l.uint64("ETH402_MAX_GAS_LIMIT", 0),
 		SignerMode:                 l.str("ETH402_SIGNER_MODE", "disabled"),
 		DevSignerKey:               os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
+		KMSKeyName:                 l.str("ETH402_KMS_KEY_NAME", ""),
 		AllowUnsafeSigner:          l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
 		EmailBackend:               l.str("ETH402_EMAIL_BACKEND", "log"),
 		EmailFileDir:               l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
@@ -206,16 +212,14 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("email domain %q cannot be both allowed and denied", domain))
 		}
 	}
-	if c.SignerMode == "external" {
-		// The external backend is the Cloud KMS signer, which does not exist
-		// yet (ADR-0004 decision 8). Fail closed rather than start with no
-		// implementation behind the name.
-		errs = append(errs, errors.New("signer mode external is reserved for the Cloud KMS backend and is not available in this build"))
-	} else if c.SignerMode != "disabled" && c.SignerMode != "development" {
-		errs = append(errs, errors.New("signer mode must be disabled or development"))
+	if c.SignerMode != "disabled" && c.SignerMode != "development" && c.SignerMode != "external" {
+		errs = append(errs, errors.New("signer mode must be disabled, development, or external"))
 	}
 	if c.SignerMode == "development" && c.DevSignerKey == "" {
 		errs = append(errs, errors.New("development signer requires a private key"))
+	}
+	if c.SignerMode == "external" && !kmsKeyNamePattern.MatchString(c.KMSKeyName) {
+		errs = append(errs, errors.New("external signer requires ETH402_KMS_KEY_NAME as projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N"))
 	}
 	if c.Environment == "production" {
 		if c.PublicBaseURL != "" && !strings.HasPrefix(c.PublicBaseURL, "https://") {
@@ -236,6 +240,10 @@ func (c Config) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// kmsKeyNamePattern pins the Cloud KMS key version resource shape; signing
+// always names a concrete version so rotation is an explicit config change.
+var kmsKeyNamePattern = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[1-9][0-9]*$`)
 
 // loader reads environment variables and accumulates parse failures so that a
 // malformed value is reported by name instead of silently collapsing to a

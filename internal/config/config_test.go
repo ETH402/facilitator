@@ -71,16 +71,23 @@ func TestSignerRequiresExplicitGasCeiling(t *testing.T) {
 	}
 }
 
-func TestExternalSignerReservedForKMS(t *testing.T) {
+func TestExternalSignerRequiresKMSKeyName(t *testing.T) {
 	t.Parallel()
-	// The external backend (Cloud KMS, ADR-0004) is not implemented yet, so the
-	// mode must fail closed even with an otherwise complete gas policy.
 	cfg := validConfig()
 	cfg.SignerMode = "external"
 	cfg.MaxFeePerGasWei = "30000000000"
 	cfg.MaxGasLimit = 120000
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("reserved external signer mode accepted")
+		t.Fatal("external signer accepted without a KMS key name")
+	}
+	cfg.KMSKeyName = "projects/eth402/locations/europe-west1/keyRings/eth402-settlement/cryptoKeys/eth402-settlement-signer/cryptoKeyVersions/1"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("external signer rejected with a valid key name: %v", err)
+	}
+	// Signing always names a concrete version: the bare key is not enough.
+	cfg.KMSKeyName = "projects/eth402/locations/europe-west1/keyRings/eth402-settlement/cryptoKeys/eth402-settlement-signer"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("external signer accepted a key without a version")
 	}
 }
 

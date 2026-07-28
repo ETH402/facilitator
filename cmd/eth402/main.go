@@ -82,6 +82,19 @@ func main() {
 				os.Exit(1)
 			}
 			transactionSigner = development
+		case "external":
+			kmsClient, err := signer.NewCloudKMSClient(root)
+			if err != nil {
+				logger.Error("Cloud KMS client initialization failed", "error", err)
+				os.Exit(1)
+			}
+			defer func() { _ = kmsClient.Close() }()
+			cloudKMS, err := signer.NewCloudKMS(root, kmsClient, cfg.KMSKeyName)
+			if err != nil {
+				logger.Error("Cloud KMS signer initialization failed", "error", err)
+				os.Exit(1)
+			}
+			transactionSigner = cloudKMS
 		default:
 			// Config validation rejects every other mode; this is defense in
 			// depth so a future mode cannot start without its backend.
