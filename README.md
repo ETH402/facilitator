@@ -12,8 +12,9 @@ successful `/verify` for the same payment and broadcasts
 `transferWithAuthorization` once, returning the transaction hash; confirmation
 completes asynchronously at 12 confirmations by default, with a recovery worker
 reconciling ambiguous broadcasts, stuck pendings, nonce gaps, and reorgs. The
-Cloud KMS signer backend remains open Milestone 3 work, so the available signer
-backends are the disabled default and the development key signer for local use.
+production signer backend is GCP Cloud KMS (`ETH402_SIGNER_MODE=external`);
+the disabled default and the development key signer for local use complete the
+available backends.
 
 Buyer USDC is designed to move directly from buyer to merchant through USDC's
 EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant

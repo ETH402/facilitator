@@ -86,6 +86,14 @@ versioned where noted.
   ETH402_MAX_FEE_PER_GAS_WEI)` from the latest block instead of the configured
   ceiling verbatim, so settlement no longer overpays beneath its own cap and
   replacements have bump headroom. The ceiling remains the hard spend bound.
+- Cloud KMS signer backend (`ETH402_SIGNER_MODE=external`), completing
+  Milestone 3. Signing runs against a GCP Cloud KMS `EC_SIGN_SECP256K1_SHA256`
+  key version named by `ETH402_KMS_KEY_NAME`; key material never leaves KMS.
+  The Ethereum sighash travels in the KMS digest field, DER signatures are
+  normalized to low-s (EIP-2), and the recovery id is found against the
+  address resolved from the key's public key at startup. Credentials come from
+  Application Default Credentials. Verified end-to-end: a KMS-signed
+  transaction was broadcast and mined on the local Anvil chain.
 - Real `eth402_settlement_requests_total` and `eth402_settlement_failures_total`
   metrics replacing the zero placeholders.
 

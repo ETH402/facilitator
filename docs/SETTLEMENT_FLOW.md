@@ -4,8 +4,8 @@ Milestone 2 implements the verification portion through `/verify`. It performs
 strict scope checks, checks USDC `authorizationState`, verifies the EIP-712
 signature with the pinned official SDK, and simulates
 `transferWithAuthorization`. It never signs or broadcasts a transaction.
-Milestone 3 implements settlement as shown below; the Cloud KMS signer backend
-remains the only open item on the milestone checklist.
+Milestone 3 implements settlement as shown below, including the Cloud KMS
+signer backend.
 
 ```mermaid
 sequenceDiagram
@@ -99,6 +99,8 @@ enforcement.
 
 The facilitator signer signs the outer Ethereum transaction and pays gas. It
 does not sign buyer authorization and never holds USDC. Merchant-specific
-signers are not required. The available backends are the disabled default and
-the development key signer for local use; `external` is reserved for Cloud KMS
-and rejected at startup until that backend lands.
+signers are not required. The production backend is GCP Cloud KMS
+(`ETH402_SIGNER_MODE=external` with `ETH402_KMS_KEY_NAME` naming a secp256k1
+key version); key material never leaves KMS and every signature is a bounded
+network round trip under `ETH402_SIGNING_TIMEOUT`. The disabled default and
+the development key signer for local use complete the set.

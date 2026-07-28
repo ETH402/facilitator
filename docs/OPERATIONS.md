@@ -23,6 +23,42 @@ balance is what caps that loss. This is required before enabling any signer, and
 is not superseded by the in-process calldata allowlist. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).
 
+## Cloud KMS signer
+
+The production backend is GCP Cloud KMS with an `EC_SIGN_SECP256K1_SHA256` key.
+Provision it once per environment:
+
+```sh
+gcloud services enable cloudkms.googleapis.com --project=PROJECT
+gcloud kms keyrings create eth402-settlement --location=REGION --project=PROJECT
+gcloud kms keys create eth402-settlement-signer \
+  --keyring=eth402-settlement --location=REGION --project=PROJECT \
+  --purpose=asymmetric-signing \
+  --default-algorithm=ec-sign-secp256k1-sha256 \
+  --protection-level=hsm
+```
+
+Cloud KMS offers secp256k1 only at HSM protection level — this is still the
+plain Cloud KMS API, IAM, and audit logging of ADR-0004 decision 8, not the
+dedicated Cloud HSM product the ADR weighed as a signer. The runtime identity
+needs `roles/cloudkms.signerVerifier` and `roles/cloudkms.publicKeyViewer` on
+the key (the public key read resolves the signer address at startup). In
+production that identity is a dedicated service account; locally,
+`gcloud auth application-default login` provides it through ADC.
+
+Set `ETH402_SIGNER_MODE=external` and `ETH402_KMS_KEY_NAME` to the full key
+*version* resource
+(`projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N`).
+Naming a version makes rotation an explicit config change: create the new
+version, point the variable at it, restart. Startup resolves and logs the
+derived signer address — fund it with the bounded hot balance only, and verify
+the address out-of-band before the first top-up.
+
+Key destruction in Cloud KMS is scheduled (24h minimum by default) rather than
+immediate, so an accidental destroy is recoverable within the window; never
+destroy the only enabled version while its nonce sequence has in-flight
+transactions.
+
 Gas maximums are typed decimal configuration. Enabling any non-disabled
 `ETH402_SIGNER_MODE` requires non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and
 `ETH402_MAX_GAS_LIMIT`: zero means unset, not unlimited, so a signer cannot be
