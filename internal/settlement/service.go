@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/config"
@@ -29,13 +30,22 @@ type Store interface {
 	ClaimPayments(context.Context, ClaimRequest) ([]Lease, error)
 	ReleaseLease(ctx context.Context, paymentID, worker string) error
 	LoadSettlementWork(ctx context.Context, paymentID string) (Work, error)
-	MarkTxSigned(ctx context.Context, transactionID, rawHash string) error
+	MarkTxSigned(ctx context.Context, transactionID, rawHash string, gasLimit uint64, maxFee, priorityFee string) error
 	MarkTxBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error
 	MarkTxAmbiguous(ctx context.Context, paymentID, transactionID, actor string) error
 	MarkIntentExpired(ctx context.Context, paymentID, transactionID, actor string) error
 	MarkTxConfirming(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash, actor string) error
 	MarkTxConfirmed(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxReverted(ctx context.Context, paymentID, transactionID string, gasUsed uint64, gasPrice, actor string) error
+	MarkTxRecoveredBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error
+	MarkTxReplaced(ctx context.Context, paymentID, oldTxID string, replacement Replacement, actor string) error
+	MarkReplacementLanded(ctx context.Context, paymentID, minedTxID string, succeeded bool, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
+	MarkTxReorgedOut(ctx context.Context, paymentID, transactionID, actor string) error
+	ListReplacedPending(ctx context.Context) ([]TrackedTransaction, error)
+	ListDroppedBlockingGaps(ctx context.Context, signerAddress string) ([]Work, error)
+	ListGapFillers(ctx context.Context) ([]TrackedTransaction, error)
+	MarkGapFillerBroadcast(ctx context.Context, transactionID, rawHash, txHash string, gasLimit uint64, maxFee, priorityFee string) error
+	MarkGapFillerResolved(ctx context.Context, transactionID string, gasUsed uint64, gasPrice string) error
 }
 
 // Chain is the Ethereum surface settlement uses. Broadcasting a transaction
@@ -44,11 +54,13 @@ type Chain interface {
 	ethereum.Broadcaster
 	ethereum.ReceiptReader
 	BlockNumber(context.Context) (uint64, error)
+	BlockByNumber(ctx context.Context, number *uint64) (*ethereum.Block, error)
+	TransactionByHash(ctx context.Context, txHash string) (*ethereum.ChainTransaction, error)
 }
 
 // Config pins every value the settlement path is allowed to spend or wait.
-// The gas fields are the operator's ceilings, used verbatim: estimation would
-// make spend depend on chain conditions the configuration was meant to bound.
+// MaxFeePerGas is the hard spend ceiling: initial fees are estimated beneath
+// it and replacement bumps may never cross it (ADR-0004 decision 6).
 type Config struct {
 	SignerAddress     string
 	ExpiryMargin      time.Duration
@@ -59,6 +71,13 @@ type Config struct {
 	GasLimit          uint64
 	MaxFeePerGas      string
 	MaxPriorityFeeGas string
+	// RecoveryGrace is how long recovery waits after an ambiguous broadcast
+	// before re-broadcasting the identical transaction; within the window
+	// only on-chain lookups run.
+	RecoveryGrace time.Duration
+	// ReplacementAfter is how long a broadcast may sit pending before
+	// recovery replaces it with a fee bump.
+	ReplacementAfter time.Duration
 }
 
 // Service runs settlement: admission, the broadcast pipeline shared by HTTP
@@ -141,6 +160,30 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 	}, nil
 }
 
+// estimateFees prices a settlement transaction from the latest block's base
+// fee, bounded by the operator's configured ceiling: the ceiling remains the
+// hard spend limit while estimation avoids overpaying beneath it and leaves
+// headroom for replacement bumps.
+func (s *Service) estimateFees(ctx context.Context) (maxFee, priority *big.Int, err error) {
+	block, err := s.chain.BlockByNumber(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	baseFee, ok := new(big.Int).SetString(block.BaseFee, 10)
+	if !ok {
+		return nil, nil, fmt.Errorf("latest block reports invalid base fee %q", block.BaseFee)
+	}
+	tip, ok := new(big.Int).SetString(s.cfg.MaxPriorityFeeGas, 10)
+	if !ok {
+		return nil, nil, fmt.Errorf("configured priority fee %q is not a decimal integer", s.cfg.MaxPriorityFeeGas)
+	}
+	ceiling, ok := new(big.Int).SetString(s.cfg.MaxFeePerGas, 10)
+	if !ok {
+		return nil, nil, fmt.Errorf("configured max fee %q is not a decimal integer", s.cfg.MaxFeePerGas)
+	}
+	return EstimateFees(baseFee, tip, ceiling)
+}
+
 // Broadcast runs the shared pipeline for one payment: claim the lease, sign
 // the committed intent exactly once, broadcast once, record the hash. The
 // order is ADR-0004 decision 3 — the intent and nonce are durable before
@@ -195,6 +238,12 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 	if err != nil {
 		return "", fmt.Errorf("build calldata: %w", err)
 	}
+	maxFee, priorityFee, err := s.estimateFees(ctx)
+	if err != nil {
+		// Fees are never guessed: a failed estimate leaves the committed
+		// intent untouched for the next tick.
+		return "", fmt.Errorf("estimate fees: %w", err)
+	}
 	signCtx, cancel := context.WithTimeout(ctx, s.cfg.SigningTimeout)
 	signed, err := s.signer.SignTransaction(signCtx, signer.Transaction{
 		ChainID:              config.MainnetChainID,
@@ -203,8 +252,8 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 		Data:                 calldata,
 		Value:                "0",
 		GasLimit:             s.cfg.GasLimit,
-		MaxFeePerGas:         s.cfg.MaxFeePerGas,
-		MaxPriorityFeePerGas: s.cfg.MaxPriorityFeeGas,
+		MaxFeePerGas:         maxFee.String(),
+		MaxPriorityFeePerGas: priorityFee.String(),
 	})
 	cancel()
 	if err != nil {
@@ -215,7 +264,8 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 	keccak := sha3.NewLegacyKeccak256()
 	keccak.Write(signed.Raw)
 	rawSum := keccak.Sum(nil)
-	if err := s.store.MarkTxSigned(ctx, work.TransactionID, hex.EncodeToString(rawSum)); err != nil {
+	if err := s.store.MarkTxSigned(ctx, work.TransactionID, hex.EncodeToString(rawSum),
+		s.cfg.GasLimit, maxFee.String(), priorityFee.String()); err != nil {
 		return "", fmt.Errorf("record signed transaction: %w", err)
 	}
 	txHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw))
@@ -249,6 +299,14 @@ func (s *Service) Confirmation(ctx context.Context, paymentID, actor string) err
 		return fmt.Errorf("fetch receipt: %w", err)
 	}
 	if receipt == nil {
+		if work.TransactionStatus == "confirming" {
+			// The tx was seen mined but now has no canonical receipt: its
+			// block was reorged out. Return it to broadcast so it is
+			// observed from scratch. (A lagging provider can look the same;
+			// the next tick's receipt re-confirms it, so the thrash is
+			// harmless.)
+			return s.store.MarkTxReorgedOut(ctx, paymentID, work.TransactionID, actor)
+		}
 		return nil // Not yet mined; the next tick looks again.
 	}
 	if receipt.Status == 0 {

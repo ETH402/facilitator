@@ -15,6 +15,7 @@ func validConfig() Config {
 		SignerMode: "disabled", EmailBackend: "log", EmailTokenTTL: 1,
 		EmailResend: 1, WalletChallengeTTL: 1, WorkerInterval: 1,
 		SettlementExpiryMargin: 1, SigningTimeout: 1, SettlementLeaseDuration: 1,
+		SettlementRecoveryGrace: 1, SettlementReplacementAfter: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
 		TermsVersion: "test", APIKeyPepper: "01234567890123456789012345678901",
 	}

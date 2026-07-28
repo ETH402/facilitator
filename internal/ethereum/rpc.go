@@ -32,6 +32,23 @@ type ReceiptReader interface {
 	TransactionReceipt(context.Context, string) (*Receipt, error)
 }
 
+// ChainTransaction is the subset of eth_getTransactionByHash recovery uses:
+// whether the transaction is known at all, and whether it is still pending.
+type ChainTransaction struct {
+	Hash        string
+	BlockNumber *uint64 // nil while the transaction sits in the mempool
+}
+
+// Block carries the canonical identity of a block and its base fee, used for
+// reorg checks and fee estimation.
+type Block struct {
+	Hash   string
+	Number uint64
+	// BaseFee is a decimal wei string, keeping money in integer arithmetic.
+	// Empty for pre-London blocks, which mainnet no longer produces.
+	BaseFee string
+}
+
 // Receipt is the subset of eth_getTransactionReceipt settlement decisions use.
 // Gas price is a decimal wei string, keeping money in integer arithmetic.
 type Receipt struct {
@@ -240,4 +257,74 @@ func (c *Client) TransactionReceipt(ctx context.Context, txHash string) (*Receip
 		Status: status, BlockNumber: blockNumber, BlockHash: strings.ToLower(raw.BlockHash),
 		GasUsed: gasUsed, EffectiveGasPrice: gasPrice.String(),
 	}, nil
+}
+
+type rpcTransaction struct {
+	Hash        string  `json:"hash"`
+	BlockNumber *string `json:"blockNumber"`
+}
+
+// TransactionByHash looks a transaction up by hash, returning (nil, nil)
+// when the provider does not know it. A known transaction with a null block
+// number is pending in the mempool.
+func (c *Client) TransactionByHash(ctx context.Context, txHash string) (*ChainTransaction, error) {
+	result, err := c.readRaw(ctx, "eth_getTransactionByHash", []any{txHash})
+	if err != nil {
+		return nil, err
+	}
+	if string(result) == "null" {
+		return nil, nil
+	}
+	var raw rpcTransaction
+	if err := json.Unmarshal(result, &raw); err != nil {
+		return nil, fmt.Errorf("decode transaction: %w", err)
+	}
+	tx := &ChainTransaction{Hash: strings.ToLower(raw.Hash)}
+	if raw.BlockNumber != nil {
+		number, err := parseHexUint(*raw.BlockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("transaction block number %q: %w", *raw.BlockNumber, err)
+		}
+		tx.BlockNumber = &number
+	}
+	return tx, nil
+}
+
+type rpcBlock struct {
+	Hash    string `json:"hash"`
+	Number  string `json:"number"`
+	BaseFee string `json:"baseFeePerGas"`
+}
+
+// BlockByNumber fetches a canonical block by number; "latest" is used for fee
+// estimation. A nil number means the latest block.
+func (c *Client) BlockByNumber(ctx context.Context, number *uint64) (*Block, error) {
+	tag := "latest"
+	if number != nil {
+		tag = "0x" + strconv.FormatUint(*number, 16)
+	}
+	result, err := c.readRaw(ctx, "eth_getBlockByNumber", []any{tag, false})
+	if err != nil {
+		return nil, err
+	}
+	if string(result) == "null" {
+		return nil, fmt.Errorf("block %s does not exist", tag)
+	}
+	var raw rpcBlock
+	if err := json.Unmarshal(result, &raw); err != nil {
+		return nil, fmt.Errorf("decode block: %w", err)
+	}
+	blockNumber, err := parseHexUint(raw.Number)
+	if err != nil {
+		return nil, fmt.Errorf("block number %q: %w", raw.Number, err)
+	}
+	baseFee := "0"
+	if raw.BaseFee != "" {
+		parsed, ok := new(big.Int).SetString(strings.TrimPrefix(raw.BaseFee, "0x"), 16)
+		if !ok || parsed.Sign() < 0 {
+			return nil, fmt.Errorf("base fee %q is not unsigned hex", raw.BaseFee)
+		}
+		baseFee = parsed.String()
+	}
+	return &Block{Hash: strings.ToLower(raw.Hash), Number: blockNumber, BaseFee: baseFee}, nil
 }

@@ -29,6 +29,18 @@ type fakeStore struct {
 	confirmed       bool
 	reverted        bool
 	released        int
+
+	recoveredTxHash   string
+	replaced          bool
+	replacement       Replacement
+	landed            bool
+	landedSucceeded   bool
+	reorgedOut        bool
+	replacedPending   []TrackedTransaction
+	gapWorks          []Work
+	gapFillers        []TrackedTransaction
+	gapFillerTxHash   string
+	gapFillerResolved bool
 }
 
 func (f *fakeStore) CreateSettlementIntent(context.Context, IntentRequest) (Intent, error) {
@@ -55,7 +67,7 @@ func (f *fakeStore) LoadSettlementWork(context.Context, string) (Work, error) {
 	return f.work, nil
 }
 
-func (f *fakeStore) MarkTxSigned(_ context.Context, _, rawHash string) error {
+func (f *fakeStore) MarkTxSigned(_ context.Context, _, rawHash string, _ uint64, _, _ string) error {
 	f.signedRawHash = rawHash
 	return nil
 }
@@ -90,6 +102,50 @@ func (f *fakeStore) MarkTxReverted(context.Context, string, string, uint64, stri
 	return nil
 }
 
+func (f *fakeStore) MarkTxRecoveredBroadcast(_ context.Context, _, _, txHash, _ string) error {
+	f.recoveredTxHash = txHash
+	return nil
+}
+
+func (f *fakeStore) MarkTxReplaced(_ context.Context, _, _ string, replacement Replacement, _ string) error {
+	f.replaced = true
+	f.replacement = replacement
+	return nil
+}
+
+func (f *fakeStore) MarkReplacementLanded(_ context.Context, _, _ string, succeeded bool, _ uint64, _ string, _ uint64, _, _ string) error {
+	f.landed = true
+	f.landedSucceeded = succeeded
+	return nil
+}
+
+func (f *fakeStore) MarkTxReorgedOut(context.Context, string, string, string) error {
+	f.reorgedOut = true
+	return nil
+}
+
+func (f *fakeStore) ListReplacedPending(context.Context) ([]TrackedTransaction, error) {
+	return f.replacedPending, nil
+}
+
+func (f *fakeStore) ListDroppedBlockingGaps(context.Context, string) ([]Work, error) {
+	return f.gapWorks, nil
+}
+
+func (f *fakeStore) ListGapFillers(context.Context) ([]TrackedTransaction, error) {
+	return f.gapFillers, nil
+}
+
+func (f *fakeStore) MarkGapFillerBroadcast(_ context.Context, _, _, txHash string, _ uint64, _, _ string) error {
+	f.gapFillerTxHash = txHash
+	return nil
+}
+
+func (f *fakeStore) MarkGapFillerResolved(context.Context, string, uint64, string) error {
+	f.gapFillerResolved = true
+	return nil
+}
+
 type fakeSigner struct {
 	raw []byte
 	err error
@@ -104,22 +160,43 @@ func (f fakeSigner) SignTransaction(context.Context, signer.Transaction) (signer
 }
 
 type fakeChain struct {
-	txHash  string
-	sendErr error
-	receipt *ethereum.Receipt
-	block   uint64
+	txHash       string
+	sendErr      error
+	receipt      *ethereum.Receipt
+	receipts     map[string]*ethereum.Receipt
+	transactions map[string]*ethereum.ChainTransaction
+	block        uint64
+	baseFee      string
 }
 
 func (f fakeChain) SendRawTransaction(context.Context, string) (string, error) {
 	return f.txHash, f.sendErr
 }
 
-func (f fakeChain) TransactionReceipt(context.Context, string) (*ethereum.Receipt, error) {
+func (f fakeChain) TransactionReceipt(_ context.Context, txHash string) (*ethereum.Receipt, error) {
+	if f.receipts != nil {
+		return f.receipts[txHash], nil
+	}
 	return f.receipt, nil
 }
 
 func (f fakeChain) BlockNumber(context.Context) (uint64, error) {
 	return f.block, nil
+}
+
+func (f fakeChain) BlockByNumber(context.Context, *uint64) (*ethereum.Block, error) {
+	baseFee := f.baseFee
+	if baseFee == "" {
+		baseFee = "1000000000"
+	}
+	return &ethereum.Block{Hash: "0x" + strings.Repeat("aa", 32), Number: f.block, BaseFee: baseFee}, nil
+}
+
+func (f fakeChain) TransactionByHash(_ context.Context, txHash string) (*ethereum.ChainTransaction, error) {
+	if f.transactions != nil {
+		return f.transactions[txHash], nil
+	}
+	return nil, nil
 }
 
 func testConfig() Config {
@@ -133,6 +210,8 @@ func testConfig() Config {
 		GasLimit:          100000,
 		MaxFeePerGas:      "30000000000",
 		MaxPriorityFeeGas: "2000000000",
+		RecoveryGrace:     2 * time.Minute,
+		ReplacementAfter:  5 * time.Minute,
 	}
 }
 

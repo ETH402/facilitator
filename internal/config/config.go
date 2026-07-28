@@ -63,10 +63,16 @@ type Config struct {
 	// SettlementLeaseDuration is how long a worker holds a payment before the
 	// lease lapses and another worker may reclaim the work.
 	SettlementLeaseDuration time.Duration
-	LogLevel                string
-	MetricsEnabled          bool
-	PublicRatePerMin        int
-	RegistrationRate        int
+	// SettlementRecoveryGrace is how long recovery waits after an ambiguous
+	// broadcast before re-broadcasting the identical transaction.
+	SettlementRecoveryGrace time.Duration
+	// SettlementReplacementAfter is how long a broadcast may sit pending
+	// before recovery replaces it with a fee bump.
+	SettlementReplacementAfter time.Duration
+	LogLevel                   string
+	MetricsEnabled             bool
+	PublicRatePerMin           int
+	RegistrationRate           int
 	// TrustedProxies lists the reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is always
 	// the client, which is correct only when the service is exposed directly.
@@ -76,48 +82,50 @@ type Config struct {
 func Load() (Config, error) {
 	var l loader
 	cfg := Config{
-		Environment:             l.str("ETH402_ENV", "development"),
-		HTTPAddr:                l.str("ETH402_HTTP_ADDR", ":8080"),
-		PublicBaseURL:           l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
-		DatabaseURL:             os.Getenv("ETH402_DATABASE_URL"),
-		DatabaseMaxConns:        l.int32("ETH402_DATABASE_MAX_CONNS", 10),
-		EthereumRPCURL:          os.Getenv("ETH402_ETHEREUM_RPC_URL"),
-		FallbackRPCURL:          os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
-		ChainID:                 l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
-		Network:                 l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
-		USDCContract:            l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
-		RPCTimeout:              l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
-		RPCReadRetries:          l.int("ETH402_RPC_READ_RETRIES", 2),
-		Confirmations:           l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
-		MaxFeePerGasWei:         l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
-		MaxPriorityFeeWei:       l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
-		MaxGasLimit:             l.uint64("ETH402_MAX_GAS_LIMIT", 0),
-		SignerMode:              l.str("ETH402_SIGNER_MODE", "disabled"),
-		DevSignerKey:            os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
-		AllowUnsafeSigner:       l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
-		EmailBackend:            l.str("ETH402_EMAIL_BACKEND", "log"),
-		EmailFileDir:            l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
-		EmailTokenTTL:           l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
-		EmailResend:             l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
-		WalletChallengeTTL:      l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
-		RecipientCooldown:       l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
-		TermsVersion:            l.str("ETH402_TERMS_VERSION", "2026-07-27"),
-		APIKeyPepper:            l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
-		OperatorToken:           os.Getenv("ETH402_OPERATOR_TOKEN"),
-		BlockDisposable:         l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
-		RestrictFreeEmail:       l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
-		EmailAllowlist:          l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
-		EmailDenylist:           l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
-		StatsCacheTTL:           l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
-		WorkerInterval:          l.duration("ETH402_WORKER_INTERVAL", 15*time.Second),
-		SettlementExpiryMargin:  l.duration("ETH402_SETTLEMENT_EXPIRY_MARGIN", time.Minute),
-		SigningTimeout:          l.duration("ETH402_SIGNING_TIMEOUT", 10*time.Second),
-		SettlementLeaseDuration: l.duration("ETH402_SETTLEMENT_LEASE_DURATION", 2*time.Minute),
-		LogLevel:                l.str("ETH402_LOG_LEVEL", "info"),
-		MetricsEnabled:          l.boolean("ETH402_METRICS_ENABLED", true),
-		PublicRatePerMin:        l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
-		RegistrationRate:        l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
-		TrustedProxies:          l.prefixes("ETH402_TRUSTED_PROXIES"),
+		Environment:                l.str("ETH402_ENV", "development"),
+		HTTPAddr:                   l.str("ETH402_HTTP_ADDR", ":8080"),
+		PublicBaseURL:              l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
+		DatabaseURL:                os.Getenv("ETH402_DATABASE_URL"),
+		DatabaseMaxConns:           l.int32("ETH402_DATABASE_MAX_CONNS", 10),
+		EthereumRPCURL:             os.Getenv("ETH402_ETHEREUM_RPC_URL"),
+		FallbackRPCURL:             os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
+		ChainID:                    l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
+		Network:                    l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
+		USDCContract:               l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
+		RPCTimeout:                 l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
+		RPCReadRetries:             l.int("ETH402_RPC_READ_RETRIES", 2),
+		Confirmations:              l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
+		MaxFeePerGasWei:            l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
+		MaxPriorityFeeWei:          l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
+		MaxGasLimit:                l.uint64("ETH402_MAX_GAS_LIMIT", 0),
+		SignerMode:                 l.str("ETH402_SIGNER_MODE", "disabled"),
+		DevSignerKey:               os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
+		AllowUnsafeSigner:          l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
+		EmailBackend:               l.str("ETH402_EMAIL_BACKEND", "log"),
+		EmailFileDir:               l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
+		EmailTokenTTL:              l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
+		EmailResend:                l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
+		WalletChallengeTTL:         l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
+		RecipientCooldown:          l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
+		TermsVersion:               l.str("ETH402_TERMS_VERSION", "2026-07-27"),
+		APIKeyPepper:               l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
+		OperatorToken:              os.Getenv("ETH402_OPERATOR_TOKEN"),
+		BlockDisposable:            l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
+		RestrictFreeEmail:          l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
+		EmailAllowlist:             l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
+		EmailDenylist:              l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
+		StatsCacheTTL:              l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
+		WorkerInterval:             l.duration("ETH402_WORKER_INTERVAL", 15*time.Second),
+		SettlementExpiryMargin:     l.duration("ETH402_SETTLEMENT_EXPIRY_MARGIN", time.Minute),
+		SigningTimeout:             l.duration("ETH402_SIGNING_TIMEOUT", 10*time.Second),
+		SettlementLeaseDuration:    l.duration("ETH402_SETTLEMENT_LEASE_DURATION", 2*time.Minute),
+		SettlementRecoveryGrace:    l.duration("ETH402_SETTLEMENT_RECOVERY_GRACE", 2*time.Minute),
+		SettlementReplacementAfter: l.duration("ETH402_SETTLEMENT_REPLACEMENT_AFTER", 5*time.Minute),
+		LogLevel:                   l.str("ETH402_LOG_LEVEL", "info"),
+		MetricsEnabled:             l.boolean("ETH402_METRICS_ENABLED", true),
+		PublicRatePerMin:           l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
+		RegistrationRate:           l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
+		TrustedProxies:             l.prefixes("ETH402_TRUSTED_PROXIES"),
 	}
 	return cfg, errors.Join(cfg.Validate(), errors.Join(l.errs...))
 }
@@ -158,6 +166,9 @@ func (c Config) Validate() error {
 	}
 	if c.SettlementExpiryMargin <= 0 || c.SigningTimeout <= 0 || c.SettlementLeaseDuration <= 0 {
 		errs = append(errs, errors.New("settlement expiry margin, signing timeout, and lease duration must be positive"))
+	}
+	if c.SettlementRecoveryGrace <= 0 || c.SettlementReplacementAfter <= 0 {
+		errs = append(errs, errors.New("settlement recovery grace and replacement delay must be positive"))
 	}
 	if len(c.APIKeyPepper) < 32 {
 		errs = append(errs, errors.New("API key pepper must be at least 32 bytes"))

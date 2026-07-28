@@ -131,3 +131,51 @@ func TestTransactionReceipt(t *testing.T) {
 		t.Fatalf("gas price = %q", receipt.EffectiveGasPrice)
 	}
 }
+
+func TestTransactionByHashPending(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"hash":"0x` + strings.Repeat("ab", 32) + `","blockNumber":null}}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "", time.Second, 0)
+	tx, err := client.TransactionByHash(context.Background(), "0x"+strings.Repeat("ab", 32))
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if tx == nil || tx.BlockNumber != nil {
+		t.Fatalf("tx = %+v, want pending", tx)
+	}
+}
+
+func TestTransactionByHashUnknown(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "", time.Second, 0)
+	tx, err := client.TransactionByHash(context.Background(), "0x"+strings.Repeat("ab", 32))
+	if err != nil || tx != nil {
+		t.Fatalf("got %v, %v", tx, err)
+	}
+}
+
+func TestBlockByNumber(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{
+			"hash":"0x` + strings.Repeat("cd", 32) + `","number":"0x10",
+			"baseFeePerGas":"0x3b9aca00"}}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "", time.Second, 0)
+	number := uint64(16)
+	block, err := client.BlockByNumber(context.Background(), &number)
+	if err != nil {
+		t.Fatalf("block: %v", err)
+	}
+	if block.Hash != "0x"+strings.Repeat("cd", 32) || block.Number != 16 || block.BaseFee != "1000000000" {
+		t.Fatalf("block = %+v", block)
+	}
+}

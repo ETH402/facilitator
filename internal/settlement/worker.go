@@ -42,9 +42,11 @@ func (s *Service) BroadcastWorker() *Worker {
 }
 
 // ConfirmationWorker watches broadcast transactions and advances payments to
-// confirming, confirmed, or reverted from their receipts.
+// confirming, confirmed, or reverted from their receipts. Replaced payments
+// are claimed too: the active replacement is what must be watched, while
+// recovery watches the superseded original.
 func (s *Service) ConfirmationWorker() *Worker {
-	return s.worker("confirmation", []State{StateBroadcast, StateConfirming}, s.Confirmation)
+	return s.worker("confirmation", []State{StateBroadcast, StateConfirming, StateReplaced}, s.Confirmation)
 }
 
 func (s *Service) worker(name string, states []State, advance func(context.Context, string, string) error) *Worker {
@@ -98,7 +100,10 @@ func (w *Worker) process(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := w.advance(ctx, lease.PaymentID, w.identity); err != nil {
+		// Transitions are audited with the coarse actor type the schema
+		// allows; the full identity stays on the lease, where granularity
+		// matters for ownership.
+		if err := w.advance(ctx, lease.PaymentID, "worker"); err != nil {
 			w.logger.WarnContext(ctx, "advance payment failed",
 				"worker", w.name, "payment_id", lease.PaymentID,
 				"payment_identity", lease.PaymentIdentity, "error", err)

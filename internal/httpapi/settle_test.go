@@ -44,7 +44,9 @@ func (f settleFakeStore) LoadSettlementWork(context.Context, string) (settlement
 	return f.work, nil
 }
 
-func (f settleFakeStore) MarkTxSigned(context.Context, string, string) error { return nil }
+func (f settleFakeStore) MarkTxSigned(context.Context, string, string, uint64, string, string) error {
+	return nil
+}
 
 func (f settleFakeStore) MarkTxBroadcast(context.Context, string, string, string, string) error {
 	return nil
@@ -63,6 +65,42 @@ func (f settleFakeStore) MarkTxConfirmed(context.Context, string, string, uint64
 }
 
 func (f settleFakeStore) MarkTxReverted(context.Context, string, string, uint64, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkTxRecoveredBroadcast(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkTxReplaced(context.Context, string, string, settlement.Replacement, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkReplacementLanded(context.Context, string, string, bool, uint64, string, uint64, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkTxReorgedOut(context.Context, string, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) ListReplacedPending(context.Context) ([]settlement.TrackedTransaction, error) {
+	return nil, nil
+}
+
+func (f settleFakeStore) ListDroppedBlockingGaps(context.Context, string) ([]settlement.Work, error) {
+	return nil, nil
+}
+
+func (f settleFakeStore) ListGapFillers(context.Context) ([]settlement.TrackedTransaction, error) {
+	return nil, nil
+}
+
+func (f settleFakeStore) MarkGapFillerBroadcast(context.Context, string, string, string, uint64, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkGapFillerResolved(context.Context, string, uint64, string) error {
 	return nil
 }
 
@@ -90,6 +128,14 @@ func (f settleFakeChain) TransactionReceipt(context.Context, string) (*ethereum.
 }
 
 func (f settleFakeChain) BlockNumber(context.Context) (uint64, error) { return 0, nil }
+
+func (f settleFakeChain) BlockByNumber(context.Context, *uint64) (*ethereum.Block, error) {
+	return &ethereum.Block{BaseFee: "1000000000"}, nil
+}
+
+func (f settleFakeChain) TransactionByHash(context.Context, string) (*ethereum.ChainTransaction, error) {
+	return nil, nil
+}
 
 func settleTestService(txHash string) *settlement.Service {
 	work := settlement.Work{

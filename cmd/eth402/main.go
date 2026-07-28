@@ -110,9 +110,11 @@ func main() {
 			WorkerInterval: cfg.WorkerInterval, Confirmations: cfg.Confirmations,
 			GasLimit: cfg.MaxGasLimit, MaxFeePerGas: cfg.MaxFeePerGasWei,
 			MaxPriorityFeeGas: cfg.MaxPriorityFeeWei,
+			RecoveryGrace:     cfg.SettlementRecoveryGrace, ReplacementAfter: cfg.SettlementReplacementAfter,
 		}, logger)
 		go settlementService.BroadcastWorker().Run(root)
 		go settlementService.ConfirmationWorker().Run(root)
+		go settlementService.RecoveryWorker().Run(root)
 	}
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,
