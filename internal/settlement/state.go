@@ -24,7 +24,7 @@ var transitions = map[State]map[State]bool{
 	StateVerified:     {StateBroadcasting: true, StateExpired: true, StateManualReview: true},
 	StateBroadcasting: {StateBroadcast: true, StateFailed: true, StateExpired: true, StateManualReview: true},
 	StateBroadcast:    {StateConfirming: true, StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
-	StateConfirming:   {StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
+	StateConfirming:   {StateBroadcast: true, StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
 	StateReplaced:     {StateConfirming: true, StateConfirmed: true, StateReverted: true, StateManualReview: true},
 	StateManualReview: {StateVerified: true, StateBroadcast: true, StateConfirming: true, StateFailed: true, StateExpired: true},
 }

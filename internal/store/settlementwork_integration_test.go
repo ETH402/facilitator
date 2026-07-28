@@ -94,10 +94,10 @@ func TestBroadcastLifecycle(t *testing.T) {
 	rawHash := strings.Repeat("e", 64)
 	txHash := "0x" + strings.Repeat("f", 64)
 
-	if err := store.MarkTxSigned(ctx, work.TransactionID, rawHash); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, rawHash, 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
-	if err := store.MarkTxSigned(ctx, work.TransactionID, rawHash); !errors.Is(err, ErrSettlementRace) {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, rawHash, 120000, "30000000000", "2000000000"); !errors.Is(err, ErrSettlementRace) {
 		t.Fatalf("second mark signed = %v, want ErrSettlementRace", err)
 	}
 	if err := store.MarkTxBroadcast(ctx, paymentID, work.TransactionID, txHash, "worker"); err != nil {
@@ -131,7 +131,7 @@ func TestAmbiguousMovesPaymentToManualReview(t *testing.T) {
 	store := settlementTestStore(t)
 	ctx := context.Background()
 	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("a5", 34))
-	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64)); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
 	if err := store.MarkTxAmbiguous(ctx, paymentID, work.TransactionID, "worker"); err != nil {
@@ -153,7 +153,7 @@ func TestConfirmationLifecycle(t *testing.T) {
 	store := settlementTestStore(t)
 	ctx := context.Background()
 	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("b6", 34))
-	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64)); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
 	txHash := "0x" + strings.Repeat("f", 64)
@@ -201,7 +201,7 @@ func TestRevertedLifecycle(t *testing.T) {
 	store := settlementTestStore(t)
 	ctx := context.Background()
 	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("c7", 34))
-	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64)); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
 	if err := store.MarkTxBroadcast(ctx, paymentID, work.TransactionID, "0x"+strings.Repeat("f", 64), "worker"); err != nil {

@@ -51,18 +51,26 @@ RETURNING id, payment_identity, state, claimed_until`,
 func (s *Store) LoadSettlementWork(ctx context.Context, paymentID string) (settlement.Work, error) {
 	var work settlement.Work
 	var state, signature, nonce string
+	var rawHash, maxFee, priorityFee, gasLimitText *string
+	var broadcastAttemptedAt *time.Time
 	err := s.Pool.QueryRow(ctx, `
 SELECT p.id, p.payment_identity, p.state,
        p.payer_address, p.recipient_address, p.amount_atomic::text,
        p.authorization_nonce, p.valid_after, p.valid_before, p.payer_signature,
-       t.id, t.status, t.transaction_nonce::text, coalesce(t.tx_hash, '')
+       t.id, t.status, t.transaction_nonce::text, coalesce(t.tx_hash, ''),
+       t.signer_address, t.raw_transaction_hash,
+       t.gas_limit::text, t.max_fee_per_gas::text, t.max_priority_fee_per_gas::text,
+       t.broadcast_attempted_at, t.updated_at
 FROM payment_records p
 JOIN ethereum_transactions t ON t.payment_id = p.id AND t.status = ANY($2)
 WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
 		&work.PaymentID, &work.PaymentIdentity, &state,
 		&work.Authorization.From, &work.Authorization.To, &work.Authorization.Value,
 		&work.Authorization.Nonce, &work.Authorization.ValidAfter, &work.Authorization.ValidBefore,
-		&signature, &work.TransactionID, &work.TransactionStatus, &nonce, &work.TxHash)
+		&signature, &work.TransactionID, &work.TransactionStatus, &nonce, &work.TxHash,
+		&work.SignerAddress, &rawHash,
+		&gasLimitText, &maxFee, &priorityFee,
+		&broadcastAttemptedAt, &work.TransactionUpdatedAt)
 	if err != nil {
 		return settlement.Work{}, err
 	}
@@ -73,17 +81,41 @@ WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
 		return settlement.Work{}, err
 	}
 	work.Nonce = parsed
+	if rawHash != nil {
+		work.RawHash = *rawHash
+	}
+	if maxFee != nil {
+		work.MaxFeePerGas = *maxFee
+	}
+	if priorityFee != nil {
+		work.MaxPriorityFeePerGas = *priorityFee
+	}
+	if broadcastAttemptedAt != nil {
+		work.BroadcastAttemptedAt = *broadcastAttemptedAt
+	}
+	if gasLimitText != nil {
+		gasLimit, err := parseNonce(*gasLimitText)
+		if err != nil {
+			return settlement.Work{}, fmt.Errorf("gas limit: %w", err)
+		}
+		work.GasLimit = gasLimit
+	}
 	return work, nil
 }
 
 // MarkTxSigned records that the intent's transaction was signed: the raw
 // transaction hash is the recovery handle for the ambiguous-broadcast case
-// (ADR-0004 decision 4), so it is persisted before any broadcast attempt.
-func (s *Store) MarkTxSigned(ctx context.Context, transactionID, rawHash string) error {
+// (ADR-0004 decision 4), so it is persisted before any broadcast attempt. The
+// gas and fee values are stored with it because recovery may only ever
+// re-sign the *identical* transaction — never a fresh nonce, never different
+// terms.
+func (s *Store) MarkTxSigned(ctx context.Context, transactionID, rawHash string, gasLimit uint64, maxFee, priorityFee string) error {
 	tag, err := s.Pool.Exec(ctx, `
 UPDATE ethereum_transactions
-SET status = 'broadcasting', raw_transaction_hash = $2, updated_at = now()
-WHERE id = $1 AND status = 'intent'`, transactionID, rawHash)
+SET status = 'broadcasting', raw_transaction_hash = $2,
+    gas_limit = $3, max_fee_per_gas = $4, max_priority_fee_per_gas = $5,
+    updated_at = now()
+WHERE id = $1 AND status = 'intent'`, transactionID, rawHash, gasLimit, maxFee, priorityFee)
 	if err != nil {
 		return err
 	}
@@ -148,7 +180,8 @@ WHERE id = $2 AND payment_id = $1 AND status = 'broadcasting'`, paymentID, trans
 // MarkTxConfirming records the first sighting of a mined-but-not-final
 // transaction. It is a no-op when the payment is already confirming, so a
 // confirmation worker can call it on every tick without duplicating
-// transitions.
+// transitions; the transaction row still updates so the recorded block stays
+// canonical when a reorg moves the transaction to a different block.
 func (s *Store) MarkTxConfirming(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash, actor string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -159,20 +192,27 @@ func (s *Store) MarkTxConfirming(ctx context.Context, paymentID, transactionID s
 UPDATE ethereum_transactions
 SET status = 'confirming', block_number = $3, block_hash = $4,
     first_seen_at = coalesce(first_seen_at, now()), updated_at = now()
-WHERE id = $2 AND payment_id = $1 AND status = 'broadcast'`,
+WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'confirming')`,
 		paymentID, transactionID, blockNumber, blockHash); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `
-UPDATE payment_records SET state = 'confirming', updated_at = now()
-WHERE id = $1 AND state = 'broadcast'`, paymentID)
+	var previous string
+	err = tx.QueryRow(ctx, `
+WITH old AS (SELECT state FROM payment_records WHERE id = $1)
+UPDATE payment_records p
+SET state = 'confirming', updated_at = now()
+FROM old
+WHERE p.id = $1 AND p.state IN ('broadcast', 'replaced')
+RETURNING old.state`, paymentID).Scan(&previous)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already confirming (or moved elsewhere): sighting recorded, nothing to audit.
+		return tx.Commit(ctx)
+	}
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 1 {
-		if err := recordTransition(ctx, tx, paymentID, settlement.StateBroadcast, settlement.StateConfirming, actor); err != nil {
-			return err
-		}
+	if err := recordTransition(ctx, tx, paymentID, settlement.State(previous), settlement.StateConfirming, actor); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -199,7 +239,7 @@ WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'confirming')`,
 		return fmt.Errorf("mark transaction %s confirmed: %w", transactionID, ErrSettlementRace)
 	}
 	if err := transitionPaymentIn(ctx, tx, paymentID,
-		[]settlement.State{settlement.StateBroadcast, settlement.StateConfirming},
+		[]settlement.State{settlement.StateBroadcast, settlement.StateConfirming, settlement.StateReplaced},
 		settlement.StateConfirmed, actor, `state = 'confirmed', confirmed_at = now()`); err != nil {
 		return err
 	}
@@ -227,7 +267,7 @@ WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'confirming')`,
 		return fmt.Errorf("mark transaction %s reverted: %w", transactionID, ErrSettlementRace)
 	}
 	if err := transitionPaymentIn(ctx, tx, paymentID,
-		[]settlement.State{settlement.StateBroadcast, settlement.StateConfirming},
+		[]settlement.State{settlement.StateBroadcast, settlement.StateConfirming, settlement.StateReplaced},
 		settlement.StateReverted, actor, `state = 'reverted'`); err != nil {
 		return err
 	}

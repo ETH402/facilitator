@@ -1,6 +1,9 @@
 package settlement
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // ErrLeaseUnavailable means another worker holds a live lease on the payment.
 // It is not a failure: the holder is already doing the work, so the caller
@@ -23,6 +26,23 @@ type Work struct {
 	// transaction without it is the ambiguous crash case of ADR-0004 decision
 	// 4: it may have reached the network, so it is never re-broadcast.
 	TxHash string
+
+	// Recovery fields. RawHash identifies the signed transaction on chain.
+	// The fee and timing fields reconstruct the identical transaction (for
+	// ambiguous resolution) or its replacement (for stuck pending); they are
+	// empty for rows written before migration 000004, which recovery resolves
+	// by on-chain lookup only.
+	RawHash              string
+	SignerAddress        string
+	GasLimit             uint64
+	MaxFeePerGas         string
+	MaxPriorityFeePerGas string
+	BroadcastAttemptedAt time.Time
+
+	// TransactionUpdatedAt is the last write to the transaction row. Recovery
+	// uses it as the ambiguity clock: only after the grace window may an
+	// ambiguous transaction be re-broadcast identically.
+	TransactionUpdatedAt time.Time
 }
 
 // BroadcastPending reports whether the transaction still needs signing and
@@ -35,4 +55,27 @@ func (w Work) BroadcastPending() bool { return w.TransactionStatus == "intent" }
 // resolves it on chain; nothing in the broadcast path may touch it again.
 func (w Work) AmbiguousBroadcast() bool {
 	return w.TransactionStatus == "broadcasting" && w.TxHash == ""
+}
+
+// Replacement is a fee-bumped re-broadcast of a stuck transaction. It reuses
+// the original nonce by design (ADR-0004 decision 1 forbids allocating a
+// fresh one) and carries its own hash, so either transaction may be the one
+// that mines.
+type Replacement struct {
+	Nonce         uint64
+	TxHash        string
+	RawHash       string
+	GasLimit      uint64
+	MaxFee        string
+	PriorityFee   string
+	SignerAddress string
+}
+
+// TrackedTransaction is a transaction outside the active set whose hash must
+// still be watched: a superseded replacement (the network may mine either
+// version) or a nonce gap-filler attached to an expired payment.
+type TrackedTransaction struct {
+	PaymentID     string
+	TransactionID string
+	TxHash        string
 }
