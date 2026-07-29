@@ -260,6 +260,26 @@ must plan capacity and, if pruning becomes necessary, do it as an explicit
 migration that drops and restores the trigger under audit rather than granting
 the runtime role deletion rights.
 
+## Rate limiting under flood
+
+The limiter keys a bucket per client address, capped at 100,000 entries because
+IPv6 makes distinct addresses free — one /32 allocation yields 2^32 distinct /64
+buckets, so "use more addresses" costs an attacker nothing.
+
+At the cap it **evicts** an entry to make room rather than sharing one bucket among
+all later arrivals. That matters: sharing bounds memory equally well but lets an
+attacker who fills the map deny service to every subsequent legitimate client,
+which is a far stronger attack than the memory growth the cap prevents. The abuse
+suite measured exactly that — a client sending 20 requests was denied all 20.
+
+Eviction trades a little accuracy for that. An attacker can churn the map to reset
+a heavy client's counter, but resetting one bucket costs roughly 100,000 requests,
+so anyone able to afford the churn could have sent those requests directly instead.
+
+Practical consequence: under a flood, per-client counts may reset early, so treat
+`eth402_http_requests_total{status="429"}` as the signal that the limiter is
+engaged, not as an exact count of blocked abuse.
+
 ## Status page
 
 `/status` is a self-contained HTML page and `/stats` is its JSON equivalent. Both

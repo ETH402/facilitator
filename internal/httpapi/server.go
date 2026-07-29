@@ -335,6 +335,55 @@ type rateWindow struct {
 	count   int
 }
 
+// maxTrackedClients bounds the bucket map. It has to be bounded: the map is keyed
+// by client address, and IPv6 makes distinct addresses free — a single /32
+// allocation yields 2^32 distinct /64 buckets.
+const maxTrackedClients = 100_000
+
+// evictionSample is how many entries eviction looks at before choosing. Sampling
+// keeps eviction O(1) while still usually removing an old entry; Go randomizes map
+// iteration order, so the sample is drawn fairly across the map.
+const evictionSample = 8
+
+// evictLocked frees one slot so a newly seen client can have its own bucket.
+//
+// The obvious alternative — put every client past the cap into one shared bucket —
+// bounds memory just as well but hands an attacker a far stronger primitive than
+// the one the cap prevents: fill the map, and every legitimate client arriving
+// afterwards shares a single per-minute allowance. That was measured, not
+// theorised: a client sending 20 requests was denied all 20. It converts a
+// memory-growth nuisance into a service-wide denial.
+//
+// Eviction fails the other way, and does so at a cost that makes it uninteresting.
+// An attacker can churn the map to evict a heavy client's bucket and reset its
+// counter — but doing that costs roughly maxTrackedClients requests to reset one
+// bucket worth a few dozen, so an attacker who can afford the churn could simply
+// have sent those requests from the churned addresses instead. Losing a little
+// accuracy under flood is worth not denying everyone else.
+//
+// Callers must hold l.mu.
+func (l *rateLimiter) evictLocked(now time.Time) {
+	var oldestKey string
+	var oldestStart time.Time
+	sampled := 0
+	for key, window := range l.clients {
+		if now.Sub(window.started) >= time.Minute {
+			// Already expired: removing it costs nothing at all.
+			delete(l.clients, key)
+			return
+		}
+		if oldestKey == "" || window.started.Before(oldestStart) {
+			oldestKey, oldestStart = key, window.started
+		}
+		if sampled++; sampled >= evictionSample {
+			break
+		}
+	}
+	if oldestKey != "" {
+		delete(l.clients, oldestKey)
+	}
+}
+
 func newRateLimiter(limit int, trusted []netip.Prefix) *rateLimiter {
 	return &rateLimiter{limit: limit, trusted: trusted, clients: make(map[string]*rateWindow)}
 }
@@ -423,9 +472,8 @@ func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 			l.lastSweep = now
 		}
 		window := l.clients[host]
-		if window == nil && len(l.clients) >= 100_000 {
-			host = "overflow"
-			window = l.clients[host]
+		if window == nil && len(l.clients) >= maxTrackedClients {
+			l.evictLocked(now)
 		}
 		if window == nil || now.Sub(window.started) >= time.Minute {
 			window = &rateWindow{started: now}

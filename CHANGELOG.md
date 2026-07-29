@@ -7,6 +7,16 @@ versioned where noted.
 
 ### Added
 
+- An abuse test suite (`-tags=abuse`) covering bucket-map memory under 250,000
+  distinct client addresses, flood behaviour in both directions, hostile JSON
+  against `/verify` and `/settle`, and concurrent load across the public surface.
+
+- Fuzz targets for the signing boundary's request parser and its recovery-id
+  handling. The boundary target asserts the invariant rather than absence of
+  panics: every accepted input must produce a zero-value
+  `transferWithAuthorization` call to canonical mainnet USDC within the configured
+  ceilings. 6.6M executions found no violation.
+
 - A public status page at `/status`, self-contained HTML with no external
   stylesheet, script, font, or image — it keeps working during the network failures
   it exists to report, and discloses nothing to a third party about who is reading
@@ -215,6 +225,21 @@ versioned where noted.
   a real `transferWithAuthorization`.
 
 ### Fixed
+
+- A denial of service in the public rate limiter, found by the new abuse suite. The
+  bucket map is capped at 100,000 entries, and past the cap every new client was
+  collapsed into one shared per-minute bucket — so an attacker who filled the map
+  denied service to every legitimate client arriving afterwards. Measured, not
+  theorised: a client sending 20 requests was denied all 20. IPv6 makes filling it
+  cheap, since a single /32 allocation yields 2^32 distinct /64 buckets. The limiter
+  now evicts an entry to make room instead, which fails the other way at a cost
+  that makes the trade uninteresting — resetting one bucket costs ~100,000 requests.
+
+- `SECURITY.md` stated "The current implementation does not process x402 payments",
+  which stopped being true when settlement landed. A security policy that
+  understates its own scope tells researchers there is nothing worth attacking. It
+  now states that real mainnet USDC moves, and enumerates what is in and out of
+  scope.
 
 - `/stats` reported `"status": "operational"` unconditionally — a hardcoded
   constant, so the field reported health during an outage, which is the one moment

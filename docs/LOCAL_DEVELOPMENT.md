@@ -41,6 +41,25 @@ ETH402_TEST_DATABASE_URL='postgres://eth402:eth402_dev_only@localhost:5432/eth40
   go test -tags=e2e -count=1 -v ./internal/e2e
 ```
 
+## Abuse and fuzz tests
+
+```sh
+# Slow and allocation-heavy, so tagged out of the default run.
+go test -tags=abuse -race -timeout 20m ./internal/httpapi
+
+# Payment-critical parsers. The boundary target asserts far more than "no panic":
+# every accepted input must yield a zero-value transferWithAuthorization call to
+# canonical mainnet USDC inside the configured ceilings.
+go test -run=x -fuzz=FuzzUnsigned -fuzztime=5m ./internal/policy
+go test -run=x -fuzz=FuzzSplitSignature -fuzztime=2m ./internal/policy
+```
+
+The abuse suite characterises behaviour under deliberate abuse rather than gating
+commits: bucket-map memory under 250k distinct client addresses, whether a flood
+can deny service to everyone else, whether the limiter still applies during one,
+and hostile JSON against `/verify` and `/settle`. It found a real denial of service
+— see the note in [operations](OPERATIONS.md) on rate-limit eviction.
+
 The fork must be mainnet: the verifier requires USDC's real EIP-712 domain
 (`USD Coin` / `2`) at the canonical address, so a bare Anvil cannot substitute. Not
 every public endpoint supports forking — Cloudflare's rejects the methods Anvil

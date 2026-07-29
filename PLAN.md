@@ -142,6 +142,14 @@ Milestone 4 is complete.
       bound. Needs an operator decision on retention periods before implementation
       (see `docs/PRIVACY.md`).
 
-Independent security review, load/abuse tests, limited mainnet dry runs,
-incident simulations, public documentation, fair-use enforcement, and
-responsible disclosure readiness.
+- [x] load/abuse tests — `-tags=abuse` plus fuzz targets on the payment-critical
+      parsers; found and fixed a rate-limiter denial of service
+- [x] responsible disclosure readiness — `SECURITY.md` now states the real scope
+      instead of claiming no payments are processed
+- [ ] fair-use enforcement
+- [ ] incident simulations
+- [ ] public documentation
+- [ ] limited mainnet dry runs — needs funded keys and an operator decision; the
+      procedure can be written, but running it cannot be delegated
+- [ ] independent security review — cannot be self-performed; needs a third party.
+      `SECURITY.md` now scopes it
