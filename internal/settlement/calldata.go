@@ -73,9 +73,19 @@ func decodeFixed32(value string) ([32]byte, error) {
 }
 
 // splitSignature decomposes a 65-byte signature into the v/r/s form the USDC
-// contract expects. EIP-712 signatures arrive with v already normalized to
-// 27/28; anything else is rejected rather than corrected, because guessing at
-// recovery ids produces a transaction that burns gas to revert.
+// contract expects.
+//
+// A recovery id of 0 or 1 is normalized to 27 or 28. This is not guesswork — the
+// mapping is the standard encoding difference, not an ambiguity, and trying both
+// candidates would be. It matters because the two halves of this service
+// previously disagreed: the official verifier accepts either encoding (it applies
+// v-27 before recovery), while ecrecover on chain requires 27 or 28, so a payment
+// signed with the 0/1 form — which crypto.Sign and many wallet libraries emit —
+// verified successfully and then could not settle. Anything outside those four
+// values is still rejected rather than corrected.
+//
+// Normalizing here rather than at verification keeps the payment identity intact:
+// the identity hash binds the signature exactly as the payer sent it.
 func splitSignature(signature string) (uint8, [32]byte, [32]byte, error) {
 	var r, s [32]byte
 	raw, err := hex.DecodeString(strings.TrimPrefix(signature, "0x"))
@@ -84,9 +94,12 @@ func splitSignature(signature string) (uint8, [32]byte, [32]byte, error) {
 	}
 	copy(r[:], raw[:32])
 	copy(s[:], raw[32:64])
-	v := raw[64]
-	if v != 27 && v != 28 {
-		return 0, r, s, fmt.Errorf("signature recovery id %d is not 27 or 28", v)
+	switch v := raw[64]; v {
+	case 0, 1:
+		return v + 27, r, s, nil
+	case 27, 28:
+		return v, r, s, nil
+	default:
+		return 0, r, s, fmt.Errorf("signature recovery id %d is not 0, 1, 27, or 28", v)
 	}
-	return v, r, s, nil
 }

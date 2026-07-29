@@ -2,6 +2,8 @@ package settlement
 
 import (
 	"encoding/hex"
+	"math/big"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/ETH402/facilitator/internal/signer"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	x402evm "github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 )
 
@@ -82,13 +85,18 @@ func TestTransferWithAuthorizationDataRoundTrip(t *testing.T) {
 
 func TestTransferWithAuthorizationDataRejectsBadInput(t *testing.T) {
 	cases := map[string]func(*Authorization){
-		"bad from":      func(a *Authorization) { a.From = "not-an-address" },
-		"zero value":    func(a *Authorization) { a.Value = "0" },
-		"non-numeric":   func(a *Authorization) { a.Value = "1.5" },
-		"short nonce":   func(a *Authorization) { a.Nonce = "0xabcd" },
-		"short sig":     func(a *Authorization) { a.Signature = "0x" + strings.Repeat("11", 32) },
-		"recovery id 0": func(a *Authorization) { a.Signature = "0x" + strings.Repeat("11", 64) + "00" },
-		"recovery id 1": func(a *Authorization) { a.Signature = "0x" + strings.Repeat("11", 64) + "01" },
+		"bad from":    func(a *Authorization) { a.From = "not-an-address" },
+		"zero value":  func(a *Authorization) { a.Value = "0" },
+		"non-numeric": func(a *Authorization) { a.Value = "1.5" },
+		"short nonce": func(a *Authorization) { a.Nonce = "0xabcd" },
+		"short sig":   func(a *Authorization) { a.Signature = "0x" + strings.Repeat("11", 32) },
+		// Recovery ids 0 and 1 used to be listed here as bad input. They are not:
+		// the official verifier accepts them, so rejecting them here meant a
+		// payment could verify and then fail to settle. They are now normalized to
+		// 27/28 and covered positively by TestSplitSignatureRecoveryIds, which also
+		// keeps genuinely invalid ids rejected.
+		"recovery id 2":  func(a *Authorization) { a.Signature = "0x" + strings.Repeat("11", 64) + "02" },
+		"recovery id 29": func(a *Authorization) { a.Signature = "0x" + strings.Repeat("11", 64) + "1d" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -119,5 +127,84 @@ func TestBuiltCalldataPassesSignerAllowlist(t *testing.T) {
 	}
 	if err := tx.Validate(); err != nil {
 		t.Fatalf("real settlement calldata rejected by the signer allowlist: %v", err)
+	}
+}
+
+// TestVerifiableSignaturesAreAlsoSettleable pins the invariant the two halves of
+// this service previously broke: anything /verify accepts must be able to settle.
+//
+// The official verifier applies v-27 before recovery, so it accepts a recovery id
+// of 0/1 — which crypto.Sign and many wallet libraries emit. Calldata construction
+// required 27/28, so such a payment verified and then could not settle. The
+// verification tests happened to use 0/1 and the settlement tests 0x1b, so neither
+// side saw the disagreement.
+func TestVerifiableSignaturesAreAlsoSettleable(t *testing.T) {
+	t.Parallel()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payer := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	auth := Authorization{
+		From: payer, To: "0x2222222222222222222222222222222222222222",
+		Value:      "1000000",
+		ValidAfter: time.Unix(1700000000, 0), ValidBefore: time.Unix(1700003600, 0),
+		Nonce: "0x" + strings.Repeat("ab", 32),
+	}
+	digest, err := x402evm.HashEIP3009Authorization(
+		x402evm.ExactEIP3009Authorization{
+			From: auth.From, To: auth.To, Value: auth.Value,
+			ValidAfter:  strconv.FormatInt(auth.ValidAfter.Unix(), 10),
+			ValidBefore: strconv.FormatInt(auth.ValidBefore.Unix(), 10),
+			Nonce:       auth.Nonce,
+		},
+		big.NewInt(1), common.HexToAddress(config.MainnetUSDC).Hex(), "USD Coin", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// crypto.Sign yields v in {0,1}, exactly what a wallet library may send.
+	raw, err := crypto.Sign(digest, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw[64] > 1 {
+		t.Fatalf("expected a 0/1 recovery id from crypto.Sign, got %d", raw[64])
+	}
+
+	// The signature is valid for the payer — which is precisely what the official
+	// verifier concludes, since it normalizes v before recovery.
+	recovered, err := crypto.SigToPub(digest, raw)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if got := crypto.PubkeyToAddress(*recovered).Hex(); got != payer {
+		t.Fatalf("recovered %s, want %s", got, payer)
+	}
+
+	// ...so calldata must build from it too.
+	auth.Signature = "0x" + common.Bytes2Hex(raw)
+	data, err := TransferWithAuthorizationData(auth)
+	if err != nil {
+		t.Fatalf("a signature the verifier accepts could not settle: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("empty calldata")
+	}
+}
+
+// Every encoding a payer might send builds calldata; nothing else does.
+func TestSplitSignatureRecoveryIds(t *testing.T) {
+	t.Parallel()
+	base := testAuthorization()
+	for _, tc := range []struct {
+		v      string
+		wantOK bool
+	}{{"00", true}, {"01", true}, {"1b", true}, {"1c", true}, {"02", false}, {"1d", false}, {"ff", false}} {
+		auth := base
+		auth.Signature = "0x" + strings.Repeat("11", 32) + strings.Repeat("22", 32) + tc.v
+		_, err := TransferWithAuthorizationData(auth)
+		if tc.wantOK != (err == nil) {
+			t.Fatalf("v=%s: err=%v, wantOK=%v", tc.v, err, tc.wantOK)
+		}
 	}
 }

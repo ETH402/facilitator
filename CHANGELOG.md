@@ -139,6 +139,16 @@ versioned where noted.
   failing read leaves the last figure looking healthy; burn rate is left to
   Prometheus, which derives it correctly across restarts.
 
+### Fixed
+
+- A payment signed with a recovery id of 0 or 1 verified successfully and then
+  could not settle. The official verifier applies `v - 27` before recovery so it
+  accepts either encoding, while calldata construction required 27/28 —
+  and `crypto.Sign`, along with many wallet libraries, emits the 0/1 form.
+  Calldata now normalizes 0/1 upward; genuinely invalid ids are still rejected.
+  The verification tests happened to use 0/1 and the settlement tests 0x1b, so
+  neither side observed the disagreement.
+
 ### Changed
 
 - The recovery worker's replacement, nonce-gap, and gap-filler passes now claim the

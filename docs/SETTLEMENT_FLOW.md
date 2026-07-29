@@ -83,6 +83,15 @@ canonical-hash and depth checks before becoming terminal. A
 transaction previously seen mined whose receipt disappears from the canonical
 chain was reorged out: it returns to `broadcast` and is observed from scratch.
 
+A payer's signature is accepted in either recovery-id encoding. The official
+verifier applies `v - 27` before recovery, so it accepts 0/1 as well as 27/28,
+while `ecrecover` on chain requires 27/28 — calldata construction therefore
+normalizes 0/1 upward. Before that, a payment signed with the 0/1 form, which
+`crypto.Sign` and many wallet libraries emit, verified successfully and then could
+not settle. Normalizing at calldata time rather than at verification keeps the
+payment identity intact, since the identity hash binds the signature exactly as the
+payer sent it.
+
 Gas fields are estimated, not copied from configuration: the initial max fee is
 `min(2·baseFee + tip, ETH402_MAX_FEE_PER_GAS_WEI)` against the latest block,
 with `ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI` as the tip. The configured values
