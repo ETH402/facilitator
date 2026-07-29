@@ -24,11 +24,15 @@ flowchart LR
 ## Components and trust boundaries
 
 - `internal/httpapi`: untrusted HTTP boundary, request limits, errors, health.
+  Rate limits key on the client address resolved from the direct peer, or from
+  `X-Forwarded-For` when the peer is a configured trusted proxy.
 - `internal/config`: environment parsing and mainnet/USDC production invariants.
 - `internal/store` and migrations: durable truth and concurrency enforcement.
-- `internal/x402`, `verification`, `settlement`: future protocol-critical core;
-  business policy may call it but cannot change signed protocol fields.
-- `internal/ethereum`: bounded read retries and future non-blind broadcast path.
+- `internal/x402` and `verification`: deterministic identity plus the narrow
+  v2/EIP-3009 verifier, built on the pinned official x402 Go implementation.
+- `internal/settlement`: explicit state rules; live settlement remains future.
+- `internal/ethereum`: bounded health reads, read-only verification calls,
+  primary/fallback RPC, and a future non-blind broadcast path.
 - `internal/signer`: transaction-signing boundary. Raw keys are development-only.
 - `internal/email`, `walletproof`, `auth`, `merchant`: onboarding boundary.
 - workers: database-leased/idempotent confirmation and recovery loops.
@@ -36,12 +40,20 @@ flowchart LR
 RPC data is untrusted until cross-checked and confirmed. Email proves mailbox
 control, not business legitimacy. API keys authenticate merchant API calls, not
 x402 buyer authorizations. Metrics and public stats are separate disclosure
-boundaries.
+boundaries: `/stats` is a versioned public schema, while `/metrics` is gated by
+configuration and withheld at the proxy.
 
 ## Failure recovery
 
 Every payment has a deterministic structured identity and a unique database
-row. Authorization nonce uniqueness provides final replay enforcement.
+row. Authorization nonce uniqueness provides final replay enforcement. Writers
+for one authorization serialise on an advisory transaction lock before
+inserting, because a duplicate violates the identity and nonce uniqueness
+constraints simultaneously and concurrent inserts would otherwise deadlock
+rather than converge.
+Milestone 2 creates payment rows only after successful verification, so a
+malformed signature cannot reserve/poison a buyer nonce in PostgreSQL.
+Verification attempts remain append-only, including malformed outer requests.
 Settlement intent is committed before signing/broadcast. Workers claim durable
 rows with transactional locking; repeated execution checks current state.
 

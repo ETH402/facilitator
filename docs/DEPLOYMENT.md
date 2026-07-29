@@ -20,3 +20,8 @@ Do not expose PostgreSQL, signer, or RPC management endpoints publicly.
 Restrict `/metrics`, use least-privilege service identities, scan images, pin
 digests, sign releases, and deploy migrations before application rollout.
 Kubernetes and Helm are intentionally absent.
+
+Any deployment that terminates connections in front of the application must set
+`ETH402_TRUSTED_PROXIES` to every intermediate hop. Left empty, rate limits key
+on the proxy address and degrade to one shared bucket for all traffic. See
+[operations](OPERATIONS.md) for the selection rules and the `/metrics` gate.

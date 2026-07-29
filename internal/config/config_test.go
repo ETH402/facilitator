@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func validConfig() Config {
 	return Config{
@@ -52,6 +55,70 @@ func TestUnknownEmailBackendRejected(t *testing.T) {
 	cfg.EmailBackend = "smtp"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("unimplemented email backend accepted")
+	}
+}
+
+// requiredEnv is the minimum environment Load needs to reach validation.
+func requiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("ETH402_ENV", "test")
+	t.Setenv("ETH402_DATABASE_URL", "postgres://example")
+	t.Setenv("ETH402_ETHEREUM_RPC_URL", "http://localhost:8545")
+	t.Setenv("ETH402_API_KEY_PEPPER", "01234567890123456789012345678901")
+}
+
+func TestMalformedNumericValueIsReportedByName(t *testing.T) {
+	requiredEnv(t)
+	// A silent fallback here previously reported an unrelated validation
+	// failure, or none at all when zero happened to be permitted.
+	t.Setenv("ETH402_MAX_GAS_LIMIT", "not-a-number")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "ETH402_MAX_GAS_LIMIT") {
+		t.Fatalf("error = %v, want one naming ETH402_MAX_GAS_LIMIT", err)
+	}
+}
+
+func TestMalformedDurationIsReportedByName(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("ETH402_RPC_TIMEOUT", "5 seconds")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "ETH402_RPC_TIMEOUT") {
+		t.Fatalf("error = %v, want one naming ETH402_RPC_TIMEOUT", err)
+	}
+}
+
+func TestTrustedProxiesParsing(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("ETH402_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.5, 2001:db8::/32")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("valid trusted proxies rejected: %v", err)
+	}
+	if len(cfg.TrustedProxies) != 3 {
+		t.Fatalf("trusted proxies = %v, want 3 entries", cfg.TrustedProxies)
+	}
+	// A bare address must become a single-host prefix.
+	if got := cfg.TrustedProxies[1].String(); got != "192.168.1.5/32" {
+		t.Fatalf("bare address parsed as %q, want 192.168.1.5/32", got)
+	}
+}
+
+func TestTrustedProxiesRejectsMalformedEntry(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("ETH402_TRUSTED_PROXIES", "10.0.0.0/8,not-an-address")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "not-an-address") {
+		t.Fatalf("error = %v, want one naming the malformed entry", err)
+	}
+}
+
+func TestTrustedProxiesDefaultsToEmpty(t *testing.T) {
+	requiredEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("trusted proxies = %v, want none by default", cfg.TrustedProxies)
 	}
 }
 

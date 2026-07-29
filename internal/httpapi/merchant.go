@@ -14,7 +14,7 @@ func (d Dependencies) merchantRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.Handle("POST /v1/merchants/register",
-		newRateLimiter(d.RegistrationRate).middleware(http.HandlerFunc(d.register)))
+		newRateLimiter(d.RegistrationRate, d.TrustedProxies).middleware(http.HandlerFunc(d.register)))
 	mux.HandleFunc("POST /v1/merchants/verify-email", d.verifyEmail)
 	mux.HandleFunc("POST /v1/merchants/wallet-challenge", d.walletChallenge)
 	mux.HandleFunc("POST /v1/merchants/verify-wallet", d.verifyWallet)

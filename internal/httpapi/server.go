@@ -9,8 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
 	"github.com/ETH402/facilitator/internal/stats"
+	"github.com/ETH402/facilitator/internal/verification"
 )
 
 const maxRequestBody = 1 << 20
@@ -36,6 +40,11 @@ type Dependencies struct {
 	Merchant            *merchant.Service
 	AllowedOrigin       string
 	OperatorToken       string
+	Verification        *verification.Service
+	MetricsEnabled      bool
+	// TrustedProxies lists reverse proxies permitted to assert a client
+	// address through X-Forwarded-For. Empty means the direct peer is used.
+	TrustedProxies []netip.Prefix
 }
 
 type Server struct {
@@ -49,15 +58,58 @@ func New(dep Dependencies) *Server {
 	})
 	mux.HandleFunc("GET /health/ready", dep.ready)
 	mux.HandleFunc("GET /stats", dep.stats)
-	mux.Handle("GET /metrics", dep.Metrics)
+	if dep.MetricsEnabled {
+		mux.Handle("GET /metrics", dep.Metrics)
+	}
+	mux.HandleFunc("GET /supported", dep.supported)
+	mux.HandleFunc("POST /verify", dep.verify)
 	dep.merchantRoutes(mux)
 	handler := secureHeaders(dep.AllowedOrigin, mux)
 	handler = requestLimit(handler)
-	handler = newRateLimiter(dep.PublicRatePerMinute).middleware(handler)
+	handler = newRateLimiter(dep.PublicRatePerMinute, dep.TrustedProxies).middleware(handler)
 	handler = observe(dep.Metrics, handler)
 	handler = recovery(dep.Logger, dep.Metrics, handler)
 	handler = requestID(handler)
 	return &Server{handler: handler}
+}
+
+func (d Dependencies) supported(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, verification.Supported())
+}
+
+func (d Dependencies) verify(w http.ResponseWriter, r *http.Request) {
+	if d.Verification == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"isValid": false, "invalidReason": "service_unavailable",
+		})
+		return
+	}
+	var request verification.Request
+	if err := DecodeStrict(w, r, &request); err != nil {
+		d.Metrics.IncVerification()
+		d.Metrics.IncVerificationFailure()
+		if recordErr := d.Verification.RecordInvalidRequest(r.Context()); recordErr != nil {
+			d.Logger.ErrorContext(r.Context(), "invalid verification request recording failed", "error", recordErr)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"isValid": false, "invalidReason": "invalid_request",
+		})
+		return
+	}
+	d.Metrics.IncVerification()
+	response, err := d.Verification.Verify(r.Context(), request)
+	if err != nil {
+		d.Metrics.IncVerificationFailure()
+		d.Logger.ErrorContext(r.Context(), "payment verification failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"isValid": false, "invalidReason": "service_unavailable",
+		})
+		return
+	}
+	if !response.IsValid {
+		d.Metrics.IncVerificationFailure()
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
@@ -191,18 +243,52 @@ func observe(registry *metrics.Registry, next http.Handler) http.Handler {
 func knownRoute(path string) string {
 	switch path {
 	case "/health/live", "/health/ready", "/metrics", "/stats",
+		"/supported", "/verify",
 		"/v1/merchants/register", "/v1/merchants/verify-email",
 		"/v1/merchants/wallet-challenge", "/v1/merchants/verify-wallet",
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",
 		"/v1/me/recipient-change/verify":
 		return path
-	default:
-		return "unknown"
 	}
+	// Routes carrying an identifier are reported as their registered pattern so
+	// that per-route metrics stay bounded and do not leak merchant or key IDs.
+	for _, pattern := range []string{
+		"/v1/api-keys/{id}",
+		"/v1/admin/merchants/{id}/suspend",
+		"/v1/admin/merchants/{id}/reinstate",
+	} {
+		if matchesPattern(path, pattern) {
+			return pattern
+		}
+	}
+	return "unknown"
+}
+
+// matchesPattern reports whether path has the same shape as a ServeMux pattern
+// whose only wildcard is a single non-empty path segment.
+func matchesPattern(path, pattern string) bool {
+	pathSegments := strings.Split(strings.Trim(path, "/"), "/")
+	patternSegments := strings.Split(strings.Trim(pattern, "/"), "/")
+	if len(pathSegments) != len(patternSegments) {
+		return false
+	}
+	for i, segment := range patternSegments {
+		if strings.HasPrefix(segment, "{") {
+			if pathSegments[i] == "" {
+				return false
+			}
+			continue
+		}
+		if pathSegments[i] != segment {
+			return false
+		}
+	}
+	return true
 }
 
 type rateLimiter struct {
 	limit     int
+	trusted   []netip.Prefix
 	mu        sync.Mutex
 	clients   map[string]*rateWindow
 	lastSweep time.Time
@@ -213,8 +299,74 @@ type rateWindow struct {
 	count   int
 }
 
-func newRateLimiter(limit int) *rateLimiter {
-	return &rateLimiter{limit: limit, clients: make(map[string]*rateWindow)}
+func newRateLimiter(limit int, trusted []netip.Prefix) *rateLimiter {
+	return &rateLimiter{limit: limit, trusted: trusted, clients: make(map[string]*rateWindow)}
+}
+
+// clientAddress resolves the bucket key for a request. When the direct peer is
+// a trusted proxy, the rightmost X-Forwarded-For entry that is not itself a
+// trusted proxy wins: each proxy appends the peer it observed, so a forged
+// header can only prepend entries to the left of the real client address and
+// can never select another client's bucket. When the peer is untrusted the
+// header is ignored entirely.
+func (l *rateLimiter) clientAddress(r *http.Request) string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	peerAddress, err := netip.ParseAddr(strings.TrimSpace(peer))
+	if err != nil {
+		return peer
+	}
+	if !l.isTrusted(peerAddress) {
+		return bucketKey(peerAddress)
+	}
+	for _, entry := range forwardedFor(r) {
+		address, err := netip.ParseAddr(entry)
+		if err != nil {
+			// A malformed entry can only have been supplied by the client,
+			// which means every trustworthy hop has already been examined.
+			break
+		}
+		if !l.isTrusted(address) {
+			return bucketKey(address)
+		}
+	}
+	return bucketKey(peerAddress)
+}
+
+func (l *rateLimiter) isTrusted(address netip.Addr) bool {
+	candidate := address.Unmap()
+	for _, prefix := range l.trusted {
+		if prefix.Contains(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardedFor returns every X-Forwarded-For entry in right-to-left order.
+func forwardedFor(r *http.Request) []string {
+	var entries []string
+	for _, header := range r.Header.Values("X-Forwarded-For") {
+		for _, entry := range strings.Split(header, ",") {
+			entries = append(entries, strings.TrimSpace(entry))
+		}
+	}
+	slices.Reverse(entries)
+	return entries
+}
+
+// bucketKey groups IPv6 clients by /64 because a single subscriber is routinely
+// assigned the whole prefix and could otherwise obtain unlimited buckets.
+func bucketKey(address netip.Addr) string {
+	address = address.Unmap().WithZone("")
+	if address.Is6() {
+		if prefix, err := address.Prefix(64); err == nil {
+			return prefix.String()
+		}
+	}
+	return address.String()
 }
 
 func (l *rateLimiter) middleware(next http.Handler) http.Handler {
@@ -223,10 +375,7 @@ func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
+		host := l.clientAddress(r)
 		now := time.Now()
 		l.mu.Lock()
 		if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= time.Minute {

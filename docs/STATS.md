@@ -8,7 +8,8 @@ Definitions:
 
 - verification request: a persisted x402 authorization verification attempt.
 - successful verification: an attempt accepted by all verification checks.
-- failed verification: a persisted attempt rejected by verification.
+- failed verification: a persisted malformed/invalid attempt or an attempt
+  that could not safely complete because a dependency was unavailable.
 - settlement request: a persisted `/settle` attempt, including duplicates and
   rejected attempts after a parseable identity is available.
 - broadcast settlement: a transaction accepted/observed by an Ethereum RPC.

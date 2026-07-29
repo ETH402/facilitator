@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -56,61 +57,56 @@ type Config struct {
 	MetricsEnabled     bool
 	PublicRatePerMin   int
 	RegistrationRate   int
+	// TrustedProxies lists the reverse proxies permitted to assert a client
+	// address through X-Forwarded-For. Empty means the direct peer is always
+	// the client, which is correct only when the service is exposed directly.
+	TrustedProxies []netip.Prefix
 }
 
 func Load() (Config, error) {
+	var l loader
 	cfg := Config{
-		Environment:        env("ETH402_ENV", "development"),
-		HTTPAddr:           env("ETH402_HTTP_ADDR", ":8080"),
-		PublicBaseURL:      env("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
+		Environment:        l.str("ETH402_ENV", "development"),
+		HTTPAddr:           l.str("ETH402_HTTP_ADDR", ":8080"),
+		PublicBaseURL:      l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
 		DatabaseURL:        os.Getenv("ETH402_DATABASE_URL"),
-		DatabaseMaxConns:   envInt32("ETH402_DATABASE_MAX_CONNS", 10),
+		DatabaseMaxConns:   l.int32("ETH402_DATABASE_MAX_CONNS", 10),
 		EthereumRPCURL:     os.Getenv("ETH402_ETHEREUM_RPC_URL"),
 		FallbackRPCURL:     os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
-		ChainID:            envUint64("ETH402_ETHEREUM_CHAIN_ID", 1),
-		Network:            env("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
-		USDCContract:       env("ETH402_USDC_CONTRACT", MainnetUSDC),
-		RPCTimeout:         envDuration("ETH402_RPC_TIMEOUT", 5*time.Second),
-		RPCReadRetries:     envInt("ETH402_RPC_READ_RETRIES", 2),
-		Confirmations:      envUint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
-		MaxFeePerGasWei:    env("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
-		MaxPriorityFeeWei:  env("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
-		MaxGasLimit:        envUint64("ETH402_MAX_GAS_LIMIT", 0),
-		SignerMode:         env("ETH402_SIGNER_MODE", "disabled"),
+		ChainID:            l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
+		Network:            l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
+		USDCContract:       l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
+		RPCTimeout:         l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
+		RPCReadRetries:     l.int("ETH402_RPC_READ_RETRIES", 2),
+		Confirmations:      l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
+		MaxFeePerGasWei:    l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
+		MaxPriorityFeeWei:  l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
+		MaxGasLimit:        l.uint64("ETH402_MAX_GAS_LIMIT", 0),
+		SignerMode:         l.str("ETH402_SIGNER_MODE", "disabled"),
 		DevSignerKey:       os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
-		AllowUnsafeSigner:  envBool("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
-		EmailBackend:       env("ETH402_EMAIL_BACKEND", "log"),
-		EmailFileDir:       env("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
-		EmailTokenTTL:      envDuration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
-		EmailResend:        envDuration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
-		WalletChallengeTTL: envDuration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
-		RecipientCooldown:  envDuration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
-		TermsVersion:       env("ETH402_TERMS_VERSION", "2026-07-27"),
-		APIKeyPepper:       env("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
+		AllowUnsafeSigner:  l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
+		EmailBackend:       l.str("ETH402_EMAIL_BACKEND", "log"),
+		EmailFileDir:       l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
+		EmailTokenTTL:      l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
+		EmailResend:        l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
+		WalletChallengeTTL: l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
+		RecipientCooldown:  l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
+		TermsVersion:       l.str("ETH402_TERMS_VERSION", "2026-07-27"),
+		APIKeyPepper:       l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
 		OperatorToken:      os.Getenv("ETH402_OPERATOR_TOKEN"),
-		BlockDisposable:    envBool("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
-		RestrictFreeEmail:  envBool("ETH402_FREE_EMAIL_RESTRICTION", false),
-		EmailAllowlist:     envCSV("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
-		EmailDenylist:      envCSV("ETH402_EMAIL_DOMAIN_DENYLIST"),
-		StatsCacheTTL:      envDuration("ETH402_STATS_CACHE_TTL", 10*time.Second),
-		WorkerInterval:     envDuration("ETH402_WORKER_INTERVAL", 15*time.Second),
-		LogLevel:           env("ETH402_LOG_LEVEL", "info"),
-		MetricsEnabled:     envBool("ETH402_METRICS_ENABLED", true),
-		PublicRatePerMin:   envInt("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
-		RegistrationRate:   envInt("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
+		BlockDisposable:    l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
+		RestrictFreeEmail:  l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
+		EmailAllowlist:     l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
+		EmailDenylist:      l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
+		StatsCacheTTL:      l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
+		WorkerInterval:     l.duration("ETH402_WORKER_INTERVAL", 15*time.Second),
+		LogLevel:           l.str("ETH402_LOG_LEVEL", "info"),
+		MetricsEnabled:     l.boolean("ETH402_METRICS_ENABLED", true),
+		PublicRatePerMin:   l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
+		RegistrationRate:   l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
+		TrustedProxies:     l.prefixes("ETH402_TRUSTED_PROXIES"),
 	}
-	var parseErrors []error
-	for _, key := range []string{
-		"ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", "ETH402_METRICS_ENABLED",
-		"ETH402_DISPOSABLE_EMAIL_BLOCK", "ETH402_FREE_EMAIL_RESTRICTION",
-	} {
-		if value := os.Getenv(key); value != "" {
-			if _, err := strconv.ParseBool(value); err != nil {
-				parseErrors = append(parseErrors, fmt.Errorf("%s must be a boolean", key))
-			}
-		}
-	}
-	return cfg, errors.Join(cfg.Validate(), errors.Join(parseErrors...))
+	return cfg, errors.Join(cfg.Validate(), errors.Join(l.errs...))
 }
 
 func (c Config) Validate() error {
@@ -199,74 +195,88 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-func env(key, fallback string) string {
+// loader reads environment variables and accumulates parse failures so that a
+// malformed value is reported by name instead of silently collapsing to a
+// sentinel that Validate would either misattribute or accept.
+type loader struct{ errs []error }
+
+func (l *loader) str(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return fallback
 }
 
-func envInt(key string, fallback int) int {
+func (l *loader) reject(key, requirement string) {
+	l.errs = append(l.errs, fmt.Errorf("%s must be %s", key, requirement))
+}
+
+func (l *loader) int(key string, fallback int) int {
 	value := os.Getenv(key)
 	if value == "" {
 		return fallback
 	}
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return -1
+		l.reject(key, "an integer")
+		return fallback
 	}
 	return n
 }
 
-func envInt32(key string, fallback int32) int32 {
+func (l *loader) int32(key string, fallback int32) int32 {
 	value := os.Getenv(key)
 	if value == "" {
 		return fallback
 	}
 	n, err := strconv.ParseInt(value, 10, 32)
 	if err != nil {
-		return -1
+		l.reject(key, "a 32-bit integer")
+		return fallback
 	}
 	return int32(n)
 }
 
-func envUint64(key string, fallback uint64) uint64 {
+func (l *loader) uint64(key string, fallback uint64) uint64 {
 	value := os.Getenv(key)
 	if value == "" {
 		return fallback
 	}
 	n, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		return 0
+		l.reject(key, "an unsigned 64-bit integer")
+		return fallback
 	}
 	return n
 }
 
-func envBool(key string, fallback bool) bool {
+func (l *loader) boolean(key string, fallback bool) bool {
 	value := os.Getenv(key)
 	if value == "" {
 		return fallback
 	}
 	b, err := strconv.ParseBool(value)
 	if err != nil {
-		return false
+		l.reject(key, "a boolean")
+		return fallback
 	}
 	return b
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
+func (l *loader) duration(key string, fallback time.Duration) time.Duration {
 	value := os.Getenv(key)
 	if value == "" {
 		return fallback
 	}
 	d, err := time.ParseDuration(value)
 	if err != nil {
-		return -1
+		l.reject(key, "a Go duration such as 30s or 24h")
+		return fallback
 	}
 	return d
 }
 
-func envCSV(key string) []string {
+func (l *loader) csv(key string) []string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return nil
@@ -281,11 +291,35 @@ func envCSV(key string) []string {
 	return result
 }
 
+// prefixes parses trusted proxy entries given as CIDR prefixes or bare IP
+// addresses. A bare address becomes a single-host prefix.
+func (l *loader) prefixes(key string) []netip.Prefix {
+	values := l.csv(key)
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		if prefix, err := netip.ParsePrefix(value); err == nil {
+			result = append(result, prefix.Masked())
+			continue
+		}
+		address, err := netip.ParseAddr(value)
+		if err != nil {
+			l.errs = append(l.errs, fmt.Errorf("%s entry %q must be an IP address or CIDR prefix", key, value))
+			continue
+		}
+		result = append(result, netip.PrefixFrom(address, address.BitLen()))
+	}
+	return result
+}
+
 func (c Config) RedactedSummary() map[string]any {
 	return map[string]any{
 		"environment": c.Environment, "http_addr": c.HTTPAddr, "network": c.Network,
 		"chain_id": c.ChainID, "usdc_contract": c.USDCContract, "signer_mode": c.SignerMode,
 		"database_configured": c.DatabaseURL != "", "rpc_configured": c.EthereumRPCURL != "",
+		"metrics_enabled": c.MetricsEnabled, "trusted_proxies": len(c.TrustedProxies),
 	}
 }
 

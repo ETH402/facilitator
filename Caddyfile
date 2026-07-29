@@ -1,6 +1,28 @@
+{
+	# Caddy must know which peers may assert a client address so that its own
+	# client_ip and the X-Forwarded-For chain stay trustworthy.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 :80 {
 	encode zstd gzip
-	reverse_proxy app:8080
+
+	# Prometheus scrapes app:8080 directly on the container network, so metrics
+	# are never served on the public interface.
+	handle /metrics {
+		respond "not found" 404
+	}
+
+	# Replace rather than append: the application trusts this proxy, so the
+	# chain must contain only the address Caddy actually observed. Operators
+	# who add a CDN in front must instead append and extend
+	# ETH402_TRUSTED_PROXIES to cover every intermediate hop.
+	reverse_proxy app:8080 {
+		header_up X-Forwarded-For {http.request.remote.host}
+	}
+
 	header {
 		-Server
 		X-Content-Type-Options nosniff
