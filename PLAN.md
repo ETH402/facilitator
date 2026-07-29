@@ -157,7 +157,9 @@ Milestone 4 is complete.
       merchant activation, the verify/settle lifecycle, stable failure handling,
       security invariants, and the self-hosting gate; README and OpenAPI identify
       the implementation status and exact public contract
-- [ ] limited mainnet dry runs — needs funded keys and an operator decision; the
-      procedure can be written, but running it cannot be delegated
+- [ ] limited mainnet dry runs — the bounded procedure, abort conditions, and
+      evidence checklist are complete in `docs/MAINNET_DRY_RUN.md`; execution
+      remains blocked on a production email adapter, independent review, funded
+      keys, live infrastructure, and an operator decision, and cannot be delegated
 - [ ] independent security review — cannot be self-performed; needs a third party.
       `SECURITY.md` now scopes it

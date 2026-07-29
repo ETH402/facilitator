@@ -142,8 +142,9 @@ enforcement.
 
 The facilitator signer signs the outer Ethereum transaction and pays gas. It
 does not sign buyer authorization and never holds USDC. Merchant-specific
-signers are not required. The production backend is GCP Cloud KMS
-(`ETH402_SIGNER_MODE=external` with `ETH402_KMS_KEY_NAME` naming a secp256k1
-key version); key material never leaves KMS and every signature is a bounded
-network round trip under `ETH402_SIGNING_TIMEOUT`. The disabled default and
-the development key signer for local use complete the set.
+signers are not required. Production is designed for the KMS-fronted policy
+signer (`ETH402_SIGNER_MODE=policy`): the boundary holds the KMS grant, builds
+the only permitted transaction from authorization fields, and returns a
+transaction the facilitator verifies before trusting. Direct KMS mode
+(`external`) remains implemented, while disabled and raw-key modes provide the
+safe default and local development path.

@@ -7,6 +7,13 @@ versioned where noted.
 
 ### Added
 
+- An operator-controlled first-mainnet-transaction procedure with a one-intent
+  global quota, explicit gas budget, two-RPC preflight, policy-signer/IAM
+  checks, idempotency proof, abort rules, chain/database reconciliation, and a
+  redacted evidence checklist. Execution remains blocked on the production
+  email adapter, independent review, funded infrastructure, and operator
+  approval.
+
 - Public integration and self-hosting documentation covering merchant
   activation, strict x402 request handling, verification and settlement
   outcomes, retry/idempotency rules, and the controls that must remain closed

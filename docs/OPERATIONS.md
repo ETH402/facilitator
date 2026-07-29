@@ -42,10 +42,13 @@ that loss. This is required before enabling any signer, and is superseded neithe
 by the in-process calldata allowlist nor by the policy boundary. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).
 
-## Cloud KMS signer
+## Cloud KMS and the policy signer
 
-The production backend is GCP Cloud KMS with an `EC_SIGN_SECP256K1_SHA256` key.
-Provision it once per environment:
+Production key custody is GCP Cloud KMS with an
+`EC_SIGN_SECP256K1_SHA256` key. The production signing path is the separate
+policy boundary described in [Deployment](DEPLOYMENT.md); direct KMS mode is
+implemented but does not move transaction policy outside the facilitator.
+Provision the key once per environment:
 
 ```sh
 gcloud services enable cloudkms.googleapis.com --project=PROJECT
@@ -59,19 +62,25 @@ gcloud kms keys create eth402-settlement-signer \
 
 Cloud KMS offers secp256k1 only at HSM protection level — this is still the
 plain Cloud KMS API, IAM, and audit logging of ADR-0004 decision 8, not the
-dedicated Cloud HSM product the ADR weighed as a signer. The runtime identity
-needs `roles/cloudkms.signerVerifier` and `roles/cloudkms.publicKeyViewer` on
-the key (the public key read resolves the signer address at startup). In
-production that identity is a dedicated service account; locally,
-`gcloud auth application-default login` provides it through ADC.
+dedicated Cloud HSM product the ADR weighed as a signer. The policy-signer
+identity needs `roles/cloudkms.signerVerifier` and
+`roles/cloudkms.publicKeyViewer` on the key (the public key read resolves the
+signer address at startup). In production that identity is a dedicated service
+account; locally, `gcloud auth application-default login` provides it through
+ADC.
 
-Set `ETH402_SIGNER_MODE=external` and `ETH402_KMS_KEY_NAME` to the full key
-*version* resource
+Set `POLICYSIGNER_KMS_KEY_NAME` to the full key *version* resource
 (`projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N`).
 Naming a version makes rotation an explicit config change: create the new
 version, point the variable at it, restart. Startup resolves and logs the
 derived signer address — fund it with the bounded hot balance only, and verify
 the address out-of-band before the first top-up.
+
+The facilitator uses `ETH402_SIGNER_MODE=policy`,
+`ETH402_POLICY_SIGNER_URL`, and `ETH402_POLICY_SIGNER_TOKEN`; it must not hold
+the KMS signing grant. `ETH402_SIGNER_MODE=external` and
+`ETH402_KMS_KEY_NAME` connect the facilitator directly to KMS and therefore
+bypass the separate policy boundary.
 
 Key destruction in Cloud KMS is scheduled (24h minimum by default) rather than
 immediate, so an accidental destroy is recoverable within the window; never
@@ -231,8 +240,21 @@ the same pre-limit count. The same check makes a completed suspension revoke
 later settlement even when `/verify` attributed the payment beforehand.
 Replacements and gap fillers reuse existing rows and do not count.
 
-Still outstanding:
+`ETH402_GLOBAL_SETTLEMENT_QUOTA` bounds intents across all merchants in the
+same window and must be greater than or equal to the merchant quota. Without
+it, total exposure grows as merchants × per-merchant quota. The global check is
+serialized under one advisory lock, then nonce allocation serializes on the
+signer row. Worst-case admitted exposure per window is:
 
+```text
+ETH402_GLOBAL_SETTLEMENT_QUOTA
+  × ETH402_MAX_GAS_LIMIT
+  × ETH402_MAX_FEE_PER_GAS_WEI
+```
+
+Compute and approve that figure, the per-merchant figure, and the bounded hot
+balance before enabling settlement. For the first funded transaction, follow
+the [limited mainnet dry-run procedure](MAINNET_DRY_RUN.md).
 
 ## Running more than one instance
 

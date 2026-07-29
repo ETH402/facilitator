@@ -251,4 +251,6 @@ response `X-Request-ID` in support and incident reports.
 
 Operational behavior and recovery procedures are documented in
 [Operations](OPERATIONS.md), [Runbooks](RUNBOOKS.md), and
-[Incident simulations](INCIDENT_SIMULATIONS.md).
+[Incident simulations](INCIDENT_SIMULATIONS.md). The first funded transaction
+must follow the operator-controlled
+[limited mainnet dry-run procedure](MAINNET_DRY_RUN.md).

@@ -2,6 +2,11 @@
 
 The current build is not approved for mainnet payment processing.
 
+Before any first funded transaction, complete the
+[limited mainnet dry-run procedure](MAINNET_DRY_RUN.md). The procedure is
+currently blocked by the missing production email adapter and the required
+independent security review.
+
 A future production deployment should run the immutable application image
 behind Caddy or a managed TLS load balancer, use managed PostgreSQL with TLS
 and point-in-time recovery, two authenticated Ethereum RPCs, a real email
