@@ -215,14 +215,22 @@ Replacements and gap fillers reuse existing rows and do not count.
 Still outstanding:
 
 
-## Run one application instance
+## Running more than one instance
 
-The recovery worker's replacement, nonce-gap, and gap-filler passes deliberately
-run without a lease, on the basis that no other worker touches those rows. That
-holds for a single instance only. Database status guards prevent two instances
-from preparing different gap fillers, but replacement and observation passes
-are still designed and operated as a singleton. Scale vertically until those
-passes take leases.
+Every settlement path claims the payment lease before acting, including the
+recovery worker's replacement, nonce-gap, and gap-filler passes. Those three
+iterate over query results rather than a leased batch, so previously two instances
+would each re-estimate fees for the same nonce gap and produce *different* signed
+transactions — the deduplicating hash lookup misses and both broadcast, one
+replacing the other. They now claim the payment first and skip whatever another
+instance holds.
+
+Nonce allocation was already safe across instances: it serialises on the
+`signer_accounts` row inside the transaction that commits the intent.
+
+Caveat before scaling out: no test runs two full application processes. What is
+covered is the invariant they depend on — concurrent claimants of one payment,
+exactly one of which wins.
 
 ## Verification attempt retention
 
