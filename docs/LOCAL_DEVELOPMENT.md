@@ -86,3 +86,18 @@ Each run generates a fresh buyer, recipient, and facilitator signer, so runs do 
 interfere — but the fork accumulates their state until it is restarted.
 
 The `e2e` build tag keeps it out of CI, which has no fork to point at.
+
+## Incident simulations
+
+The deterministic incident drills exercise failure detection and durable
+recovery without funded keys or mainnet writes:
+
+```sh
+ETH402_TEST_DATABASE_URL='postgres://eth402:eth402_dev_only@localhost:5432/eth402_test?sslmode=disable' \
+  make incident-simulations
+```
+
+The command refuses any database other than `eth402_test`. See
+[incident simulations](INCIDENT_SIMULATIONS.md) for acceptance criteria,
+operator actions, evidence to retain, and what still requires staging or
+mainnet.

@@ -20,3 +20,8 @@ hash-and-nonce reconciliation.
 [Runbooks](RUNBOOKS.md) covers the specific states settlement produces — ambiguous
 broadcasts, nonce gaps, a gap filler that succeeded, a depleted signer, a stalled
 worker — with the queries to diagnose each and what decision it needs.
+
+[Incident simulations](INCIDENT_SIMULATIONS.md) provide a destructive-test-database
+drill for RPC and signer outages, ambiguous broadcasts, reorgs, worker crashes,
+lease loss, and nonce-gap recovery. Run them before public beta and after changing
+payment-critical recovery or observability behavior.

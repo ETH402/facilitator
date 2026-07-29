@@ -149,7 +149,10 @@ Milestone 4 is complete.
 - [x] fair-use enforcement — a facilitator-wide settlement ceiling so exposure is
       not merchants × quota, plus per-merchant limits on authenticated endpoints;
       deliberately not applied where the identity is caller-supplied
-- [ ] incident simulations
+- [x] incident simulations — deterministic RPC/signer outage, ambiguous
+      broadcast, reorg, worker crash/lease-loss, and nonce-gap drills run against
+      the destructive test database; staging alert delivery and funded mainnet
+      behavior remain explicitly outside their claim
 - [ ] public documentation
 - [ ] limited mainnet dry runs — needs funded keys and an operator decision; the
       procedure can be written, but running it cannot be delegated

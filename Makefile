@@ -2,7 +2,7 @@ SHELL := /bin/sh
 GO ?= go
 COMPOSE ?= docker compose
 
-.PHONY: setup dev down test test-race lint build migrate-up migrate-down integration security fmt vet docker-build
+.PHONY: setup dev down test test-race lint build migrate-up migrate-down integration incident-simulations security fmt vet docker-build
 
 setup:
 	cp -n .env.example .env || true
@@ -40,6 +40,9 @@ migrate-down:
 
 integration:
 	$(GO) test -tags=integration -p 1 ./internal/...
+
+incident-simulations:
+	GO=$(GO) sh scripts/incident-simulations
 
 security:
 	govulncheck ./...

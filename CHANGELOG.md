@@ -7,6 +7,10 @@ versioned where noted.
 
 ### Added
 
+- Repeatable incident simulations for RPC and signer outages, ambiguous
+  broadcasts, reorgs, worker crashes, lease loss, and nonce-gap recovery, with a
+  destructive-test-database guard and documented evidence/response criteria.
+
 - Fair-use enforcement (`docs/FAIR_USE.md`), all of it commercial policy kept out of
   the protocol path:
 
