@@ -192,6 +192,7 @@ type fakeChain struct {
 	receipts     map[string]*ethereum.Receipt
 	transactions map[string]*ethereum.ChainTransaction
 	block        uint64
+	blockHash    string
 	baseFee      string
 	callErr      error
 }
@@ -216,7 +217,11 @@ func (f fakeChain) BlockByNumber(context.Context, *uint64) (*ethereum.Block, err
 	if baseFee == "" {
 		baseFee = "1000000000"
 	}
-	return &ethereum.Block{Hash: "0x" + strings.Repeat("aa", 32), Number: f.block, BaseFee: baseFee}, nil
+	blockHash := f.blockHash
+	if blockHash == "" {
+		blockHash = "0x" + strings.Repeat("aa", 32)
+	}
+	return &ethereum.Block{Hash: blockHash, Number: f.block, BaseFee: baseFee}, nil
 }
 
 func (f fakeChain) TransactionByHash(_ context.Context, txHash string) (*ethereum.ChainTransaction, error) {
@@ -370,7 +375,7 @@ func TestConfirmationDepthGating(t *testing.T) {
 	work := pendingWork()
 	work.TransactionStatus = "broadcast"
 	work.TxHash = "0x" + strings.Repeat("ff", 32)
-	receipt := &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: "0x" + strings.Repeat("cd", 32), GasUsed: 64336, EffectiveGasPrice: "1000000000"}
+	receipt := &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: "0x" + strings.Repeat("aa", 32), GasUsed: 64336, EffectiveGasPrice: "1000000000"}
 
 	store := &fakeStore{work: work}
 	service := newTestService(store, fakeSigner{}, fakeChain{receipt: receipt, block: 105})
@@ -395,7 +400,7 @@ func TestConfirmationReverted(t *testing.T) {
 	work := pendingWork()
 	work.TransactionStatus = "broadcast"
 	work.TxHash = "0x" + strings.Repeat("ff", 32)
-	receipt := &ethereum.Receipt{Status: 0, BlockNumber: 100, GasUsed: 64336, EffectiveGasPrice: "1000000000"}
+	receipt := &ethereum.Receipt{Status: 0, BlockNumber: 100, BlockHash: "0x" + strings.Repeat("aa", 32), GasUsed: 64336, EffectiveGasPrice: "1000000000"}
 	store := &fakeStore{work: work}
 	service := newTestService(store, fakeSigner{}, fakeChain{receipt: receipt, block: 120})
 	if err := service.Confirmation(context.Background(), "payment-1", "test"); err != nil {
@@ -403,6 +408,40 @@ func TestConfirmationReverted(t *testing.T) {
 	}
 	if !store.reverted || store.confirmed {
 		t.Fatalf("reverted=%v confirmed=%v", store.reverted, store.confirmed)
+	}
+}
+
+func TestConfirmationRevertWaitsForFinality(t *testing.T) {
+	work := pendingWork()
+	work.TransactionStatus = "broadcast"
+	work.TxHash = "0x" + strings.Repeat("ff", 32)
+	receipt := &ethereum.Receipt{Status: 0, BlockNumber: 100, BlockHash: "0x" + strings.Repeat("aa", 32)}
+	store := &fakeStore{work: work}
+	service := newTestService(store, fakeSigner{}, fakeChain{receipt: receipt, block: 105})
+
+	if err := service.Confirmation(context.Background(), "payment-1", "test"); err != nil {
+		t.Fatalf("confirmation: %v", err)
+	}
+	if !store.confirming || store.reverted {
+		t.Fatalf("confirming=%v reverted=%v", store.confirming, store.reverted)
+	}
+}
+
+func TestConfirmationRejectsNonCanonicalReceipt(t *testing.T) {
+	work := pendingWork()
+	work.TransactionStatus = "confirming"
+	work.TxHash = "0x" + strings.Repeat("ff", 32)
+	receipt := &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: "0x" + strings.Repeat("bb", 32)}
+	store := &fakeStore{work: work}
+	service := newTestService(store, fakeSigner{}, fakeChain{
+		receipt: receipt, block: 111, blockHash: "0x" + strings.Repeat("aa", 32),
+	})
+
+	if err := service.Confirmation(context.Background(), "payment-1", "test"); err != nil {
+		t.Fatalf("confirmation: %v", err)
+	}
+	if !store.reorgedOut || store.confirmed || store.reverted {
+		t.Fatalf("reorged=%v confirmed=%v reverted=%v", store.reorgedOut, store.confirmed, store.reverted)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/config"
@@ -344,9 +345,18 @@ func (s *Service) Confirmation(ctx context.Context, paymentID, actor string) err
 		}
 		return nil // Not yet mined; the next tick looks again.
 	}
-	if receipt.Status == 0 {
-		return s.store.MarkTxReverted(ctx, paymentID, work.TransactionID,
-			receipt.GasUsed, receipt.EffectiveGasPrice, actor)
+	canonical, err := s.chain.BlockByNumber(ctx, &receipt.BlockNumber)
+	if err != nil {
+		return fmt.Errorf("fetch canonical receipt block: %w", err)
+	}
+	if !strings.EqualFold(canonical.Hash, receipt.BlockHash) {
+		// A receipt is only evidence of inclusion when its block is still
+		// canonical. If this transaction had already been observed, unwind the
+		// non-final sighting; otherwise leave it broadcast and try again.
+		if work.TransactionStatus == "confirming" {
+			return s.store.MarkTxReorgedOut(ctx, paymentID, work.TransactionID, actor)
+		}
+		return nil
 	}
 	current, err := s.chain.BlockNumber(ctx)
 	if err != nil {
@@ -359,6 +369,10 @@ func (s *Service) Confirmation(ctx context.Context, paymentID, actor string) err
 	if depth < s.cfg.Confirmations {
 		return s.store.MarkTxConfirming(ctx, paymentID, work.TransactionID,
 			receipt.BlockNumber, receipt.BlockHash, actor)
+	}
+	if receipt.Status == 0 {
+		return s.store.MarkTxReverted(ctx, paymentID, work.TransactionID,
+			receipt.GasUsed, receipt.EffectiveGasPrice, actor)
 	}
 	return s.store.MarkTxConfirmed(ctx, paymentID, work.TransactionID,
 		receipt.BlockNumber, receipt.BlockHash, receipt.GasUsed, receipt.EffectiveGasPrice, actor)

@@ -2,7 +2,7 @@
 
 Before changing this repository:
 
-1. Read `VISION.md`, `PLAN.md`, `HANDOFF.md`, and relevant ADRs in `docs/decisions/`.
+1. Read `VISION.md`, `PLAN.md`, and relevant ADRs in `docs/decisions/`.
 2. Research current official specifications before protocol changes.
 3. Preserve Ethereum-mainnet-only, x402-v2-only, exact-only, native-USDC-only scope.
 4. Prefer official libraries where appropriate and keep dependencies minimal.
