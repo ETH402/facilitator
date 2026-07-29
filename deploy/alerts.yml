@@ -66,3 +66,48 @@ groups:
           severity: warning
         annotations:
           summary: "Signer balance reads are failing"
+
+  - name: eth402-liveness
+    rules:
+      - alert: SettlementWorkerStalled
+        # Health is derived from the last completed tick rather than a flag the
+        # worker sets, because a wedged worker never gets around to clearing its own
+        # flag. Threshold should be several ETH402_WORKER_INTERVAL periods.
+        expr: time() - eth402_worker_last_tick_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Settlement worker {{ $labels.worker }} has stopped ticking"
+          description: >-
+            Committed settlement intents stop progressing. The broadcast worker
+            retries intents, the confirmation worker finalizes them, and the recovery
+            worker resolves ambiguous broadcasts and nonce gaps — a stall in any of
+            them leaves payments in a non-terminal state indefinitely.
+
+      - alert: SettlementWorkersAbsent
+        # Absent rather than stale: settlement is enabled but no worker has ever
+        # ticked, so the series does not exist at all.
+        expr: absent(eth402_worker_last_tick_timestamp_seconds)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No settlement worker has reported a tick"
+          description: >-
+            Expected when the signer is disabled. Otherwise the workers never
+            started.
+
+      - alert: EthereumRPCErrorRateHigh
+        expr: >-
+          rate(eth402_rpc_errors_total[10m])
+            / clamp_min(rate(eth402_rpc_requests_total[10m]), 0.001) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ethereum RPC failure rate above 25%"
+          description: >-
+            Each retry is counted, so a read succeeding only on its fallback still
+            registers the failing provider. Verification and settlement both depend
+            on these reads; sustained failures stall broadcasts and confirmations.

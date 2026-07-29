@@ -43,6 +43,8 @@ func main() {
 	defer database.Close()
 
 	rpc := ethereum.NewClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL, cfg.RPCTimeout, cfg.RPCReadRetries)
+	registry := metrics.New()
+	rpc.Observe(registry)
 	verificationRPC, err := ethereum.NewVerificationClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL)
 	if err != nil {
 		logger.Error("verification RPC initialization failed", "error", err)
@@ -55,7 +57,6 @@ func main() {
 		database,
 		cfg.RPCTimeout,
 	)
-	registry := metrics.New()
 	statsService := stats.NewService(database, time.Now(), cfg.StatsCacheTTL)
 	var sender email.Sender = email.LogSender{Logger: logger}
 	if cfg.EmailBackend == "file" {
@@ -126,6 +127,7 @@ func main() {
 			MaxPriorityFeeGas: cfg.MaxPriorityFeeWei,
 			RecoveryGrace:     cfg.SettlementRecoveryGrace, ReplacementAfter: cfg.SettlementReplacementAfter,
 		}, logger)
+		settlementService.Observe(registry)
 		go settlementService.BroadcastWorker().Run(root)
 		go settlementService.ConfirmationWorker().Run(root)
 		go settlementService.RecoveryWorker().Run(root)

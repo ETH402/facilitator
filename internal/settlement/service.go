@@ -93,12 +93,13 @@ type Config struct {
 // Service runs settlement: admission, the broadcast pipeline shared by HTTP
 // and the worker, and confirmation.
 type Service struct {
-	store  Store
-	signer signer.Signer
-	chain  Chain
-	cfg    Config
-	logger *slog.Logger
-	now    func() time.Time
+	heartbeat Heartbeater
+	store     Store
+	signer    signer.Signer
+	chain     Chain
+	cfg       Config
+	logger    *slog.Logger
+	now       func() time.Time
 }
 
 func NewService(store Store, transactionSigner signer.Signer, chain Chain, cfg Config, logger *slog.Logger) *Service {
@@ -380,6 +381,16 @@ func (s *Service) Confirmation(ctx context.Context, paymentID, actor string) err
 	}
 	return s.store.MarkTxConfirmed(ctx, paymentID, work.TransactionID,
 		receipt.BlockNumber, receipt.BlockHash, receipt.GasUsed, receipt.EffectiveGasPrice, actor)
+}
+
+// Observe attaches a heartbeater. Set once at startup, before any worker runs.
+func (s *Service) Observe(h Heartbeater) { s.heartbeat = h }
+
+// beat records a completed worker tick, if anything is listening.
+func (s *Service) beat(worker string) {
+	if s.heartbeat != nil {
+		s.heartbeat.Heartbeat(worker, s.now())
+	}
 }
 
 func (s *Service) release(ctx context.Context, paymentID, worker string) {

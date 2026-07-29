@@ -61,3 +61,71 @@ func TestSetSignerBalanceIgnoresNil(t *testing.T) {
 		t.Fatal("a nil balance was published")
 	}
 }
+
+// The placeholders these replaced were published as literal zeros, which is worse
+// than absence: alerting on rpc_errors_total would never fire however broken the
+// RPC was, and alerting on worker_healthy == 0 would fire constantly while
+// everything was fine.
+func TestRPCCountersReflectAttempts(t *testing.T) {
+	r := New()
+	body := scrape(t, r)
+	for _, want := range []string{"eth402_rpc_requests_total 0", "eth402_rpc_errors_total 0"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	r.ObserveRPC(false)
+	r.ObserveRPC(true)
+	r.ObserveRPC(true)
+	body = scrape(t, r)
+	for _, want := range []string{"eth402_rpc_requests_total 3", "eth402_rpc_errors_total 2"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestWorkerHealthAbsentUntilAWorkerTicks(t *testing.T) {
+	// Settlement disabled means no workers. Zero would look like every worker had
+	// stalled, so nothing is published at all.
+	if strings.Contains(scrape(t, New()), "eth402_worker_last_tick_timestamp_seconds") {
+		t.Fatal("worker health published with no workers running")
+	}
+}
+
+func TestWorkerHealthPublishesEachTick(t *testing.T) {
+	r := New()
+	r.Heartbeat("broadcast", time.Unix(1_800_000_000, 0))
+	r.Heartbeat("recovery", time.Unix(1_800_000_060, 0))
+	body := scrape(t, r)
+	for _, want := range []string{
+		`eth402_worker_last_tick_timestamp_seconds{worker="broadcast"} 1800000000`,
+		`eth402_worker_last_tick_timestamp_seconds{worker="recovery"} 1800000060`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	// A later tick replaces the earlier one rather than accumulating.
+	r.Heartbeat("broadcast", time.Unix(1_800_000_120, 0))
+	if !strings.Contains(scrape(t, r), `{worker="broadcast"} 1800000120`) {
+		t.Fatal("heartbeat did not advance")
+	}
+}
+
+// Nothing may still publish a metric that never moves.
+func TestNoPlaceholderMetricsRemain(t *testing.T) {
+	r := New()
+	r.ObserveRPC(false)
+	r.Heartbeat("broadcast", time.Now())
+	body := scrape(t, r)
+	for _, gone := range []string{
+		"eth402_confirmation_lag_blocks", "eth402_settlement_latency_seconds",
+		"eth402_database_errors_total", "eth402_settlements_confirmed_total",
+		"eth402_settlements_failed_total", "eth402_worker_healthy",
+	} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("placeholder metric %q is still published", gone)
+		}
+	}
+}

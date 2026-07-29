@@ -3,7 +3,9 @@ package settlement
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 )
@@ -72,4 +74,60 @@ type panickingClaimStore struct{ Store }
 
 func (panickingClaimStore) ClaimPayments(context.Context, ClaimRequest) ([]Lease, error) {
 	panic("simulated claim fault")
+}
+
+type recordingHeartbeat struct {
+	mu    sync.Mutex
+	beats map[string]int
+}
+
+func (h *recordingHeartbeat) Heartbeat(worker string, _ time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.beats == nil {
+		h.beats = map[string]int{}
+	}
+	h.beats[worker]++
+}
+
+func (h *recordingHeartbeat) count(worker string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.beats[worker]
+}
+
+// Health is derived from worker heartbeats, so they must come from the real Run
+// loop rather than being reported by whatever starts it.
+func TestWorkerRunHeartbeats(t *testing.T) {
+	beats := &recordingHeartbeat{}
+	service := NewService(&fakeStore{}, nil, nil, Config{
+		LeaseDuration: time.Minute, WorkerInterval: 10 * time.Millisecond,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.Observe(beats)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	service.BroadcastWorker().Run(ctx)
+
+	if got := beats.count("broadcast"); got < 2 {
+		t.Fatalf("broadcast heartbeats = %d, want at least 2 ticks", got)
+	}
+}
+
+// A panicking tick must still beat: the loop survived and will try again, so
+// reporting it dead would be wrong. A wedged tick is what must stop beating, and
+// that follows from the beat happening after process returns.
+func TestPanickingTickStillHeartbeats(t *testing.T) {
+	beats := &recordingHeartbeat{}
+	service := NewService(panickingClaimStore{}, nil, nil, Config{
+		LeaseDuration: time.Minute, WorkerInterval: time.Hour,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.Observe(beats)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	service.worker("broadcast", []State{StateBroadcasting},
+		func(context.Context, string, string) error { return nil }).Run(ctx)
+	if got := beats.count("broadcast"); got != 1 {
+		t.Fatalf("heartbeats after a panicking tick = %d, want 1", got)
+	}
 }

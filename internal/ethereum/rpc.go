@@ -66,6 +66,7 @@ type Client struct {
 	client   *http.Client
 	retries  int
 	id       atomic.Uint64
+	observer Observer
 }
 
 func NewClient(url, fallback string, timeout time.Duration, retries int) *Client {
@@ -134,6 +135,12 @@ func (c *Client) readRaw(ctx context.Context, method string, params []any) (json
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		target := urls[attempt%len(urls)]
 		result, err := c.call(ctx, target, method, params)
+		// Counted per attempt rather than per read: a read that succeeds only on
+		// its fallback has still exercised a failing provider, which is exactly
+		// what an operator needs to see.
+		if c.observer != nil {
+			c.observer.ObserveRPC(err != nil)
+		}
 		if err == nil {
 			return result, nil
 		}
@@ -351,6 +358,16 @@ func (c *Client) BlockByNumber(ctx context.Context, number *uint64) (*Block, err
 	}
 	return &Block{Hash: strings.ToLower(raw.Hash), Number: blockNumber, BaseFee: baseFee}, nil
 }
+
+// Observer receives one call per RPC attempt. *metrics.Registry satisfies it; the
+// interface keeps this package free of a metrics dependency.
+type Observer interface {
+	ObserveRPC(failed bool)
+}
+
+// Observe attaches an observer. Set once at startup, before any request, so no
+// synchronisation is needed on the field itself.
+func (c *Client) Observe(o Observer) { c.observer = o }
 
 // Balance returns an address's ether balance in wei at the latest block.
 //

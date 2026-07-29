@@ -51,4 +51,19 @@ impersonated master minter, so the balance is state the contract agrees with rat
 than a written storage slot. Each run generates a fresh buyer and recipient because
 the fork keeps its state between runs.
 
+**Restart the fork before a run if it has been up for a while.** Anvil pins the
+fork to the block it started at, and public endpoints serve state for only the most
+recent blocks — so once that block ages out, Anvil's state reads become archive
+requests and the provider rejects them:
+
+```
+Archive requests require a personal token
+```
+
+That is the fork expiring, not a facilitator failure. `docker rm -f eth402-fork`
+and start it again to re-pin to current head, or use an archive-capable endpoint.
+
+Each run generates a fresh buyer, recipient, and facilitator signer, so runs do not
+interfere — but the fork accumulates their state until it is restarted.
+
 The `e2e` build tag keeps it out of CI, which has no fork to point at.

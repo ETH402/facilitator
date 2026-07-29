@@ -9,9 +9,28 @@ asserts the process can serve HTTP. Remove an instance from traffic on
 readiness failure; do not restart-loop solely for an upstream outage.
 
 Use two independently operated Ethereum RPC providers. Safe reads may retry
-within bounds; transaction broadcast must not retry blindly. Alert on RPC/DB
-errors, worker health, confirmation lag, pending age, signer failures, revert
-rate, gas policy blocks, and stats-query failure.
+within bounds; transaction broadcast must not retry blindly.
+
+What `/metrics` actually publishes, and therefore what can be alerted on today:
+
+| Metric | Use |
+|---|---|
+| `eth402_rpc_requests_total`, `eth402_rpc_errors_total` | RPC failure rate; each retry counts, so a read that only succeeds on its fallback still registers the failing provider |
+| `eth402_worker_last_tick_timestamp_seconds{worker}` | worker liveness, per worker, from the last *completed* tick |
+| `eth402_signer_balance_wei` and its freshness | the bound on a signer compromise |
+| `eth402_verification_total`, `eth402_settlement_requests_total`, and their failure counters | request volume and failure rate |
+| `eth402_panics_total` | recovered HTTP panics |
+
+Example rules are in `deploy/alerts.yml`.
+
+Confirmed and failed settlement counts come from `/stats`, which derives them from
+the database rather than from process-local counters, so they survive a restart.
+
+Not yet instrumented, and deliberately not published as zeros: confirmation lag,
+settlement latency, pending age, database error counts, and gas-policy rejections.
+A metric that never moves is worse than an absent one — an alert on it never fires
+however broken the system is, which is precisely the false assurance an operator
+cannot detect.
 
 ## Signer balance
 

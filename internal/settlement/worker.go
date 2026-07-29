@@ -34,6 +34,12 @@ func guard(ctx context.Context, logger *slog.Logger, worker, stage string, fn fu
 // keeps a slow RPC provider from holding many leases at once.
 const workerBatch = 8
 
+// Heartbeater records that a worker completed a tick. *metrics.Registry satisfies
+// it; the interface keeps settlement free of a metrics dependency.
+type Heartbeater interface {
+	Heartbeat(worker string, at time.Time)
+}
+
 // Worker repeatedly claims leased payments and advances them. One instance
 // serves one concern (broadcast or confirmation); both share the claim loop
 // because ADR-0004 decision 10 makes the lease the unit of ownership.
@@ -89,7 +95,14 @@ func (s *Service) worker(name string, states []State, advance func(context.Conte
 // tick runs immediately so a restart does not idle for a full interval while
 // intents wait.
 func (w *Worker) Run(ctx context.Context) {
-	tick := func() { guard(ctx, w.logger, w.name, "tick", func() { w.process(ctx) }) }
+	tick := func() {
+		guard(ctx, w.logger, w.name, "tick", func() { w.process(ctx) })
+		// After the tick, not before: the heartbeat says work completed, so a
+		// worker wedged inside process() stops reporting rather than reporting
+		// health it does not have. The guard means a panicking tick still beats,
+		// which is correct — the loop survived and will try again.
+		w.service.beat(w.name)
+	}
 	tick()
 	ticker := time.NewTicker(w.service.cfg.WorkerInterval)
 	defer ticker.Stop()

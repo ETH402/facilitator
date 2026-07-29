@@ -5,6 +5,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,8 +31,14 @@ type Registry struct {
 	signerBalanceWei atomic.Value
 	signerBalanceAt  atomic.Int64
 	signerBalanceErr atomic.Uint64
-	mu               sync.Mutex
-	status           map[string]uint64
+	rpcRequests      atomic.Uint64
+	rpcErrors        atomic.Uint64
+	// Worker heartbeats, keyed by worker name. A worker is healthy when it has
+	// ticked recently; absence is as meaningful as staleness, so a worker that
+	// never started is never reported healthy.
+	heartbeats sync.Map
+	mu         sync.Mutex
+	status     map[string]uint64
 }
 
 func New() *Registry { return &Registry{status: make(map[string]uint64)} }
@@ -73,6 +80,23 @@ func (r *Registry) SetSignerBalance(wei *big.Int, at time.Time) {
 // unreadable balance is visible rather than merely stale.
 func (r *Registry) IncSignerBalanceError() { r.signerBalanceErr.Add(1) }
 
+// ObserveRPC counts an Ethereum RPC attempt and whether it failed. Every read
+// funnels through one place in the client, so this is a true request count rather
+// than a sampling of call sites.
+func (r *Registry) ObserveRPC(failed bool) {
+	r.rpcRequests.Add(1)
+	if failed {
+		r.rpcErrors.Add(1)
+	}
+}
+
+// Heartbeat records that a worker completed a tick. Health is derived from
+// recency rather than a boolean the worker sets, because a worker that has
+// wedged would never get around to clearing its own flag.
+func (r *Registry) Heartbeat(worker string, at time.Time) {
+	r.heartbeats.Store(worker, at.Unix())
+}
+
 func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = io.WriteString(w, "# HELP eth402_http_requests_total Total HTTP requests.\n# TYPE eth402_http_requests_total counter\n")
@@ -84,12 +108,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	r.mu.Unlock()
 	_, _ = fmt.Fprintf(w, "# HELP eth402_http_request_duration_microseconds_total Aggregate HTTP request duration.\n# TYPE eth402_http_request_duration_microseconds_total counter\neth402_http_request_duration_microseconds_total %d\n", r.httpDuration.Load())
 	_, _ = fmt.Fprintf(w, "# HELP eth402_panics_total Recovered HTTP panics.\n# TYPE eth402_panics_total counter\neth402_panics_total %d\n", r.panicCount.Load())
-	for _, name := range []string{
-		"settlements_confirmed_total", "settlements_failed_total", "rpc_errors_total",
-		"database_errors_total",
-	} {
-		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s 0\n", name, name)
-	}
+
 	for name, value := range map[string]uint64{
 		"registrations_total":                r.registrations.Load(),
 		"email_verifications_total":          r.emailVerified.Load(),
@@ -102,10 +121,48 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	} {
 		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s %d\n", name, name, value)
 	}
-	_, _ = io.WriteString(w, "# TYPE eth402_confirmation_lag_blocks gauge\neth402_confirmation_lag_blocks 0\n# TYPE eth402_worker_healthy gauge\neth402_worker_healthy 0\n")
-	_, _ = io.WriteString(w, "# TYPE eth402_settlement_latency_seconds histogram\neth402_settlement_latency_seconds_bucket{le=\"+Inf\"} 0\neth402_settlement_latency_seconds_sum 0\neth402_settlement_latency_seconds_count 0\n")
-	_, _ = io.WriteString(w, "# TYPE eth402_rpc_requests_total counter\neth402_rpc_requests_total 0\n")
+	// settlements_confirmed_total, settlements_failed_total, database_errors_total,
+	// confirmation_lag_blocks and settlement_latency_seconds were published here as
+	// literal zeros. They are removed rather than left in place: a metric that never
+	// moves is worse than an absent one, because an operator alerting on
+	// rpc_errors_total would never be paged however broken the RPC was, and one
+	// alerting on worker_healthy == 0 would be paged constantly while everything was
+	// fine. Confirmed and failed settlement counts remain available from /stats,
+	// which derives them from the database.
+	_, _ = fmt.Fprintf(w, "# HELP eth402_rpc_requests_total Ethereum RPC attempts.\n"+
+		"# TYPE eth402_rpc_requests_total counter\neth402_rpc_requests_total %d\n", r.rpcRequests.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_rpc_errors_total Failed Ethereum RPC attempts.\n"+
+		"# TYPE eth402_rpc_errors_total counter\neth402_rpc_errors_total %d\n", r.rpcErrors.Load())
+	r.writeWorkerHealth(w)
 	r.writeSignerBalance(w)
+}
+
+// writeWorkerHealth publishes each worker's last tick. The timestamp rather than a
+// boolean: liveness is the operator's threshold to choose against the worker
+// interval, and a wedged worker cannot be relied on to report itself unhealthy.
+func (r *Registry) writeWorkerHealth(w io.Writer) {
+	names := make([]string, 0, 4)
+	r.heartbeats.Range(func(key, _ any) bool {
+		if name, ok := key.(string); ok {
+			names = append(names, name)
+		}
+		return true
+	})
+	if len(names) == 0 {
+		// No workers running — settlement is disabled. Emitting nothing is honest;
+		// emitting zero would look like every worker had stalled.
+		return
+	}
+	sort.Strings(names)
+	_, _ = io.WriteString(w, "# HELP eth402_worker_last_tick_timestamp_seconds When a settlement worker last completed a tick.\n"+
+		"# TYPE eth402_worker_last_tick_timestamp_seconds gauge\n")
+	for _, name := range names {
+		if at, ok := r.heartbeats.Load(name); ok {
+			if seconds, ok := at.(int64); ok {
+				_, _ = fmt.Fprintf(w, "eth402_worker_last_tick_timestamp_seconds{worker=%q} %d\n", name, seconds)
+			}
+		}
+	}
 }
 
 // writeSignerBalance exposes the bound on how much a compromised process can

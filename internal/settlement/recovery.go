@@ -46,7 +46,10 @@ func (s *Service) RecoveryWorker() *RecoveryWorker {
 // Run recovers until the context is cancelled, on the same tick cadence as
 // the other settlement workers.
 func (w *RecoveryWorker) Run(ctx context.Context) {
-	tick := func() { guard(ctx, w.logger, "recovery", "tick", func() { w.process(ctx) }) }
+	tick := func() {
+		guard(ctx, w.logger, "recovery", "tick", func() { w.process(ctx) })
+		w.service.beat("recovery")
+	}
 	tick()
 	ticker := time.NewTicker(w.service.cfg.WorkerInterval)
 	defer ticker.Stop()

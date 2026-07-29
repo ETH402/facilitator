@@ -7,6 +7,25 @@ versioned where noted.
 
 ### Added
 
+- Real RPC and worker-liveness metrics: `eth402_rpc_requests_total`,
+  `eth402_rpc_errors_total`, and `eth402_worker_last_tick_timestamp_seconds` per
+  worker, with alert rules in `deploy/alerts.yml`. RPC attempts are counted at the
+  client's single choke point, so each retry registers — a read that only succeeds
+  on its fallback still reports the failing provider. Worker health derives from the
+  last *completed* tick rather than a flag the worker sets, because a wedged worker
+  never gets around to clearing its own flag.
+
+### Removed
+
+- Placeholder metrics published as literal zeros: `eth402_confirmation_lag_blocks`,
+  `eth402_settlement_latency_seconds`, `eth402_database_errors_total`,
+  `eth402_settlements_confirmed_total`, `eth402_settlements_failed_total`, and
+  `eth402_worker_healthy`. A metric that never moves is worse than an absent one: an
+  alert on `rpc_errors_total` would never have fired however broken the RPC was, and
+  one on `worker_healthy == 0` would have fired constantly while everything was
+  fine. `OPERATIONS.md` told operators to alert on all of them. Confirmed and failed
+  settlement counts remain in `/stats`, derived from the database.
+
 - Milestone 0 foundation and validated Ethereum-mainnet-only architecture.
 - Version 1 public statistics schema.
 - Initial PostgreSQL schema and append-only security history.
