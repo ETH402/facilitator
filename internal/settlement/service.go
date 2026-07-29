@@ -18,6 +18,11 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+// broadcastGrace bounds the send-and-record pair once it has begun. Long enough
+// for an RPC send plus a database write, short enough that a shutdown waiting on it
+// still terminates promptly.
+const broadcastGrace = 30 * time.Second
+
 // ErrBroadcastPending means the payment is being broadcast by another actor
 // (its lease is held) and no transaction hash is recorded yet. Callers should
 // retry rather than compete.
@@ -309,16 +314,24 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 		hex.EncodeToString(signed.SigHash[:]), s.cfg.GasLimit, maxFee.String(), priorityFee.String()); err != nil {
 		return "", fmt.Errorf("record signed transaction: %w", err)
 	}
-	txHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw))
+	// The send and the write that records its result are detached from
+	// cancellation. A shutdown landing between them leaves a transaction on the
+	// network whose hash was never recorded, which is precisely the ambiguous case
+	// — and that case costs a human. Since a deploy cancels this context, the
+	// unprotected version made every restart a chance to strand a payment in
+	// manual_review. Bounded so shutdown still terminates.
+	broadcastCtx, endBroadcast := context.WithTimeout(context.WithoutCancel(ctx), broadcastGrace)
+	defer endBroadcast()
+	txHash, err := s.chain.SendRawTransaction(broadcastCtx, "0x"+hex.EncodeToString(signed.Raw))
 	if err != nil {
 		// The outcome is unknown: the provider may have accepted the
 		// transaction. Mark it ambiguous; recovery resolves it on chain.
-		if markErr := s.store.MarkTxAmbiguous(ctx, work.PaymentID, work.TransactionID, actor); markErr != nil {
+		if markErr := s.store.MarkTxAmbiguous(broadcastCtx, work.PaymentID, work.TransactionID, actor); markErr != nil {
 			return "", errors.Join(fmt.Errorf("broadcast: %w", err), fmt.Errorf("mark ambiguous: %w", markErr))
 		}
 		return "", fmt.Errorf("broadcast: %w", err)
 	}
-	if err := s.store.MarkTxBroadcast(ctx, work.PaymentID, work.TransactionID, txHash, actor); err != nil {
+	if err := s.store.MarkTxBroadcast(broadcastCtx, work.PaymentID, work.TransactionID, txHash, actor); err != nil {
 		return "", fmt.Errorf("record broadcast: %w", err)
 	}
 	return txHash, nil

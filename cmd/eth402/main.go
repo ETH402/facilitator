@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,6 +55,11 @@ func healthCheck(addr string) int {
 	return 0
 }
 
+// workerDrainTimeout bounds how long shutdown waits for a settlement worker tick
+// to finish. Beyond it, exiting is preferable to hanging — and whatever was in
+// flight is resolvable by the recovery worker on the next start.
+const workerDrainTimeout = 45 * time.Second
+
 func main() {
 	probe := flag.Bool("health-check", false,
 		"probe the local readiness endpoint and exit; used by the container healthcheck")
@@ -76,6 +82,7 @@ func main() {
 
 	root, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var workers sync.WaitGroup
 	database, err := store.Open(root, cfg.DatabaseURL, cfg.DatabaseMaxConns)
 	if err != nil {
 		logger.Error("database initialization failed", "error", err)
@@ -169,12 +176,23 @@ func main() {
 			RecoveryGrace:     cfg.SettlementRecoveryGrace, ReplacementAfter: cfg.SettlementReplacementAfter,
 		}, logger)
 		settlementService.Observe(registry)
-		go settlementService.BroadcastWorker().Run(root)
-		go settlementService.ConfirmationWorker().Run(root)
-		go settlementService.RecoveryWorker().Run(root)
+		// Tracked so shutdown can wait for an in-flight tick. A broadcast
+		// interrupted between sending and recording its hash becomes an ambiguous
+		// transaction, and resolving one costs a human — so a deploy must not be
+		// able to create them.
+		start := func(run func(context.Context)) {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				run(root)
+			}()
+		}
+		start(settlementService.BroadcastWorker().Run)
+		start(settlementService.ConfirmationWorker().Run)
+		start(settlementService.RecoveryWorker().Run)
 		// The hot balance is the bound on a signer compromise (ADR-0004 decision
 		// 8), so publish it for alerting; a bound nobody watches is a convention.
-		go settlementService.BalanceWorker(rpc, registry).Run(root)
+		start(settlementService.BalanceWorker(rpc, registry).Run)
 	}
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,
@@ -202,6 +220,20 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdown); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
+	}
+	// Then wait for the settlement workers. Their in-flight broadcasts are
+	// detached from this cancellation precisely so they can finish recording what
+	// they sent; exiting underneath one would undo that.
+	drained := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(workerDrainTimeout):
+		logger.Warn("settlement workers did not drain in time; in-flight work may need recovery",
+			"timeout", workerDrainTimeout)
 	}
 	logger.Info("ETH402 stopped")
 }

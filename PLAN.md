@@ -121,13 +121,13 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
 - [x] real metrics and alert rules for RPC failure, worker liveness, and the signer
       balance that bounds a compromise
 - [x] runbooks for the states settlement actually produces
-- [ ] GCP deployment documentation
+- [x] GCP deployment documentation
 - [ ] public status page
 - [ ] privacy-preserving analytics
 - [ ] KMS-fronted policy signer, moving the zero-value/USDC-selector allowlist out
       of the ETH402 process and into the signing boundary
 
-The remaining four need infrastructure decisions from the operator — a hosting
+The remaining three need infrastructure decisions from the operator — a hosting
 target, a status-page provider, an analytics posture, and whether the policy signer
 is worth another service in the settlement path — rather than more code here.
 

@@ -35,6 +35,75 @@ intentionally absent.
   reverse-proxy stage with timeouts so a wedged upstream cannot pin its workers, and
   sets the security headers on its own error responses as well as proxied ones.
 
+## GCP
+
+ADR-0004 decision 8 already commits to Cloud KMS, so GCP is the assumed target. The
+sub-choice that matters is where the process runs, and it is not free.
+
+### The settlement workers need a continuously running process
+
+Broadcast, confirmation, recovery, and the balance poller are background goroutines
+ticking on `ETH402_WORKER_INTERVAL` (default 15s). They are not driven by requests.
+
+**Cloud Run throttles CPU to zero outside request handling by default, and scales to
+zero.** Under those defaults the workers simply do not run: committed settlement
+intents are never broadcast, receipts are never observed, and ambiguous transactions
+are never reconciled — while `/verify` and `/settle` keep answering, so the service
+looks healthy. If you deploy to Cloud Run:
+
+```sh
+gcloud run deploy eth402 \
+  --no-cpu-throttling \
+  --min-instances=1 \
+  --max-instances=4 \
+  --port=8080
+```
+
+`--no-cpu-throttling` keeps the goroutines scheduled between requests, and
+`--min-instances=1` stops the only instance being reclaimed. Without both, settlement
+silently stops.
+
+GCE or GKE has no such caveat and is the simpler choice if you are not already on
+Cloud Run.
+
+### More than one instance is safe
+
+Every settlement path claims a payment lease before acting, and nonce allocation
+serialises on the `signer_accounts` row inside the transaction that commits the
+intent. `--max-instances` above 1 is therefore fine. See
+[operations](OPERATIONS.md).
+
+### Components
+
+| Piece | Service | Notes |
+|---|---|---|
+| Application | Cloud Run or GCE | see the CPU caveat above |
+| Database | Cloud SQL for PostgreSQL | private IP; separate owner, migration, and runtime roles |
+| Signer | Cloud KMS, `EC_SIGN_SECP256K1_SHA256` | `ETH402_SIGNER_MODE=external`, `ETH402_KMS_KEY_NAME` naming a key *version* |
+| Secrets | Secret Manager | `ETH402_API_KEY_PEPPER`, `ETH402_OPERATOR_TOKEN`, database credentials |
+| Metrics | Managed Prometheus | scrape `/metrics` on the internal port; rules from `deploy/alerts.yml` |
+| TLS | Cloud Load Balancing, or Caddy | if terminating at the balancer, add its egress range to `ETH402_TRUSTED_PROXIES` |
+
+Grant the runtime identity only `roles/cloudkms.signerVerifier` on the one key
+version, and nothing on the key ring. It never needs to create or destroy keys.
+
+### Migrations run before rollout
+
+`cmd/migrate` is a separate binary in the same image. Run it as a Cloud Run job or a
+one-off container before switching traffic; the application never creates schema.
+
+### Deploys and in-flight settlement
+
+A deploy sends `SIGTERM`. The process stops accepting requests, then waits up to 45
+seconds for an in-flight worker tick, because a broadcast interrupted between
+sending and recording its hash would become an `ambiguous` transaction — and
+resolving one of those needs a human. The send-and-record pair is detached from
+cancellation so it can finish.
+
+Set the platform's termination grace period **above** that wait — Cloud Run's
+`--timeout` and GKE's `terminationGracePeriodSeconds` — or the platform kills the
+process during the window the wait exists to protect.
+
 ## TLS
 
 The bundled `Caddyfile` listens on `:80` because the local stack has no domain. For

@@ -260,6 +260,17 @@ must plan capacity and, if pruning becomes necessary, do it as an explicit
 migration that drops and restores the trigger under audit rather than granting
 the runtime role deletion rights.
 
+## Deploys
+
+Shutdown drains the HTTP server, then waits up to 45 seconds for an in-flight
+settlement worker tick. An interrupted broadcast — sent but with its hash unrecorded
+— is the `ambiguous` case, and resolving one costs a human, so the send-and-record
+pair is detached from shutdown cancellation and the process waits for it.
+
+Give the platform a termination grace period longer than that wait, or it kills the
+process during exactly the window the wait protects. If the drain times out, the log
+says so; the recovery worker resolves whatever was in flight on the next start.
+
 ## When something is stuck
 
 See [runbooks](RUNBOOKS.md). It starts with one triage query over every

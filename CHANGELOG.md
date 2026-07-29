@@ -7,6 +7,11 @@ versioned where noted.
 
 ### Added
 
+- GCP deployment documentation, including the trap that Cloud Run's default CPU
+  throttling and scale-to-zero stop the settlement workers entirely — committed
+  intents are never broadcast — while `/verify` and `/settle` keep answering, so the
+  service looks healthy.
+
 - `docs/RUNBOOKS.md`: what to do about the states settlement actually produces —
   ambiguous broadcasts, nonce gaps, a gap filler the chain accepted, a depleted
   signer, a stalled worker, an intent that was never signed, and how to halt
@@ -177,6 +182,15 @@ versioned where noted.
   duplicate settle converges on the recorded hash, and confirmation reaches
   `confirmed`. Every other test stubs the chain, so nothing had previously executed
   a real `transferWithAuthorization`.
+
+### Fixed
+
+- A deploy could strand a payment in `manual_review`. Shutdown cancels the worker
+  context, and a cancellation landing between sending a transaction and recording its
+  hash left it on the network with nothing recording it — the ambiguous case, which
+  costs a human to resolve. The send-and-record pair is now detached from
+  cancellation and bounded, and shutdown waits up to 45 seconds for an in-flight
+  tick.
 
 ### Fixed
 

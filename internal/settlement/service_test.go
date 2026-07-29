@@ -672,3 +672,54 @@ func TestBroadcastSimulationFailureKeepsIntent(t *testing.T) {
 		t.Fatalf("store = %+v", store)
 	}
 }
+
+// TestBroadcastRecordsItsHashDespiteCancellation is the property that makes a
+// deploy safe. Shutdown cancels the worker's context; if that cancellation landed
+// between sending the transaction and recording its hash, the transaction would be
+// on the network with nothing recording it — the ambiguous case, which costs a
+// human to resolve. Every restart was previously a chance to create one.
+func TestBroadcastRecordsItsHashDespiteCancellation(t *testing.T) {
+	store := &fakeStore{work: pendingWork()}
+	chain := &cancellationAwareChain{txHash: "0x" + strings.Repeat("ab", 32)}
+	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+
+	// Cancelled before the pipeline runs: the harshest version of a shutdown
+	// arriving mid-broadcast.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	work := pendingWork()
+	work.Lease = Lease{PaymentID: "payment-1", Worker: "test"}
+	hash, err := service.broadcastClaimed(ctx, work, "worker")
+	if err != nil {
+		t.Fatalf("broadcast under cancellation: %v", err)
+	}
+	if hash != chain.txHash {
+		t.Fatalf("hash = %q, want %q", hash, chain.txHash)
+	}
+	if store.broadcastTxHash != chain.txHash {
+		t.Fatalf("the hash was not recorded (got %q); the transaction would be orphaned",
+			store.broadcastTxHash)
+	}
+	if store.ambiguous {
+		t.Fatal("a successful broadcast was marked ambiguous")
+	}
+	if !chain.sawLiveContext {
+		t.Fatal("the send received an already-cancelled context; it would never reach the network")
+	}
+}
+
+// cancellationAwareChain reports whether the context it was handed was still live,
+// which is what distinguishes a detached broadcast from a doomed one.
+type cancellationAwareChain struct {
+	fakeChain
+	txHash         string
+	sawLiveContext bool
+}
+
+func (c *cancellationAwareChain) SendRawTransaction(ctx context.Context, _ string) (string, error) {
+	if ctx.Err() == nil {
+		c.sawLiveContext = true
+	}
+	return c.txHash, ctx.Err()
+}
