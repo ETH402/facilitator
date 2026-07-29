@@ -94,3 +94,9 @@ jobs:
           context: .
           push: false
           tags: eth402/facilitator:ci
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          target: policysigner
+          push: false
+          tags: eth402/policysigner:ci

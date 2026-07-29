@@ -49,3 +49,4 @@ security:
 
 docker-build:
 	docker build -t eth402/facilitator:local .
+	docker build --target policysigner -t eth402/policysigner:local .

@@ -162,6 +162,18 @@ func TestBoundaryRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestBoundaryRejectsTrailingJSON(t *testing.T) {
+	b := newTestBoundary(t)
+	encoded, err := json.Marshal(validRequest())
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	body := string(encoded) + `{"nonce":8}`
+	if got := post(t, b, testToken, body).Code; got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for trailing JSON", got)
+	}
+}
+
 func TestBoundaryRefusesOverItsCeilings(t *testing.T) {
 	b := newTestBoundary(t)
 	over := validRequest()
@@ -187,6 +199,54 @@ func TestBoundaryRefusesMalformedRequests(t *testing.T) {
 				t.Errorf("status = %d, want 400", got)
 			}
 		})
+	}
+}
+
+func TestBoundaryDoesNotLogOrEchoAuthorization(t *testing.T) {
+	var logs bytes.Buffer
+	b := newTestBoundary(t)
+	b.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	request := validRequest()
+	request.Authorization.Signature = "sensitive-malformed-signature"
+
+	recorder := post(t, b, testToken, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	combined := logs.String() + recorder.Body.String()
+	for name, sensitive := range map[string]string{
+		"payer":      request.Authorization.From,
+		"recipient":  request.Authorization.To,
+		"amount":     request.Authorization.Value,
+		"auth nonce": request.Authorization.Nonce,
+		"signature":  request.Authorization.Signature,
+	} {
+		if strings.Contains(combined, sensitive) {
+			t.Errorf("%s authorization data leaked in log or response", name)
+		}
+	}
+}
+
+func TestBoundarySuccessLogOmitsAuthorization(t *testing.T) {
+	var logs bytes.Buffer
+	b := newTestBoundary(t)
+	b.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	request := validRequest()
+
+	recorder := post(t, b, testToken, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	for name, sensitive := range map[string]string{
+		"payer":      request.Authorization.From,
+		"recipient":  request.Authorization.To,
+		"amount":     request.Authorization.Value,
+		"auth nonce": request.Authorization.Nonce,
+		"signature":  request.Authorization.Signature,
+	} {
+		if strings.Contains(logs.String(), sensitive) {
+			t.Errorf("%s authorization data leaked in success log", name)
+		}
 	}
 }
 

@@ -287,6 +287,76 @@ func TestPolicyClientFailsFastOnABadToken(t *testing.T) {
 	}
 }
 
+func TestPolicyClientRejectsInvalidBoundaryIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(policy.Response{SignerAddress: "not-an-address"})
+	}))
+	defer server.Close()
+	if _, err := NewPolicyClient(context.Background(), server.URL, boundaryToken, time.Second); err == nil {
+		t.Fatal("constructed client with an invalid signer identity")
+	}
+}
+
+func TestPolicyClientRequiresAnOriginEndpoint(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://user:password@signer.example",
+		"https://signer.example/path",
+		"https://signer.example?destination=elsewhere",
+		"file:///tmp/signer",
+	} {
+		if _, err := NewPolicyClient(context.Background(), endpoint, boundaryToken, time.Second); err == nil {
+			t.Errorf("accepted non-origin endpoint %q", endpoint)
+		}
+	}
+}
+
+func TestPolicyClientRefusesRedirects(t *testing.T) {
+	redirected := false
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected = true
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	if _, err := NewPolicyClient(context.Background(), redirector.URL, boundaryToken, time.Second); err == nil {
+		t.Fatal("constructed client through a redirect")
+	}
+	if redirected {
+		t.Fatal("policy signer redirect was followed")
+	}
+}
+
+func TestPolicyClientDoesNotPropagateBoundaryBody(t *testing.T) {
+	const sensitive = "attacker-controlled-sensitive-response"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/identity":
+			_ = json.NewEncoder(w).Encode(policy.Response{
+				SignerAddress: common.HexToAddress("0x1234").Hex(),
+			})
+		case "/sign":
+			http.Error(w, sensitive, http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := NewPolicyClient(context.Background(), server.URL, boundaryToken, time.Second)
+	if err != nil {
+		t.Fatalf("NewPolicyClient: %v", err)
+	}
+	_, err = client.SignTransaction(context.Background(), policyTransaction(t))
+	if err == nil {
+		t.Fatal("boundary refusal was not surfaced")
+	}
+	if strings.Contains(err.Error(), sensitive) {
+		t.Fatal("boundary-controlled response body propagated into error")
+	}
+}
+
 func TestPolicyClientPropagatesABoundaryRefusal(t *testing.T) {
 	boundary := newFakeBoundary(t)
 	server := boundary.serve(t)

@@ -7,6 +7,11 @@ Before any first funded transaction, complete the
 currently blocked by the required independent security review, funded
 infrastructure, and operator approval.
 
+The repository-owned [security-review packet](SECURITY_REVIEW.md) defines the
+frozen target, invariants, adversarial paths, evidence commands, and acceptance
+criteria. An independent reviewer must execute it; repository authors cannot
+approve their own payment-critical implementation.
+
 A production deployment should run the immutable application image
 behind Caddy or a managed TLS load balancer, use managed PostgreSQL with TLS
 and point-in-time recovery, two authenticated Ethereum RPCs, a real email

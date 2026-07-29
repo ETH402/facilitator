@@ -10,10 +10,12 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/policy"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -41,10 +43,24 @@ func NewPolicyClient(ctx context.Context, endpoint, token string, timeout time.D
 	if endpoint == "" || token == "" {
 		return nil, errors.New("policy signer endpoint and token are both required")
 	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
+		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return nil, errors.New("policy signer endpoint must be an HTTP(S) origin without credentials, query, or path")
+	}
 	client := &PolicyClient{
 		endpoint: strings.TrimSuffix(endpoint, "/"),
 		token:    token,
-		http:     &http.Client{Timeout: timeout},
+		http: &http.Client{
+			Timeout: timeout,
+			// A signing boundary has no legitimate redirect flow. Refusing it
+			// prevents the bearer credential and authorization from being
+			// replayed to a different location or downgraded to plaintext.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 	address, err := client.fetchAddress(ctx)
 	if err != nil {
@@ -72,15 +88,14 @@ func (c *PolicyClient) fetchAddress(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("read policy signer identity: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("policy signer identity returned %d: %s",
-			response.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("policy signer identity returned HTTP %d", response.StatusCode)
 	}
 	var decoded policy.Response
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return "", fmt.Errorf("decode policy signer identity: %w", err)
 	}
-	if decoded.SignerAddress == "" {
-		return "", errors.New("policy signer reported no signing address")
+	if !common.IsHexAddress(decoded.SignerAddress) {
+		return "", errors.New("policy signer reported an invalid signing address")
 	}
 	return strings.ToLower(decoded.SignerAddress), nil
 }
@@ -127,8 +142,8 @@ func (c *PolicyClient) SignTransaction(ctx context.Context, tx Transaction) (Sig
 		return SignedTransaction{}, fmt.Errorf("read policy signer response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return SignedTransaction{}, fmt.Errorf("policy signer refused to sign (%d): %s",
-			response.StatusCode, strings.TrimSpace(string(body)))
+		return SignedTransaction{}, fmt.Errorf("policy signer refused to sign (HTTP %d)",
+			response.StatusCode)
 	}
 	var decoded policy.Response
 	if err := json.Unmarshal(body, &decoded); err != nil {

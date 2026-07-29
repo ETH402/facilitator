@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/mail"
@@ -275,6 +276,9 @@ func (c Config) Validate() error {
 	if c.TermsVersion == "" {
 		errs = append(errs, errors.New("terms version is required"))
 	}
+	if _, ok := logLevels[c.LogLevel]; !ok {
+		errs = append(errs, errors.New("log level must be debug, info, warn, or error"))
+	}
 	if c.EmailBackend != "log" && c.EmailBackend != "file" && c.EmailBackend != "smtp" {
 		errs = append(errs, errors.New("email backend must be log, file, or smtp"))
 	}
@@ -329,15 +333,19 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("signer mode must be disabled, development, external, or policy"))
 	}
 	if c.SignerMode == "policy" {
-		if c.PolicySignerURL == "" {
-			errs = append(errs, errors.New("policy signer requires ETH402_POLICY_SIGNER_URL"))
+		policyURL, policyErr := url.Parse(c.PolicySignerURL)
+		if c.PolicySignerURL == "" || policyErr != nil ||
+			(policyURL.Scheme != "http" && policyURL.Scheme != "https") ||
+			policyURL.Host == "" || policyURL.User != nil || policyURL.RawQuery != "" ||
+			policyURL.Fragment != "" || (policyURL.Path != "" && policyURL.Path != "/") {
+			errs = append(errs, errors.New("policy signer URL must be an HTTP(S) origin without credentials, query, or path"))
 		}
 		if len(c.PolicySignerToken) < 32 {
 			// The token is the only thing standing between the signing boundary and
 			// anything that can reach its port, so a weak one is a misconfiguration.
 			errs = append(errs, errors.New("policy signer requires ETH402_POLICY_SIGNER_TOKEN of at least 32 characters"))
 		}
-		if c.Environment == "production" && !strings.HasPrefix(c.PolicySignerURL, "https://") {
+		if c.Environment == "production" && (policyErr != nil || policyURL.Scheme != "https") {
 			// Plaintext would put the bearer token and every authorization on the
 			// wire. Localhost is not exempted: in production the boundary is a
 			// separate workload, so a localhost URL is itself a misconfiguration.
@@ -390,6 +398,24 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+var logLevels = map[string]slog.Level{
+	"debug": slog.LevelDebug,
+	"info":  slog.LevelInfo,
+	"warn":  slog.LevelWarn,
+	"error": slog.LevelError,
+}
+
+// SlogLevel returns the validated runtime log level. Config.Validate rejects an
+// unknown name, so the fallback is reachable only when a caller bypasses Load
+// and also ignores Validate; fail quiet rather than unexpectedly enabling
+// debug output in that case.
+func (c Config) SlogLevel() slog.Level {
+	if level, ok := logLevels[c.LogLevel]; ok {
+		return level
+	}
+	return slog.LevelInfo
 }
 
 // kmsKeyNamePattern pins the Cloud KMS key version resource shape; signing

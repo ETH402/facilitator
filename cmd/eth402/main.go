@@ -76,6 +76,9 @@ func main() {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: cfg.SlogLevel(),
+	}))
 	if *checkConfig {
 		logger.Info("configuration valid", "config", cfg.RedactedSummary())
 		return

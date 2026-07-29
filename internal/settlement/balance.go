@@ -22,12 +22,11 @@ type BalanceRecorder interface {
 
 // BalanceWorker publishes the settlement signer's ether balance.
 //
-// ADR-0004 decision 8 makes the bounded hot balance the operative
-// signer-compromise control: Cloud KMS signs opaque digests and cannot inspect
-// calldata, so the allowlist lives inside this process and a compromise is
-// bounded by what the signer can spend rather than by what it is allowed to sign.
-// A bound nobody observes is a convention, not a control — this makes it
-// observable.
+// ADR-0004 decision 8 makes the bounded hot balance the final loss bound if the
+// policy signing boundary or its KMS authority is compromised. The boundary
+// structurally limits ordinary facilitator requests to canonical-USDC
+// settlement, but the key holder is still capable of spending gas. A bound
+// nobody observes is a convention, not a control — this makes it observable.
 //
 // It deliberately does not compute a burn rate. Prometheus derives that from the
 // published gauge across restarts, which an in-process counter cannot.

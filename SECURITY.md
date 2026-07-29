@@ -44,6 +44,8 @@ rather than implying there are none.
   execution model, including which invariants are load-bearing and why
 - [key management](docs/KEY_MANAGEMENT.md) and [privacy](docs/PRIVACY.md)
 - [incident response](docs/INCIDENT_RESPONSE.md) and [runbooks](docs/RUNBOOKS.md)
+- [independent review packet](docs/SECURITY_REVIEW.md) — frozen target,
+  invariants, adversarial paths, evidence, and exit criteria
 
 ## Reproducing safely
 

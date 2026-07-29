@@ -62,10 +62,10 @@ func (t Transaction) Validate() error {
 	if t.ChainID != 1 {
 		errs = append(errs, errors.New("only Ethereum mainnet may be signed"))
 	}
-	// The calldata allowlist. Cloud KMS signs opaque digests and cannot inspect
-	// calldata, so this is the only thing standing between a compromised process
-	// and an arbitrary signed transaction (ADR-0004 decision 8); loss is
-	// otherwise bounded only by the signer's hot balance.
+	// The calldata allowlist is defense in depth for every backend. Production
+	// puts the stronger structural policy boundary in a separate workload,
+	// because an in-process check alone cannot survive compromise of this process
+	// and Cloud KMS cannot inspect the digest it signs (ADR-0004 decision 8).
 	if !strings.EqualFold(t.To, config.MainnetUSDC) {
 		errs = append(errs, errors.New("only canonical Ethereum-mainnet USDC may be called"))
 	}

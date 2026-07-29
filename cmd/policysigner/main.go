@@ -15,12 +15,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -38,9 +40,13 @@ import (
 
 const (
 	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 15 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
 	requestTimeout    = 20 * time.Second
 	shutdownTimeout   = 10 * time.Second
 	maxRequestBytes   = 8 << 10
+	maxHeaderBytes    = 8 << 10
 )
 
 func main() {
@@ -99,6 +105,10 @@ func run() error {
 		Addr:              addr,
 		Handler:           http.TimeoutHandler(mux, requestTimeout, `{"error":"timeout"}`),
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 	logger.Info("policy signer listening", "address", addr, "signer_address", address,
 		"max_gas_limit", limits.MaxGasLimit, "max_fee_per_gas_wei", limits.MaxFeePerGasWei.String())
@@ -127,11 +137,14 @@ type boundary struct {
 	logger  *slog.Logger
 }
 
-// authorized compares in constant time. A signing service that leaks its token
-// through response timing is a poor place to put an allowlist.
+// authorized compares fixed-size token digests. subtle.ConstantTimeCompare
+// returns early for unequal input lengths, so comparing raw bearer values would
+// expose the configured token length through the signing boundary.
 func (b *boundary) authorized(r *http.Request) bool {
 	presented := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return subtle.ConstantTimeCompare([]byte(presented), []byte(b.token)) == 1
+	presentedHash := sha256.Sum256([]byte(presented))
+	tokenHash := sha256.Sum256([]byte(b.token))
+	return subtle.ConstantTimeCompare(presentedHash[:], tokenHash[:]) == 1
 }
 
 func (b *boundary) identity(w http.ResponseWriter, r *http.Request) {
@@ -157,20 +170,26 @@ func (b *boundary) sign(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "malformed signing request")
 		return
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "malformed signing request")
+		return
+	}
 
 	unsigned, err := policy.Unsigned(request, b.limits)
 	if err != nil {
-		// Logged in full, because a rejection here is either a bug in the caller
-		// or the first observable sign that the caller is compromised. Returned
-		// in full too: both processes are operated by the same team.
-		b.logger.WarnContext(r.Context(), "refused to sign", "error", err,
-			"nonce", request.Nonce, "gas_limit", request.GasLimit,
-			"payer", request.Authorization.From, "payee", request.Authorization.To)
+		// Validation errors can contain attacker-supplied authorization fields,
+		// including the signature and EIP-3009 nonce. Record the category and
+		// outer transaction budget only; neither logs nor responses are an
+		// authorization transport.
 		status := http.StatusBadRequest
+		message := "invalid signing request"
 		if errors.Is(err, policy.ErrOverLimit) {
 			status = http.StatusUnprocessableEntity
+			message = "signing request exceeds configured ceiling"
 		}
-		writeError(w, status, err.Error())
+		b.logger.WarnContext(r.Context(), "refused to sign", "reason", message,
+			"transaction_nonce", request.Nonce, "gas_limit", request.GasLimit)
+		writeError(w, status, message)
 		return
 	}
 
@@ -201,8 +220,7 @@ func (b *boundary) sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b.logger.InfoContext(r.Context(), "signed settlement transaction",
-		"nonce", request.Nonce, "payer", request.Authorization.From,
-		"payee", request.Authorization.To, "value", request.Authorization.Value)
+		"transaction_nonce", request.Nonce)
 	writeJSON(w, http.StatusOK, policy.Response{
 		RawTransaction: "0x" + hex.EncodeToString(signed.Raw),
 		SignerAddress:  b.address,

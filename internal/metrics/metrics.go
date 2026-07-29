@@ -207,9 +207,9 @@ func (r *Registry) writeWorkerHealth(w io.Writer) {
 
 // writeSignerBalance exposes the bound on how much a compromised process can
 // spend. ADR-0004 decision 8 makes the hot balance the operative
-// signer-compromise control, because Cloud KMS cannot inspect calldata and the
-// allowlist therefore lives inside this process — so the balance is only a
-// control if somebody is watching it.
+// final signer-compromise loss bound. The policy boundary constrains facilitator
+// requests structurally, while the KMS-authorized boundary can still spend gas;
+// the balance is only a control if somebody is watching it.
 //
 // Burn rate is deliberately not computed here. Prometheus derives it from this
 // gauge with deriv() or rate(), correctly across restarts, which an in-process

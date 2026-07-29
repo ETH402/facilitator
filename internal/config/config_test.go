@@ -24,7 +24,24 @@ func validConfig() Config {
 		RevokedKeyRetention: 30 * 24 * time.Hour, RetentionInterval: time.Hour,
 		RetentionBatchSize: 500,
 		MetricsEnabled:     true,
+		LogLevel:           "info",
 		TermsVersion:       "test", APIKeyPepper: "01234567890123456789012345678901",
+	}
+}
+
+func TestLogLevel(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.LogLevel = "debug"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("debug log level rejected: %v", err)
+	}
+	if got := cfg.SlogLevel().String(); got != "DEBUG" {
+		t.Fatalf("runtime log level = %q, want DEBUG", got)
+	}
+	cfg.LogLevel = "verbose"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unknown log level accepted")
 	}
 }
 
@@ -228,6 +245,30 @@ func TestProductionRequiresPolicySigner(t *testing.T) {
 	cfg.MaxGasLimit = 1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("production accepted direct KMS mode")
+	}
+}
+
+func TestPolicySignerRequiresAnOriginURL(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.SignerMode = "policy"
+	cfg.PolicySignerToken = "01234567890123456789012345678901"
+	cfg.MaxFeePerGasWei = "1"
+	cfg.MaxGasLimit = 1
+	for _, endpoint := range []string{
+		"https://user:password@signer.example",
+		"https://signer.example/path",
+		"https://signer.example?redirect=elsewhere",
+		"file:///tmp/signer",
+	} {
+		cfg.PolicySignerURL = endpoint
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("accepted non-origin endpoint %q", endpoint)
+		}
+	}
+	cfg.PolicySignerURL = "http://localhost:8081"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("development origin endpoint rejected: %v", err)
 	}
 }
 

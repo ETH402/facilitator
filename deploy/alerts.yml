@@ -3,11 +3,11 @@
 # Load alongside deploy/prometheus.yml:
 #   rule_files: [ alerts.yml ]
 #
-# ADR-0004 decision 8 makes the bounded hot balance the operative
-# signer-compromise control: Cloud KMS signs opaque digests and cannot inspect
-# calldata, so the allowlist lives inside the ETH402 process and a compromise is
-# bounded by what the signer can spend rather than by what it is permitted to
-# sign. These rules are what make that bound a control rather than a convention.
+# ADR-0004 decision 8 makes the bounded hot balance the final loss bound if the
+# policy-signing boundary or its KMS authority is compromised. The boundary
+# structurally restricts facilitator requests to canonical-USDC settlement, but
+# its key can still spend gas. These rules make the balance a monitored control
+# rather than a convention.
 #
 # Thresholds are examples. Set them from your own figures: the worst case per
 # merchant per window is ETH402_MERCHANT_SETTLEMENT_QUOTA x ETH402_MAX_GAS_LIMIT x
@@ -41,9 +41,9 @@ groups:
           summary: "Settlement signer balance is falling unusually fast"
           description: >-
             Faster than legitimate settlement volume explains. A compromised
-            process cannot sign arbitrary transactions — the in-process allowlist
-            restricts it to transferWithAuthorization on USDC — but it can settle
-            payments of its choosing until the balance is gone.
+            facilitator cannot ask the policy boundary to sign arbitrary
+            transactions, but a compromised boundary or KMS authority can spend
+            gas until the bounded balance is gone.
 
       - alert: SignerBalanceStale
         # A failing balance read leaves the last figure in place, which looks

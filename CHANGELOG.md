@@ -7,6 +7,11 @@ versioned where noted.
 
 ### Added
 
+- An independent security-review packet with an immutable-target handoff,
+  payment-critical invariants, required adversarial paths, reproducible
+  evidence commands, finding expectations, and objective exit criteria. The
+  external review itself remains a hard gate before funded mainnet use.
+
 - Fail-closed production startup preflight: the database must have exactly the
   migrations embedded in the binary; primary and fallback RPCs are checked
   independently for chain ID 1; SMTP TLS/authentication is probed without
@@ -344,6 +349,25 @@ versioned where noted.
   neither side observed the disagreement.
 
 ### Changed
+
+- Policy-signer success and refusal logs no longer contain payer, recipient,
+  amount, authorization nonce, or signature material. Validation responses now
+  expose only a stable error category, preventing malformed authorization data
+  from crossing into facilitator logs.
+
+- The facilitator's policy-signer client now accepts only an HTTP(S) origin,
+  refuses redirects, and never includes boundary-controlled response bodies in
+  errors, and rejects a malformed signer identity, closing bearer-token
+  downgrade and authorization-log injection paths.
+
+- The policy-signer HTTP boundary now rejects trailing JSON, compares fixed-size
+  bearer-token digests, and bounds headers plus read/write/idle connection time.
+
+- Container validation now builds both production workloads: the facilitator
+  image and the separately targeted policy-signer image.
+
+- `ETH402_LOG_LEVEL` now controls the runtime structured logger and rejects
+  unknown values instead of being silently ignored.
 
 - The recovery worker's replacement, nonce-gap, and gap-filler passes now claim the
   payment lease before acting, removing the single-instance deployment constraint.

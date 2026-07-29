@@ -165,4 +165,6 @@ Milestone 4 is complete.
       remains blocked on independent review, funded keys, live infrastructure,
       and an operator decision, and cannot be delegated
 - [ ] independent security review — cannot be self-performed; needs a third party.
-      `SECURITY.md` now scopes it
+      `SECURITY.md` scopes reports and `docs/SECURITY_REVIEW.md` provides the
+      frozen-target handoff, invariants, adversarial paths, evidence commands,
+      and exit criteria
