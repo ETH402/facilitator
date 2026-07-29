@@ -51,22 +51,63 @@ before writing code, and release the claim when the PR merges.
 The lock serialises the tree; the claim serialises the *work*, which is a longer
 span than any single editing session.
 
-## 4. Every commit names its agent
+## 4. Every commit is signed by its agent
 
-Use the trailer the repository already uses:
+Run this once per agent, then commit normally — signing is automatic:
 
+```sh
+scripts/agent-signing-setup <agent>     # claude, codex, kimi
 ```
-Co-Authored-By: <Agent Name> <noreply@example.com>
-```
 
-**Why:** all three agents push as the same git identity, so the trailer is the
-only record of who wrote what. Rule 5 depends on it.
+Signing identity is bound to the **lock**: `agent-lock acquire <agent>` points this
+checkout at that agent's key, and `release` disables signing again. So the agent
+doing the work is the agent whose key signs, without anyone having to remember.
+
+That binding is necessary, not decorative. The checkout is shared, so
+`.git/config` is shared: repo-local signing config set by one agent would sign the
+next agent's commits too. It also overrides any *global* signing key — before this
+existed, a global config signed all 33 commits on this branch with the operator's
+personal key, so the audit trail claimed a human had personally signed work three
+agents wrote.
+
+A commit made without holding the lock is **unsigned**, which the verifier flags.
+That is deliberate: unattributed is a gap, misattributed is a lie.
+
+Signing goes through `scripts/agent-ssh-sign`, which clears `SSH_AUTH_SOCK` before
+calling `ssh-keygen`. Without that, an SSH agent on the machine that owns its own
+keys — 1Password's, for instance — intercepts the request and refuses, because the
+agent's signing key is a plain file it has never heard of.
+
+Keep the `Co-Authored-By:` trailer as well; it is readable at a glance. But the
+**signature** is the authority.
+
+**Why:** all three agents push as one GitHub identity, so a trailer is only as
+trustworthy as whichever agent typed it — any agent can write any name. A
+signature cannot be produced without the private key. Rule 5 depends on
+establishing authorship, so it depends on this.
+
+The keys are signing-only and never registered for authentication, so a leaked
+one permits forged attribution, not repository access. Public keys live in
+`.github/allowed_signers`, which is the repository's record of which key belongs
+to which agent.
 
 ## 5. Cross-review is mandatory, and the author never merges
 
 - Every PR must be reviewed by an agent that authored **none** of its commits.
-- Determine authorship from the `Co-Authored-By:` trailers, not the git author.
+- Establish authorship from **signatures**, not the git author and not the
+  trailer:
+
+  ```sh
+  scripts/agent-verify-signatures        # who signed each commit on this branch
+  ```
+
+  It exits non-zero if any commit is unsigned or signed by a key absent from
+  `.github/allowed_signers`, so it can gate the review.
 - The reviewing agent merges. The authoring agent must not.
+
+GitHub cannot enforce this: one account cannot be "someone else". The signatures
+make a violation *detectable after the fact*, which is the strongest guarantee
+available short of giving each agent its own GitHub account.
 
 **Why:** Milestone 3 reached thirty commits with no independent review. Both
 genuine bugs found in it were found by a *different* agent reading a correctness

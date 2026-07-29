@@ -1,0 +1,14 @@
+# Agent commit-signing keys. Public keys only — safe to commit, and this file is
+# the repository's record of which key belongs to which agent.
+#
+# All three agents push as one GitHub identity, so a Co-Authored-By trailer is
+# only as trustworthy as the agent typing it. A signature is not: producing one
+# requires the private key. That makes authorship auditable rather than merely
+# asserted, which is what rule 5 (the author never merges its own PR) rests on.
+#
+# Verify locally with:  scripts/agent-verify-signatures
+# Register each public key on GitHub as a *signing* key so commits show Verified.
+#
+# Add your line when you generate a key:
+#   scripts/agent-signing-setup <agent>
+claude ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILE8TZVuwwCNWFseQdD98AkxCs6qqiA37YkPoHMlnLxI eth402-agent-claude

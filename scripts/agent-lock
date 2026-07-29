@@ -54,12 +54,39 @@ show_holder() {
 	printf 'held by %s for %s minute(s)\n  task: %s\n' "$holder" "$(age_minutes)" "$(meta_get TASK)"
 }
 
+# bind_signing points this checkout's signing config at the lock holder's key.
+#
+# The checkout is shared, so .git/config is shared: repo-local signing config set
+# by one agent would sign the next agent's commits too. Binding it to lock
+# ownership means the agent doing the work is the agent whose key signs, without
+# anyone having to remember. It also overrides any global signing key, which would
+# otherwise attribute every agent commit to whoever owns that key.
+bind_signing() {
+	agent="$1"
+	key="$HOME/.ssh/eth402_agent_$agent"
+	if [ ! -f "$key" ]; then
+		echo "WARNING: no signing key at $key" >&2
+		echo "  commits will be unsigned. Run: scripts/agent-signing-setup $agent" >&2
+		git config commit.gpgsign false 2>/dev/null || true
+		return 0
+	fi
+	git config gpg.format ssh
+	git config user.signingkey "$key.pub"
+	git config commit.gpgsign true
+	git config gpg.ssh.allowedSignersFile ".github/allowed_signers"
+	# Sign with the key file rather than whatever an SSH agent holds; see the
+	# wrapper for why an agent on the machine otherwise breaks signing.
+	git config gpg.ssh.program "$(pwd)/scripts/agent-ssh-sign"
+	echo "commits will be signed as $agent"
+}
+
 cmd_acquire() {
 	agent="${1:?agent name required}"
 	task="${2:?task description required}"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
 		printf 'AGENT=%s\nTASK=%s\nHELD_SINCE=%s\n' "$agent" "$task" "$(now_epoch)" > "$META"
 		echo "lock acquired by $agent"
+		bind_signing "$agent"
 		echo "release it with: scripts/agent-lock release $agent"
 		return 0
 	fi
@@ -83,7 +110,12 @@ cmd_release() {
 		return 1
 	fi
 	rm -rf "$LOCK_DIR"
-	echo "lock released by $agent"
+	# Disable signing rather than leaving the previous holder's key configured: a
+	# commit made without the lock is then unsigned, which the verifier flags.
+	# Misattributed is worse than unattributed — one is a gap, the other a lie.
+	git config commit.gpgsign false 2>/dev/null || true
+	git config --unset user.signingkey 2>/dev/null || true
+	echo "lock released by $agent; signing disabled until the next acquire"
 }
 
 cmd_status() {
