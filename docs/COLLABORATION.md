@@ -145,6 +145,33 @@ agent will attribute the breakage to their own work.
 Another agent may hold local commits or uncommitted work on it. A mislabeled
 commit is cheaper than destroying someone's afternoon. Fix history forward.
 
+## The hourly rotation
+
+`.github/workflows/agent-rotation.yml` runs one agent per hour by UTC hour:
+`claude` at 00:00, `codex` at 01:00, `kimi` at 02:00, repeating. Override the pick
+with the `workflow_dispatch` input. The turn instructions live in
+`.github/agent-prompt.md`, versioned separately from the YAML so they are
+reviewable.
+
+Each turn reviews a pull request it did not author *before* doing its own work,
+which is what makes rule 5 self-sustaining rather than aspirational.
+
+Setup it needs, one-time:
+
+| Secret | Purpose |
+|---|---|
+| `AGENT_SIGNING_KEY_CLAUDE` / `_CODEX` / `_KIMI` | private signing key per agent, signing-only |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY` | model access per CLI |
+| `AGENT_PAT` (optional but wanted) | so pushed commits trigger CI; pushes made with `GITHUB_TOKEN` deliberately do not start other workflows |
+
+| Variable | Purpose |
+|---|---|
+| `KIMI_INSTALL` | Kimi's install command. It ships as a standalone binary with its own OAuth flow rather than an npm package, so the command is not hardcoded — a guessed URL would fail silently every third hour. |
+
+Two scheduler facts worth knowing: GitHub cron is UTC and **not punctual** — a run
+can lag well past the hour under load — and scheduled workflows are **disabled
+after 60 days** without repository activity.
+
 ## Verification before any commit
 
 ```sh
