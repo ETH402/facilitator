@@ -74,10 +74,15 @@ type Config struct {
 	// SettlementReplacementAfter is how long a broadcast may sit pending
 	// before recovery replaces it with a fee bump.
 	SettlementReplacementAfter time.Duration
-	LogLevel                   string
-	MetricsEnabled             bool
-	PublicRatePerMin           int
-	RegistrationRate           int
+	// MerchantSettlementQuota bounds settlement intents per merchant per
+	// MerchantQuotaWindow. Quota × MaxGasLimit × MaxFeePerGasWei is the
+	// operator's worst-case gas exposure per merchant per window.
+	MerchantSettlementQuota int
+	MerchantQuotaWindow     time.Duration
+	LogLevel                string
+	MetricsEnabled          bool
+	PublicRatePerMin        int
+	RegistrationRate        int
 	// TrustedProxies lists the reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is always
 	// the client, which is correct only when the service is exposed directly.
@@ -127,6 +132,8 @@ func Load() (Config, error) {
 		SettlementLeaseDuration:    l.duration("ETH402_SETTLEMENT_LEASE_DURATION", 2*time.Minute),
 		SettlementRecoveryGrace:    l.duration("ETH402_SETTLEMENT_RECOVERY_GRACE", 2*time.Minute),
 		SettlementReplacementAfter: l.duration("ETH402_SETTLEMENT_REPLACEMENT_AFTER", 5*time.Minute),
+		MerchantSettlementQuota:    l.int("ETH402_MERCHANT_SETTLEMENT_QUOTA", 1000),
+		MerchantQuotaWindow:        l.duration("ETH402_MERCHANT_QUOTA_WINDOW", 24*time.Hour),
 		LogLevel:                   l.str("ETH402_LOG_LEVEL", "info"),
 		MetricsEnabled:             l.boolean("ETH402_METRICS_ENABLED", true),
 		PublicRatePerMin:           l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
@@ -166,6 +173,12 @@ func (c Config) Validate() error {
 	}
 	if c.PublicRatePerMin < 1 || c.RegistrationRate < 1 {
 		errs = append(errs, errors.New("rate limits must be positive"))
+	}
+	// Zero is not "unlimited": the quota is the only bound on how much gas an
+	// admitted merchant can spend (ADR-0004 decision 9), so it must be an explicit
+	// positive number. Raising it is a deliberate exposure decision.
+	if c.MerchantSettlementQuota < 1 || c.MerchantQuotaWindow <= 0 {
+		errs = append(errs, errors.New("merchant settlement quota and window must be positive"))
 	}
 	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.RecipientCooldown < 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
 		errs = append(errs, errors.New("durations must be positive (stats cache may be zero)"))

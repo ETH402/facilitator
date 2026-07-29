@@ -13,6 +13,7 @@ const (
 	ReasonPaymentNotVerified    = "payment_not_verified"
 	ReasonRecipientNotMerchant  = "recipient_not_registered"
 	ReasonAuthorizationExpiring = "authorization_expiring"
+	ReasonMerchantQuotaExceeded = "merchant_quota_exceeded"
 )
 
 var (
@@ -34,6 +35,17 @@ var (
 	// margin. EIP-3009 enforces validBefore on-chain, so broadcasting now would
 	// pay gas for a transaction that predictably reverts.
 	ErrAuthorizationExpiring = errors.New("authorization expires within the settlement margin")
+
+	// ErrMerchantQuotaExceeded means the merchant has already had its allowance
+	// of settlement intents inside the rolling window.
+	//
+	// This is the bound decision 9 rests on. The recipient gate ensures gas is
+	// only ever spent for a party that accepted terms and can be suspended, but
+	// it says nothing about how much: registration is not Sybil-resistant, so
+	// without a quota one registration buys unbounded gas. Quota × gas limit ×
+	// max fee per gas is the operator's worst-case exposure per merchant per
+	// window.
+	ErrMerchantQuotaExceeded = errors.New("merchant settlement quota exceeded for the current window")
 )
 
 // IntentRequest asks for a durable settlement intent. The margin and clock are
@@ -47,7 +59,12 @@ type IntentRequest struct {
 	// a crash without trusting a caller twice.
 	PayerSignature string
 	ExpiryMargin   time.Duration
-	Now            time.Time
+	// Quota bounds how many settlement intents one merchant may commit inside
+	// QuotaWindow. Both are inputs rather than persistence-level constants so the
+	// policy stays owned by the caller and testable.
+	Quota       int
+	QuotaWindow time.Duration
+	Now         time.Time
 }
 
 // Intent is a committed settlement intent. Its nonce is durably owned by the
@@ -82,6 +99,14 @@ func (r IntentRequest) Validate() error {
 	if r.ExpiryMargin <= 0 {
 		// Zero would mean broadcasting an authorization that expires this second.
 		errs = append(errs, errors.New("expiry margin must be positive"))
+	}
+	// Both must be positive: a zero quota would admit nothing, and a zero window
+	// would silently admit everything, which is the gap this control closes.
+	if r.Quota <= 0 {
+		errs = append(errs, errors.New("merchant settlement quota must be positive"))
+	}
+	if r.QuotaWindow <= 0 {
+		errs = append(errs, errors.New("merchant settlement quota window must be positive"))
 	}
 	if r.Now.IsZero() {
 		errs = append(errs, errors.New("current time is required"))

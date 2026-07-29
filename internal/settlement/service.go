@@ -64,6 +64,8 @@ type Chain interface {
 type Config struct {
 	SignerAddress     string
 	ExpiryMargin      time.Duration
+	MerchantQuota     int
+	QuotaWindow       time.Duration
 	SigningTimeout    time.Duration
 	LeaseDuration     time.Duration
 	WorkerInterval    time.Duration
@@ -115,6 +117,8 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 		SignerAddress:   s.cfg.SignerAddress,
 		PayerSignature:  payment.Signature,
 		ExpiryMargin:    s.cfg.ExpiryMargin,
+		Quota:           s.cfg.MerchantQuota,
+		QuotaWindow:     s.cfg.QuotaWindow,
 		Now:             s.now(),
 	})
 	if err != nil {
@@ -127,6 +131,8 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 			return rejected(WireReasonRecipientNotMerchant, payment), nil
 		case errors.Is(err, ErrAuthorizationExpiring):
 			return rejected(WireReasonAuthorizationExpiring, payment), nil
+		case errors.Is(err, ErrMerchantQuotaExceeded):
+			return rejected(WireReasonMerchantQuotaExceeded, payment), nil
 		}
 		return nil, fmt.Errorf("create settlement intent: %w", err)
 	}

@@ -119,6 +119,7 @@ func main() {
 		logger.Info("settlement signer enabled", "address", signerAddress, "next_nonce", seeded)
 		settlementService = settlement.NewService(database, transactionSigner, rpc, settlement.Config{
 			SignerAddress: signerAddress, ExpiryMargin: cfg.SettlementExpiryMargin,
+			MerchantQuota: cfg.MerchantSettlementQuota, QuotaWindow: cfg.MerchantQuotaWindow,
 			SigningTimeout: cfg.SigningTimeout, LeaseDuration: cfg.SettlementLeaseDuration,
 			WorkerInterval: cfg.WorkerInterval, Confirmations: cfg.Confirmations,
 			GasLimit: cfg.MaxGasLimit, MaxFeePerGas: cfg.MaxFeePerGasWei,

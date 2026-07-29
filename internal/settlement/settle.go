@@ -17,6 +17,7 @@ const (
 	WireReasonPaymentNotVerified    = ReasonPaymentNotVerified
 	WireReasonRecipientNotMerchant  = ReasonRecipientNotMerchant
 	WireReasonAuthorizationExpiring = ReasonAuthorizationExpiring
+	WireReasonMerchantQuotaExceeded = ReasonMerchantQuotaExceeded
 
 	// WireReasonSettlementUnavailable means the facilitator could not complete
 	// the request itself (database, signer, or RPC unavailable). Retrying is

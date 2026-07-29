@@ -97,6 +97,19 @@ versioned where noted.
 - Real `eth402_settlement_requests_total` and `eth402_settlement_failures_total`
   metrics replacing the zero placeholders.
 
+### Added
+
+- Per-merchant settlement quota, version 0.5 OpenAPI contract adding the
+  `merchant_quota_exceeded` settle `errorReason`
+  (`ETH402_MERCHANT_SETTLEMENT_QUOTA`, default 1000,
+  per `ETH402_MERCHANT_QUOTA_WINDOW`, default 24h) with migration `000005`. This is
+  the bound ADR-0004 decision 9 rests on: the recipient gate ensures gas is only
+  spent for a party that accepted terms and can be suspended, but registration is
+  not Sybil-resistant, so without a quota one registration bought unbounded gas.
+  Counted inside the transaction that commits the intent, so concurrent
+  settlements cannot both slip beneath the limit; a refusal consumes no nonce.
+  Zero is rejected rather than treated as unlimited.
+
 ### Changed
 
 - The signer calldata allowlist is now enforced. `signer.Transaction.Validate`

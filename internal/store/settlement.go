@@ -104,6 +104,23 @@ VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
 		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
 			settlement.ReasonAuthorizationExpiring, settlement.ErrAuthorizationExpiring)
 	}
+	// The quota is counted inside this transaction, after the payment row is
+	// locked, so concurrent settlements for one merchant cannot both observe a
+	// count beneath the limit and both commit. settlement_requested_at is stamped
+	// only here, which makes this exactly the number of broadcasts attempted on
+	// the merchant's behalf; replacements and gap fillers reuse existing rows and
+	// correctly do not count against it.
+	var settled int
+	if err := tx.QueryRow(ctx, `
+SELECT count(*) FROM payment_records
+WHERE merchant_id = $1 AND settlement_requested_at > $2`,
+		*merchantID, request.Now.Add(-request.QuotaWindow)).Scan(&settled); err != nil {
+		return settlement.Intent{}, fmt.Errorf("count merchant settlements: %w", err)
+	}
+	if settled >= request.Quota {
+		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
+			settlement.ReasonMerchantQuotaExceeded, settlement.ErrMerchantQuotaExceeded)
+	}
 	// The payment identity hash binds the signature, so a stored value can only
 	// ever equal the request's. A mismatch means the durable record was written
 	// by something outside this flow; fail loudly rather than sign over it.

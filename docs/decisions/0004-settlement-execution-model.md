@@ -263,12 +263,12 @@ New surface this implies. Delivered:
   `ETH402_SETTLEMENT_LEASE_DURATION`, `ETH402_SETTLEMENT_RECOVERY_GRACE`,
   `ETH402_SETTLEMENT_REPLACEMENT_AFTER`, `ETH402_KMS_KEY_NAME`
 - `signer.Transaction` per decision 7, with the in-process allowlist of decision 8
+- the per-merchant settlement quota decision 9 rests on
+  (`ETH402_MERCHANT_SETTLEMENT_QUOTA` per `ETH402_MERCHANT_QUOTA_WINDOW`), counted
+  inside the transaction that commits the intent and required to be positive
 
 Outstanding, and each one weakens a control this ADR claims:
 
-- **a per-merchant settlement quota.** Decision 9's residual-risk argument rests
-  on it. Until it exists, an admitted merchant's gas spend is bounded only by the
-  shared per-client rate limit.
 - **a minimum-balance threshold and burn-rate alert** for the signer address.
   Decision 8 makes the bounded hot balance the operative signer-compromise
   control, so without the alert the bound is a convention rather than a control.

@@ -201,8 +201,9 @@ func (f fakeChain) TransactionByHash(_ context.Context, txHash string) (*ethereu
 
 func testConfig() Config {
 	return Config{
-		SignerAddress:     "0x00000000000000000000000000000000000000b2",
-		ExpiryMargin:      time.Minute,
+		SignerAddress: "0x00000000000000000000000000000000000000b2",
+		ExpiryMargin:  time.Minute,
+		MerchantQuota: 100, QuotaWindow: 24 * time.Hour,
 		SigningTimeout:    5 * time.Second,
 		LeaseDuration:     2 * time.Minute,
 		WorkerInterval:    time.Second,

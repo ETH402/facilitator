@@ -156,21 +156,35 @@ the public listener, and Prometheus scrapes `app:8080` directly on the container
 network. Keep both controls in place: metrics are an operational disclosure
 boundary, not public data.
 
-## Settlement controls not yet implemented
+## Settlement gas exposure
 
-Two controls ADR-0004 relies on are absent, and both bound gas spend:
+`ETH402_MERCHANT_SETTLEMENT_QUOTA` bounds how many settlement intents one
+merchant may commit per `ETH402_MERCHANT_QUOTA_WINDOW`. Because registration is
+not Sybil-resistant, the recipient gate alone says nothing about volume: this
+quota is what makes an admitted merchant's spend finite. Worst-case exposure per
+merchant per window is quota × `ETH402_MAX_GAS_LIMIT` ×
+`ETH402_MAX_FEE_PER_GAS_WEI`; compute it before raising either. Zero is rejected
+rather than treated as unlimited. The count is taken inside the transaction that
+commits the intent, so concurrent settlements cannot both slip beneath the limit.
+Replacements and gap fillers reuse existing rows and do not count.
 
-- **Per-merchant settlement quotas.** `/settle` admits only payments whose
-  recipient is an active registered merchant, but nothing then caps how much an
-  admitted merchant spends beyond the shared per-client rate limit. Watch
-  per-merchant settlement volume and suspend abusers manually until quotas exist.
+Still outstanding:
+
 - **A signer balance and burn-rate alert.** The bounded hot balance is the
   operative signer-compromise control, so alert on both the absolute balance and
   the rate of change; without that the bound is a convention.
+- **`/settle` does not re-simulate or re-read `authorizationState`.** A buyer who
+  submits the same authorization to another facilitator between `/verify` and
+  `/settle` causes a revert paid for with operator gas. Alert on the revert rate.
 
-`/settle` also does not re-simulate or re-read `authorizationState`. A buyer who
-submits the same authorization to another facilitator between `/verify` and
-`/settle` causes a revert paid for with operator gas. Alert on the revert rate.
+## Run one application instance
+
+The recovery worker's replacement, nonce-gap, and gap-filler passes deliberately
+run without a lease, on the basis that no other worker touches those rows. That
+holds for a single instance only. With two, both could fill the same nonce gap,
+and because each re-estimates fees independently they would produce *different*
+transactions, so the deduplicating hash lookup misses and both broadcast — one
+replacing the other. Scale vertically until those passes take leases.
 
 ## Verification attempt retention
 

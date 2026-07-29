@@ -111,6 +111,7 @@ func intentRequest(identity string) settlement.IntentRequest {
 		PaymentIdentity: identity, SignerAddress: intentSigner,
 		PayerSignature: "0x" + repeat("1", 64) + repeat("2", 64) + "1b",
 		ExpiryMargin:   time.Minute, Now: time.Now(),
+		Quota: 100, QuotaWindow: 24 * time.Hour,
 	}
 }
 
@@ -347,4 +348,78 @@ func TestConcurrentSettlementCreatesOneIntent(t *testing.T) {
 	if next != "1" {
 		t.Fatalf("next_nonce = %s, want 1", next)
 	}
+}
+
+// TestMerchantSettlementQuotaBoundsIntents is the bound ADR-0004 decision 9
+// rests on. The recipient gate ensures gas is only spent for a party that
+// accepted terms and can be suspended, but says nothing about how much;
+// registration is not Sybil-resistant, so without this one registration buys
+// unbounded gas.
+func TestMerchantSettlementQuotaBoundsIntents(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	const quota = 3
+
+	// One merchant with several payments. seedPayment creates a fresh merchant
+	// per call, so the rest are re-attributed to the first: the quota is
+	// per-merchant, and a merchant with one payment each would never reach it.
+	identities := make([]string, 0, quota+1)
+	var merchantID string
+	for i := range quota + 1 {
+		identity := fmt.Sprintf("pay_%s%02d", repeat("9", 62), i)
+		paymentID := seedPayment(t, store, paymentFixture{
+			identity: identity, state: "verified", registered: i == 0,
+		})
+		if i == 0 {
+			if err := store.Pool.QueryRow(ctx,
+				`SELECT merchant_id FROM payment_records WHERE id=$1`, paymentID).Scan(&merchantID); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := store.Pool.Exec(ctx,
+			`UPDATE payment_records SET merchant_id=$2 WHERE id=$1`, paymentID, merchantID); err != nil {
+			t.Fatal(err)
+		}
+		identities = append(identities, identity)
+	}
+
+	request := func(identity string) settlement.IntentRequest {
+		r := intentRequest(identity)
+		r.Quota, r.QuotaWindow = quota, 24*time.Hour
+		return r
+	}
+	for i := range quota {
+		if _, err := store.CreateSettlementIntent(ctx, request(identities[i])); err != nil {
+			t.Fatalf("intent %d within quota failed: %v", i, err)
+		}
+	}
+	// The next one must be refused, and must not consume a nonce.
+	before := nextNonce(t, store)
+	_, err := store.CreateSettlementIntent(ctx, request(identities[quota]))
+	if !errors.Is(err, settlement.ErrMerchantQuotaExceeded) {
+		t.Fatalf("intent beyond quota returned %v, want ErrMerchantQuotaExceeded", err)
+	}
+	if after := nextNonce(t, store); after != before {
+		t.Fatalf("refused settlement consumed a nonce: %s -> %s", before, after)
+	}
+	if got := attemptRows(t, store, identities[quota], "rejected"); got != 1 {
+		t.Fatalf("rejected attempts = %d, want 1", got)
+	}
+
+	// A window that has moved past the earlier intents admits again, proving the
+	// quota rolls rather than latching permanently.
+	rolled := request(identities[quota])
+	rolled.QuotaWindow = time.Nanosecond
+	if _, err := store.CreateSettlementIntent(ctx, rolled); err != nil {
+		t.Fatalf("intent outside the window was refused: %v", err)
+	}
+}
+
+func nextNonce(t *testing.T, store *Store) string {
+	t.Helper()
+	var next string
+	if err := store.Pool.QueryRow(context.Background(),
+		`SELECT next_nonce::text FROM signer_accounts WHERE signer_address=$1`, intentSigner).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	return next
 }
