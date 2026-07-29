@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -118,13 +119,23 @@ func (s *CloudKMS) SignTransaction(ctx context.Context, tx Transaction) (SignedT
 // and v is found by recovering the expected address.
 func ethereumSignature(sighash [32]byte, der []byte, expected common.Address) ([]byte, error) {
 	var parsed struct{ R, S *big.Int }
-	if _, err := asn1.Unmarshal(der, &parsed); err != nil {
+	trailing, err := asn1.Unmarshal(der, &parsed)
+	if err != nil {
 		return nil, fmt.Errorf("decode DER signature: %w", err)
 	}
-	halfOrder := new(big.Int).Rsh(crypto.S256().Params().N, 1)
+	if len(trailing) != 0 {
+		return nil, errors.New("decode DER signature: trailing data")
+	}
+	order := crypto.S256().Params().N
+	if parsed.R == nil || parsed.S == nil ||
+		parsed.R.Sign() <= 0 || parsed.S.Sign() <= 0 ||
+		parsed.R.Cmp(order) >= 0 || parsed.S.Cmp(order) >= 0 {
+		return nil, errors.New("decode DER signature: r and s must be in the secp256k1 scalar range")
+	}
+	halfOrder := new(big.Int).Rsh(order, 1)
 	s := parsed.S
 	if s.Cmp(halfOrder) > 0 {
-		s = new(big.Int).Sub(crypto.S256().Params().N, s)
+		s = new(big.Int).Sub(order, s)
 	}
 	signature := make([]byte, 65)
 	parsed.R.FillBytes(signature[:32])

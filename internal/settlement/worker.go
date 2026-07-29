@@ -121,6 +121,18 @@ func (w *Worker) process(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// The batch was leased all at once, so later entries may have waited
+		// behind slow RPC calls. Renew immediately before acting; an expired
+		// lease must be re-claimed rather than touched by its former owner.
+		if _, err := w.service.store.RenewLease(ctx, lease.PaymentID, w.identity,
+			w.now(), w.service.cfg.LeaseDuration); err != nil {
+			if !errors.Is(err, ErrLeaseLost) && !errors.Is(err, context.Canceled) {
+				w.logger.WarnContext(ctx, "renew payment lease failed",
+					"worker", w.name, "payment_id", lease.PaymentID, "error", err)
+				w.service.release(ctx, lease.PaymentID, w.identity)
+			}
+			continue
+		}
 		// Transitions are audited with the coarse actor type the schema
 		// allows; the full identity stays on the lease, where granularity
 		// matters for ownership.

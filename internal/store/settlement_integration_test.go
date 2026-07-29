@@ -217,6 +217,39 @@ func TestCreateSettlementIntentIsIdempotentPerPayment(t *testing.T) {
 	}
 }
 
+func TestCreateSettlementIntentReturnsTerminalHash(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	identity := "pay_" + repeat("c", 64)
+	seedPayment(t, store, paymentFixture{identity: identity, state: "verified", registered: true})
+
+	first, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawHash := repeat("d", 64)
+	txHash := "0x" + rawHash
+	if err := store.MarkTxSigned(ctx, first.TransactionID, rawHash, repeat("e", 64),
+		120000, "30000000000", "2000000000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTxBroadcast(ctx, first.PaymentID, first.TransactionID, txHash, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTxConfirmed(ctx, first.PaymentID, first.TransactionID, 123,
+		"0x"+repeat("f", 64), 51000, "1000000000", "worker"); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Duplicate || retry.TxHash != txHash || retry.TransactionID != first.TransactionID {
+		t.Fatalf("terminal retry = %+v", retry)
+	}
+}
+
 func TestCreateSettlementIntentRejectsUnregisteredRecipient(t *testing.T) {
 	ctx := context.Background()
 	store := settlementTestStore(t)

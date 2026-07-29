@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ETH402/facilitator/internal/settlement"
 	"github.com/jackc/pgx/v5"
@@ -252,27 +253,31 @@ WHERE t.status = 'replaced' AND p.state IN ('replaced', 'confirming', 'broadcast
 	return scanTracked(rows)
 }
 
-// ListDroppedBlockingGaps returns dropped transactions whose unused nonce
-// blocks a later in-flight nonce of the same signer. A dropped nonce with
-// nothing behind it blocks nothing and is left alone: filling it would burn
-// gas on a reverting transaction for no benefit.
-func (s *Store) ListDroppedBlockingGaps(ctx context.Context, signerAddress string) ([]settlement.Work, error) {
+// ListDroppedBlockingGaps returns truly expired transactions whose unused nonce
+// blocks a later in-flight nonce of the same signer. Application state enters
+// expired at the safety margin, before valid_before; waiting for the actual
+// timestamp is what guarantees re-broadcasting the authorization cannot move
+// USDC. Simulation-failed payments remain terminal but may safely consume their
+// facilitator nonce after the authorization itself has expired.
+func (s *Store) ListDroppedBlockingGaps(ctx context.Context, signerAddress string, expiredBefore time.Time) ([]settlement.Work, error) {
 	rows, err := s.Pool.Query(ctx, `
 SELECT p.id, p.payment_identity,
        p.payer_address, p.recipient_address, p.amount_atomic::text,
        p.authorization_nonce, p.valid_after, p.valid_before, p.payer_signature,
-       t.id, t.transaction_nonce::text
+       t.id, t.transaction_nonce::text, p.state
 FROM ethereum_transactions t
 JOIN payment_records p ON p.id = t.payment_id
 WHERE t.status = 'dropped'
   AND t.signer_address = $1
   AND t.raw_transaction_hash IS NULL
+  AND p.state IN ('expired', 'failed')
+  AND p.valid_before <= $3
   AND EXISTS (
     SELECT 1 FROM ethereum_transactions later
     WHERE later.signer_address = t.signer_address
       AND later.transaction_nonce > t.transaction_nonce
       AND later.status = ANY($2)
-  )`, signerAddress, activeTransactionStatuses)
+  )`, signerAddress, activeTransactionStatuses, expiredBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -280,12 +285,12 @@ WHERE t.status = 'dropped'
 	var works []settlement.Work
 	for rows.Next() {
 		var work settlement.Work
-		var nonce string
+		var nonce, state string
 		if err := rows.Scan(
 			&work.PaymentID, &work.PaymentIdentity,
 			&work.Authorization.From, &work.Authorization.To, &work.Authorization.Value,
 			&work.Authorization.Nonce, &work.Authorization.ValidAfter, &work.Authorization.ValidBefore,
-			&work.Authorization.Signature, &work.TransactionID, &nonce); err != nil {
+			&work.Authorization.Signature, &work.TransactionID, &nonce, &state); err != nil {
 			return nil, err
 		}
 		parsed, err := parseNonce(nonce)
@@ -293,37 +298,48 @@ WHERE t.status = 'dropped'
 			return nil, err
 		}
 		work.Nonce = parsed
-		work.State = settlement.StateExpired
+		work.State = settlement.State(state)
 		work.TransactionStatus = "dropped"
 		works = append(works, work)
 	}
 	return works, rows.Err()
 }
 
-// ListGapFillers returns gap-fill broadcasts waiting on a receipt: their
-// payments are expired, so the confirmation worker never sees them.
+// ListGapFillers returns prepared gap-fill broadcasts waiting on a receipt:
+// their payments are expired or failed, so the confirmation worker never sees
+// them. The exact raw bytes allow a missing transaction to be re-broadcast
+// identically.
 func (s *Store) ListGapFillers(ctx context.Context) ([]settlement.TrackedTransaction, error) {
 	rows, err := s.Pool.Query(ctx, `
-SELECT t.payment_id, t.id, t.tx_hash
+SELECT t.payment_id, t.id, t.tx_hash, t.raw_transaction
 FROM ethereum_transactions t
 JOIN payment_records p ON p.id = t.payment_id
-WHERE t.status = 'broadcast' AND p.state = 'expired' AND t.raw_transaction_hash IS NOT NULL`)
+WHERE t.status = 'broadcast' AND p.state IN ('expired', 'failed')
+  AND t.raw_transaction_hash IS NOT NULL AND t.raw_transaction IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanTracked(rows)
+	var tracked []settlement.TrackedTransaction
+	for rows.Next() {
+		var item settlement.TrackedTransaction
+		if err := rows.Scan(&item.PaymentID, &item.TransactionID, &item.TxHash, &item.RawTransaction); err != nil {
+			return nil, err
+		}
+		tracked = append(tracked, item)
+	}
+	return tracked, rows.Err()
 }
 
-// MarkGapFillerBroadcast records the nonce-gap filler going out: the dropped
-// intent is signed and broadcast late, identical to what it would have been.
-func (s *Store) MarkGapFillerBroadcast(ctx context.Context, transactionID, rawHash, txHash string, gasLimit uint64, maxFee, priorityFee string) error {
+// MarkGapFillerPrepared durably records the exact signed filler before any
+// network call. A crash or ambiguous send can then be retried byte-for-byte.
+func (s *Store) MarkGapFillerPrepared(ctx context.Context, transactionID, rawHash, txHash string, raw []byte, gasLimit uint64, maxFee, priorityFee string) error {
 	tag, err := s.Pool.Exec(ctx, `
 UPDATE ethereum_transactions
 SET status = 'broadcast', raw_transaction_hash = $2, tx_hash = $3,
-    gas_limit = $4, max_fee_per_gas = $5, max_priority_fee_per_gas = $6,
+    raw_transaction = $4, gas_limit = $5, max_fee_per_gas = $6, max_priority_fee_per_gas = $7,
     broadcast_attempted_at = now(), updated_at = now()
-WHERE id = $1 AND status = 'dropped'`, transactionID, rawHash, txHash, gasLimit, maxFee, priorityFee)
+WHERE id = $1 AND status = 'dropped'`, transactionID, rawHash, txHash, raw, gasLimit, maxFee, priorityFee)
 	if err != nil {
 		return err
 	}

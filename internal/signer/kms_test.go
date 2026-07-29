@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/kms/apiv1/kmspb"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	gax "github.com/googleapis/gax-go/v2"
@@ -209,6 +210,34 @@ func TestCloudKMSSignFailurePropagates(t *testing.T) {
 	if _, err := backend.SignTransaction(context.Background(), kmsTransaction()); err == nil ||
 		!strings.Contains(err.Error(), "kms unavailable") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEthereumSignatureRejectsMalformedScalars(t *testing.T) {
+	order := crypto.S256().Params().N
+	encode := func(r, s *big.Int) []byte {
+		t.Helper()
+		der, err := asn1.Marshal(struct{ R, S *big.Int }{r, s})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return der
+	}
+	valid := encode(big.NewInt(1), big.NewInt(1))
+	cases := map[string][]byte{
+		"missing scalars": {0x30, 0x00},
+		"negative r":      encode(big.NewInt(-1), big.NewInt(1)),
+		"zero s":          encode(big.NewInt(1), big.NewInt(0)),
+		"r at order":      encode(new(big.Int).Set(order), big.NewInt(1)),
+		"s above order":   encode(big.NewInt(1), new(big.Int).Add(order, big.NewInt(1))),
+		"trailing data":   append(valid, 0x00),
+	}
+	for name, der := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ethereumSignature([32]byte{}, der, common.Address{}); err == nil {
+				t.Fatal("malformed signature accepted")
+			}
+		})
 	}
 }
 

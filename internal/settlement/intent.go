@@ -84,6 +84,9 @@ type Intent struct {
 	TransactionID   string
 	SignerAddress   string
 	Nonce           uint64
+	// TxHash is populated when a duplicate request targets a transaction whose
+	// hash is already durable, including terminal confirmed/reverted payments.
+	TxHash string
 
 	// Duplicate reports that an active transaction already existed for this
 	// payment, so no new nonce was allocated and the existing intent is returned

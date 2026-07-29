@@ -85,4 +85,7 @@ type TrackedTransaction struct {
 	PaymentID     string
 	TransactionID string
 	TxHash        string
+	// RawTransaction is populated for a prepared nonce-gap filler. Persisting
+	// the exact signed bytes makes retry safe with randomized KMS signatures.
+	RawTransaction []byte
 }

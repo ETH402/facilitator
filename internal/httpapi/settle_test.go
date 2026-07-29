@@ -38,6 +38,10 @@ func (f settleFakeStore) ClaimPayments(context.Context, settlement.ClaimRequest)
 	return nil, nil
 }
 
+func (f settleFakeStore) RenewLease(_ context.Context, _ string, _ string, now time.Time, duration time.Duration) (time.Time, error) {
+	return now.Add(duration), nil
+}
+
 func (f settleFakeStore) ReleaseLease(context.Context, string, string) error { return nil }
 
 func (f settleFakeStore) LoadSettlementWork(context.Context, string) (settlement.Work, error) {
@@ -92,7 +96,7 @@ func (f settleFakeStore) ListReplacedPending(context.Context) ([]settlement.Trac
 	return nil, nil
 }
 
-func (f settleFakeStore) ListDroppedBlockingGaps(context.Context, string) ([]settlement.Work, error) {
+func (f settleFakeStore) ListDroppedBlockingGaps(context.Context, string, time.Time) ([]settlement.Work, error) {
 	return nil, nil
 }
 
@@ -100,7 +104,7 @@ func (f settleFakeStore) ListGapFillers(context.Context) ([]settlement.TrackedTr
 	return nil, nil
 }
 
-func (f settleFakeStore) MarkGapFillerBroadcast(context.Context, string, string, string, uint64, string, string) error {
+func (f settleFakeStore) MarkGapFillerPrepared(context.Context, string, string, string, []byte, uint64, string, string) error {
 	return nil
 }
 

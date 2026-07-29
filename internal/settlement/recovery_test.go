@@ -297,31 +297,36 @@ func TestFillNonceGapBroadcasts(t *testing.T) {
 	raw := []byte("gap-filler-raw")
 	work := pendingWork()
 	store := &fakeStore{gapWorks: []Work{work}}
-	chain := fakeChain{}
+	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
 	service := newTestService(store, fakeSigner{raw: raw}, chain)
 	worker := service.RecoveryWorker()
 	worker.fillNonceGaps(context.Background())
 	if store.gapFillerTxHash != "0x"+keccakHex(raw) {
 		t.Fatalf("gap filler hash = %q", store.gapFillerTxHash)
 	}
+	if string(store.gapFillerRaw) != string(raw) {
+		t.Fatalf("prepared raw = %q, want %q", store.gapFillerRaw, raw)
+	}
 }
 
-func TestFillNonceGapAlreadyKnown(t *testing.T) {
+func TestObserveGapFillerRebroadcastsExactPreparedBytes(t *testing.T) {
 	raw := []byte("gap-filler-raw")
 	txHash := "0x" + keccakHex(raw)
-	work := pendingWork()
-	store := &fakeStore{gapWorks: []Work{work}}
-	// The previous attempt reached the network; a resend would be rejected,
-	// so sendErr proves no resend happened.
+	store := &fakeStore{gapFillers: []TrackedTransaction{{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, RawTransaction: raw,
+	}}}
+	var sent string
 	chain := fakeChain{
-		sendErr:      context.DeadlineExceeded,
-		transactions: map[string]*ethereum.ChainTransaction{txHash: {Hash: txHash}},
+		txHash: txHash, sentRaw: &sent,
+		receipts:     map[string]*ethereum.Receipt{txHash: nil},
+		transactions: map[string]*ethereum.ChainTransaction{},
 	}
-	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	service := newTestService(store, fakeSigner{}, chain)
 	worker := service.RecoveryWorker()
-	worker.fillNonceGaps(context.Background())
-	if store.gapFillerTxHash != txHash {
-		t.Fatalf("gap filler hash = %q", store.gapFillerTxHash)
+	worker.observeGapFillers(context.Background())
+	if sent != "0x"+hex.EncodeToString(raw) {
+		t.Fatalf("sent raw = %q", sent)
 	}
 }
 

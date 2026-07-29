@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ETH402/facilitator/internal/settlement"
 )
@@ -362,9 +363,8 @@ func TestDroppedBlockingGapLifecycle(t *testing.T) {
 	if err := store.MarkIntentExpired(ctx, paymentID, work.TransactionID, "worker"); err != nil {
 		t.Fatalf("mark expired: %v", err)
 	}
-
 	// Nothing behind the gap: filling it would burn gas for no benefit.
-	gaps, err := store.ListDroppedBlockingGaps(ctx, intentSigner)
+	gaps, err := store.ListDroppedBlockingGaps(ctx, intentSigner, time.Now())
 	if err != nil {
 		t.Fatalf("list gaps: %v", err)
 	}
@@ -383,9 +383,23 @@ func TestDroppedBlockingGapLifecycle(t *testing.T) {
 	if err := store.MarkTxBroadcast(ctx, later.PaymentID, later.TransactionID, "0x"+strings.Repeat("9", 64), "worker"); err != nil {
 		t.Fatalf("mark later broadcast: %v", err)
 	}
-	gaps, err = store.ListDroppedBlockingGaps(ctx, intentSigner)
+	// Application expiry starts at the safety margin. Until valid_before has
+	// actually passed, replaying this authorization could still move USDC.
+	gaps, err = store.ListDroppedBlockingGaps(ctx, intentSigner, time.Now())
 	if err != nil {
 		t.Fatalf("list gaps: %v", err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("not-yet-expired authorization selected as filler: %+v", gaps)
+	}
+	if _, err := store.Pool.Exec(ctx,
+		`UPDATE payment_records SET valid_before = now() - interval '1 second' WHERE id = $1`,
+		paymentID); err != nil {
+		t.Fatalf("age expired authorization: %v", err)
+	}
+	gaps, err = store.ListDroppedBlockingGaps(ctx, intentSigner, time.Now())
+	if err != nil {
+		t.Fatalf("list aged gaps: %v", err)
 	}
 	if len(gaps) != 1 || gaps[0].TransactionID != work.TransactionID || gaps[0].Nonce != work.Nonce {
 		t.Fatalf("gaps = %+v", gaps)
@@ -396,7 +410,7 @@ func TestDroppedBlockingGapLifecycle(t *testing.T) {
 
 	rawHash := strings.Repeat("8", 64)
 	txHash := "0x" + rawHash
-	if err := store.MarkGapFillerBroadcast(ctx, work.TransactionID, rawHash, txHash, 120000, "30000000000", "2000000000"); err != nil {
+	if err := store.MarkGapFillerPrepared(ctx, work.TransactionID, rawHash, txHash, []byte{1, 2, 3}, 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark gap filler broadcast: %v", err)
 	}
 	fillers, err := store.ListGapFillers(ctx)
@@ -422,6 +436,44 @@ func TestDroppedBlockingGapLifecycle(t *testing.T) {
 	}
 }
 
+func TestSimulationFailedGapWaitsUntilAuthorizationExpiry(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	paymentID, failed := seedBroadcastingPayment(t, store, strings.Repeat("1c", 34))
+	if err := store.MarkIntentUnsettleable(ctx, paymentID, failed.TransactionID, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	_, later := seedBroadcastingPayment(t, store, strings.Repeat("2d", 34))
+	if err := store.MarkTxSigned(ctx, later.TransactionID, strings.Repeat("3", 64),
+		strings.Repeat("4", 64), 120000, "30000000000", "2000000000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTxBroadcast(ctx, later.PaymentID, later.TransactionID,
+		"0x"+strings.Repeat("3", 64), "worker"); err != nil {
+		t.Fatal(err)
+	}
+
+	gaps, err := store.ListDroppedBlockingGaps(ctx, intentSigner, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("still-valid failed authorization selected: %+v", gaps)
+	}
+	if _, err := store.Pool.Exec(ctx,
+		`UPDATE payment_records SET valid_before = now() - interval '1 second' WHERE id = $1`,
+		paymentID); err != nil {
+		t.Fatal(err)
+	}
+	gaps, err = store.ListDroppedBlockingGaps(ctx, intentSigner, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 1 || gaps[0].TransactionID != failed.TransactionID || gaps[0].State != settlement.StateFailed {
+		t.Fatalf("expired failed gap = %+v", gaps)
+	}
+}
+
 // TestGapFillerSucceededEscalatesAndStopsReporting covers the anomaly path: a
 // filler the chain accepted moved USDC on an authorization believed expired.
 // Before this the worker logged the same anomaly on every tick forever and left
@@ -441,8 +493,8 @@ func TestGapFillerSucceededEscalatesAndStopsReporting(t *testing.T) {
 	if err := store.MarkIntentExpired(ctx, paymentID, intent.TransactionID, "worker"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkGapFillerBroadcast(ctx, intent.TransactionID,
-		repeat("a", 64), "0x"+repeat("a", 64), 120000, "30000000000", "1000000000"); err != nil {
+	if err := store.MarkGapFillerPrepared(ctx, intent.TransactionID,
+		repeat("a", 64), "0x"+repeat("a", 64), []byte{1, 2, 3}, 120000, "30000000000", "1000000000"); err != nil {
 		t.Fatal(err)
 	}
 	fillers, err := store.ListGapFillers(ctx)

@@ -61,14 +61,50 @@ FOR UPDATE`, request.PaymentIdentity).Scan(&paymentID, &state, &merchantID, &val
 		return settlement.Intent{}, err
 	}
 
+	// A successful /settle response means the transaction was broadcast, not
+	// that it was already final. Preserve that response after asynchronous
+	// confirmation or reversion: callers retrying a lost response must observe
+	// the same hash rather than a misleading payment_not_verified rejection.
+	if state == string(settlement.StateConfirmed) || state == string(settlement.StateReverted) {
+		var terminalID, terminalNonce, terminalSigner, terminalHash string
+		err = tx.QueryRow(ctx, `
+SELECT id, transaction_nonce::text, signer_address, tx_hash
+FROM ethereum_transactions
+WHERE payment_id = $1 AND status = $2 AND tx_hash IS NOT NULL
+ORDER BY updated_at DESC
+LIMIT 1`, paymentID, state).Scan(&terminalID, &terminalNonce, &terminalSigner, &terminalHash)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return settlement.Intent{}, fmt.Errorf("load terminal settlement transaction: %w", err)
+		}
+		if err == nil {
+			nonce, parseErr := parseNonce(terminalNonce)
+			if parseErr != nil {
+				return settlement.Intent{}, parseErr
+			}
+			if _, err := tx.Exec(ctx, `
+INSERT INTO settlement_attempts(payment_id,payment_identity,result)
+VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
+				return settlement.Intent{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return settlement.Intent{}, err
+			}
+			return settlement.Intent{
+				PaymentID: paymentID, PaymentIdentity: request.PaymentIdentity,
+				TransactionID: terminalID, SignerAddress: terminalSigner,
+				Nonce: nonce, TxHash: terminalHash, Duplicate: true,
+			}, nil
+		}
+	}
+
 	// An existing active transaction means this payment is already being settled.
 	// Report the existing intent rather than allocating a second nonce for it.
-	var existingID, existingNonce, existingSigner string
+	var existingID, existingNonce, existingSigner, existingHash string
 	err = tx.QueryRow(ctx, `
-SELECT id, transaction_nonce::text, signer_address
+SELECT id, transaction_nonce::text, signer_address, coalesce(tx_hash, '')
 FROM ethereum_transactions
 WHERE payment_id = $1 AND status = ANY($2)`, paymentID, activeTransactionStatuses).
-		Scan(&existingID, &existingNonce, &existingSigner)
+		Scan(&existingID, &existingNonce, &existingSigner, &existingHash)
 	if err == nil {
 		nonce, parseErr := parseNonce(existingNonce)
 		if parseErr != nil {
@@ -85,7 +121,7 @@ VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
 		return settlement.Intent{
 			PaymentID: paymentID, PaymentIdentity: request.PaymentIdentity,
 			TransactionID: existingID, SignerAddress: existingSigner,
-			Nonce: nonce, Duplicate: true,
+			Nonce: nonce, TxHash: existingHash, Duplicate: true,
 		}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

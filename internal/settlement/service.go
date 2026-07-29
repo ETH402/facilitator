@@ -29,6 +29,7 @@ type Store interface {
 	CreateSettlementIntent(context.Context, IntentRequest) (Intent, error)
 	ClaimPayment(ctx context.Context, paymentID, worker string, duration time.Duration, now time.Time) (Lease, error)
 	ClaimPayments(context.Context, ClaimRequest) ([]Lease, error)
+	RenewLease(ctx context.Context, paymentID, worker string, now time.Time, duration time.Duration) (time.Time, error)
 	ReleaseLease(ctx context.Context, paymentID, worker string) error
 	LoadSettlementWork(ctx context.Context, paymentID string) (Work, error)
 	MarkTxSigned(ctx context.Context, transactionID, rawHash, sighash string, gasLimit uint64, maxFee, priorityFee string) error
@@ -45,9 +46,9 @@ type Store interface {
 	MarkReplacementLanded(ctx context.Context, paymentID, minedTxID string, succeeded bool, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxReorgedOut(ctx context.Context, paymentID, transactionID, actor string) error
 	ListReplacedPending(ctx context.Context) ([]TrackedTransaction, error)
-	ListDroppedBlockingGaps(ctx context.Context, signerAddress string) ([]Work, error)
+	ListDroppedBlockingGaps(ctx context.Context, signerAddress string, expiredBefore time.Time) ([]Work, error)
 	ListGapFillers(ctx context.Context) ([]TrackedTransaction, error)
-	MarkGapFillerBroadcast(ctx context.Context, transactionID, rawHash, txHash string, gasLimit uint64, maxFee, priorityFee string) error
+	MarkGapFillerPrepared(ctx context.Context, transactionID, rawHash, txHash string, raw []byte, gasLimit uint64, maxFee, priorityFee string) error
 	MarkGapFillerResolved(ctx context.Context, transactionID string, gasUsed uint64, gasPrice string) error
 	MarkGapFillerSucceeded(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 }
@@ -142,6 +143,9 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 			return rejected(WireReasonMerchantQuotaExceeded, payment), nil
 		}
 		return nil, fmt.Errorf("create settlement intent: %w", err)
+	}
+	if intent.TxHash != "" {
+		return settled(payment, intent.TxHash), nil
 	}
 
 	txHash, err := s.Broadcast(ctx, intent.PaymentID, "http")

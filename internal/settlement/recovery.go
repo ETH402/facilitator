@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/config"
@@ -92,6 +93,15 @@ func (w *RecoveryWorker) recoverLeased(ctx context.Context) {
 	for _, lease := range leases {
 		if ctx.Err() != nil {
 			return
+		}
+		if _, err := w.service.store.RenewLease(ctx, lease.PaymentID, w.identity,
+			w.now(), w.service.cfg.LeaseDuration); err != nil {
+			if !errors.Is(err, ErrLeaseLost) && !errors.Is(err, context.Canceled) {
+				w.logger.WarnContext(ctx, "renew recovery lease failed",
+					"payment_id", lease.PaymentID, "error", err)
+				w.service.release(ctx, lease.PaymentID, w.identity)
+			}
+			continue
 		}
 		guard(ctx, w.logger, "recovery", "recover-payment", func() {
 			if err := w.service.recoverPayment(ctx, lease.PaymentID, "worker"); err != nil {
@@ -350,14 +360,18 @@ func (w *RecoveryWorker) observeReplacements(ctx context.Context) {
 	}
 }
 
-// fillNonceGaps re-broadcasts the original intent of a dropped expired
+// fillNonceGaps re-broadcasts the original intent of a dropped, on-chain-expired
 // transaction when a later nonce of the same signer is in flight: Ethereum
 // mines nonces in order, so the gap blocks everything behind it. The
-// authorization is expired, so the filler predictably reverts — the revert
+// authorization is truly expired, so the filler predictably reverts — the revert
 // still consumes the nonce, which is the entire point. A dropped nonce with
 // nothing behind it is left alone.
 func (w *RecoveryWorker) fillNonceGaps(ctx context.Context) {
-	works, err := w.service.store.ListDroppedBlockingGaps(ctx, w.service.cfg.SignerAddress)
+	// Wait one full settlement safety margin beyond validBefore. Application
+	// and chain clocks are not identical, so equality with the local clock is
+	// not strong enough evidence that EIP-3009 must reject the authorization.
+	expiredBefore := w.now().Add(-w.service.cfg.ExpiryMargin)
+	works, err := w.service.store.ListDroppedBlockingGaps(ctx, w.service.cfg.SignerAddress, expiredBefore)
 	if err != nil {
 		w.logger.WarnContext(ctx, "list nonce gaps failed", "error", err)
 		return
@@ -401,20 +415,18 @@ func (s *Service) fillNonceGap(ctx context.Context, work Work) error {
 	keccak.Write(signed.Raw)
 	rawHash := hex.EncodeToString(keccak.Sum(nil))
 	txHash := "0x" + rawHash
-	// The fill is deterministic, so a previous attempt that reached the
-	// network without being recorded is visible under the same hash: record
-	// it instead of resending into a certain "already known" rejection.
-	existing, err := s.chain.TransactionByHash(ctx, txHash)
-	if err != nil {
-		return fmt.Errorf("fetch gap filler transaction: %w", err)
+	// Persist the exact randomized KMS signature before the network call. Once
+	// prepared, observeGapFillers owns retries using these exact bytes.
+	if err := s.store.MarkGapFillerPrepared(ctx, work.TransactionID, rawHash, txHash,
+		signed.Raw, s.cfg.GasLimit, maxFee.String(), priority.String()); err != nil {
+		return fmt.Errorf("prepare gap filler: %w", err)
 	}
-	if existing == nil {
-		if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw)); err != nil {
-			return fmt.Errorf("broadcast gap filler: %w", err)
-		}
+	if returnedHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw)); err != nil {
+		return fmt.Errorf("broadcast prepared gap filler: %w", err)
+	} else if !strings.EqualFold(returnedHash, txHash) {
+		return fmt.Errorf("broadcast prepared gap filler returned hash %s, want %s", returnedHash, txHash)
 	}
-	return s.store.MarkGapFillerBroadcast(ctx, work.TransactionID, rawHash, txHash,
-		s.cfg.GasLimit, maxFee.String(), priority.String())
+	return nil
 }
 
 // observeGapFillers retires gap fillers from their receipts. Their payments
@@ -439,6 +451,25 @@ func (w *RecoveryWorker) observeGapFillers(ctx context.Context) {
 			continue
 		}
 		if receipt == nil {
+			known, err := w.service.chain.TransactionByHash(ctx, t.TxHash)
+			if err != nil {
+				w.logger.WarnContext(ctx, "fetch prepared gap filler failed",
+					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+				continue
+			}
+			if known == nil {
+				returnedHash, err := w.service.chain.SendRawTransaction(ctx,
+					"0x"+hex.EncodeToString(t.RawTransaction))
+				if err != nil {
+					w.logger.WarnContext(ctx, "re-broadcast prepared gap filler failed",
+						"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+					continue
+				}
+				if !strings.EqualFold(returnedHash, t.TxHash) {
+					w.logger.ErrorContext(ctx, "gap filler provider returned mismatched hash",
+						"payment_id", t.PaymentID, "expected", t.TxHash, "returned", returnedHash)
+				}
+			}
 			continue
 		}
 		if receipt.Status == 1 {

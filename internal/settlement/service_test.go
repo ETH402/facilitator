@@ -19,6 +19,7 @@ type fakeStore struct {
 	intent     Intent
 	intentErr  error
 	claimErr   error
+	renewErr   error
 	releaseErr error
 	leases     []Lease
 
@@ -31,6 +32,7 @@ type fakeStore struct {
 	confirmed       bool
 	reverted        bool
 	released        int
+	renewed         int
 
 	recoveredTxHash    string
 	replaced           bool
@@ -44,6 +46,7 @@ type fakeStore struct {
 	gapWorks           []Work
 	gapFillers         []TrackedTransaction
 	gapFillerTxHash    string
+	gapFillerRaw       []byte
 	gapFillerResolved  bool
 	unsettleable       int
 	gapFillerEscalated int
@@ -62,6 +65,14 @@ func (f *fakeStore) ClaimPayment(_ context.Context, paymentID, worker string, du
 
 func (f *fakeStore) ClaimPayments(context.Context, ClaimRequest) ([]Lease, error) {
 	return f.leases, nil
+}
+
+func (f *fakeStore) RenewLease(_ context.Context, _ string, _ string, now time.Time, duration time.Duration) (time.Time, error) {
+	f.renewed++
+	if f.renewErr != nil {
+		return time.Time{}, f.renewErr
+	}
+	return now.Add(duration), nil
 }
 
 func (f *fakeStore) ReleaseLease(context.Context, string, string) error {
@@ -141,7 +152,7 @@ func (f *fakeStore) ListReplacedPending(context.Context) ([]TrackedTransaction, 
 	return f.replacedPending, nil
 }
 
-func (f *fakeStore) ListDroppedBlockingGaps(context.Context, string) ([]Work, error) {
+func (f *fakeStore) ListDroppedBlockingGaps(context.Context, string, time.Time) ([]Work, error) {
 	return f.gapWorks, nil
 }
 
@@ -149,8 +160,9 @@ func (f *fakeStore) ListGapFillers(context.Context) ([]TrackedTransaction, error
 	return f.gapFillers, nil
 }
 
-func (f *fakeStore) MarkGapFillerBroadcast(_ context.Context, _, _, txHash string, _ uint64, _, _ string) error {
+func (f *fakeStore) MarkGapFillerPrepared(_ context.Context, _, _, txHash string, raw []byte, _ uint64, _, _ string) error {
 	f.gapFillerTxHash = txHash
+	f.gapFillerRaw = append([]byte(nil), raw...)
 	return nil
 }
 
@@ -188,6 +200,7 @@ func (f fakeSigner) SignTransaction(context.Context, signer.Transaction) (signer
 type fakeChain struct {
 	txHash       string
 	sendErr      error
+	sentRaw      *string
 	receipt      *ethereum.Receipt
 	receipts     map[string]*ethereum.Receipt
 	transactions map[string]*ethereum.ChainTransaction
@@ -197,7 +210,10 @@ type fakeChain struct {
 	callErr      error
 }
 
-func (f fakeChain) SendRawTransaction(context.Context, string) (string, error) {
+func (f fakeChain) SendRawTransaction(_ context.Context, raw string) (string, error) {
+	if f.sentRaw != nil {
+		*f.sentRaw = raw
+	}
 	return f.txHash, f.sendErr
 }
 
@@ -493,6 +509,19 @@ func TestWorkerReleasesLostLeaseWithoutFailing(t *testing.T) {
 	}
 }
 
+func TestWorkerSkipsPaymentWhenBatchLeaseWasLost(t *testing.T) {
+	work := pendingWork()
+	store := &fakeStore{
+		work: work, renewErr: ErrLeaseLost,
+		leases: []Lease{{PaymentID: "payment-1", PaymentIdentity: work.PaymentIdentity, State: StateBroadcasting}},
+	}
+	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{})
+	service.BroadcastWorker().process(context.Background())
+	if store.signedRawHash != "" || store.released != 0 {
+		t.Fatalf("lost lease was acted on: %+v", store)
+	}
+}
+
 func TestSettleMapsAdmissionRejections(t *testing.T) {
 	cases := map[string]struct {
 		err    error
@@ -546,6 +575,24 @@ func TestSettleBroadcastsInline(t *testing.T) {
 		t.Fatalf("response = %+v", response)
 	}
 	if response.Network != "eip155:1" || response.Amount != "1000000" {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestSettleReturnsTerminalHashIdempotently(t *testing.T) {
+	txHash := "0x" + strings.Repeat("dd", 32)
+	store := &fakeStore{intent: Intent{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, Duplicate: true,
+	}}
+	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{
+		sendErr: errors.New("must not broadcast"),
+	})
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if !response.Success || response.Transaction != txHash {
 		t.Fatalf("response = %+v", response)
 	}
 }
