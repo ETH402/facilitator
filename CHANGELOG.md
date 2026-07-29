@@ -366,6 +366,9 @@ versioned where noted.
 - Container validation now builds both production workloads: the facilitator
   image and the separately targeted policy-signer image.
 
+- CI now pins the current official Node 24 `checkout` and `setup-go` action
+  revisions, removing the runner's Node 20 deprecation fallback.
+
 - `ETH402_LOG_LEVEL` now controls the runtime structured logger and rejects
   unknown values instead of being silently ignored.
 
