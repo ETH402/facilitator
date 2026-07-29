@@ -84,6 +84,12 @@ transactions to broadcast. The production signer is GCP Cloud KMS
 (`ETH402_SIGNER_MODE=external`, verified end-to-end against a real key); the
 development key signer remains for local use.
 
+`internal/e2e` proves the whole path against genuine USDC on a mainnet-forked
+Anvil: `/verify`, `/settle`, a real `transferWithAuthorization`, the merchant's
+balance rising, the authorization nonce spent on chain, a duplicate settle
+converging on the recorded hash, and confirmation reaching `confirmed`. See
+[local development](docs/LOCAL_DEVELOPMENT.md).
+
 ### Residual work
 
 Not blocking the milestone, but each one is a control that is weaker than it looks:
@@ -91,7 +97,8 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
 - **The differing-signature re-broadcast has only fake-signer coverage.** No test
   has watched a real mempool reject a same-nonce same-fee re-broadcast as
   underpriced, which is what happens if the original reappears between the
-  on-chain check and the send.
+  on-chain check and the send. Anvil mines instantly by default, so reproducing it
+  needs `--no-mining` and manual block control.
 - **The 12-confirmation finality cut is accepted** (ADR-0004 decision 5, agreed
   2026-07-29). `confirmed` is terminal, so a reorg deeper than 12 blocks leaves a
   payment marked confirmed that no longer exists on chain. This is now a chosen

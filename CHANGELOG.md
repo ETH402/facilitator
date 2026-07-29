@@ -139,6 +139,15 @@ versioned where noted.
   failing read leaves the last figure looking healthy; burn rate is left to
   Prometheus, which derives it correctly across restarts.
 
+### Added
+
+- End-to-end test against real USDC (`internal/e2e`, `e2e` build tag). Drives
+  `/verify` and `/settle` on a mainnet-forked Anvil and asserts the money moved:
+  the merchant's balance rises, the authorization nonce is spent on chain, a
+  duplicate settle converges on the recorded hash, and confirmation reaches
+  `confirmed`. Every other test stubs the chain, so nothing had previously executed
+  a real `transferWithAuthorization`.
+
 ### Fixed
 
 - A payment signed with a recovery id of 0 or 1 verified successfully and then
