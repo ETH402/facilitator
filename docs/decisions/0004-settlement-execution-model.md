@@ -116,6 +116,11 @@ requires `ETH402_REQUIRED_CONFIRMATIONS` (default 12) canonical confirmations,
 and a reorg deeper than that is **accepted as residual risk** — already recorded
 as "deep reorg" in the threat model.
 
+The operator accepted this risk explicitly on 2026-07-29, so it is a chosen
+position rather than one inherited from a configuration default. Raising
+`ETH402_REQUIRED_CONFIRMATIONS` narrows the window at the cost of settlement
+latency; nothing in the code needs to change to do so.
+
 This is a deliberate risk acceptance, stated here because
 `docs/ARCHITECTURE.md`'s "reorgs return non-final transactions to confirmation"
 reads more broadly than the state machine allows: it applies only to

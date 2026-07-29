@@ -96,10 +96,11 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
   has watched a real mempool reject a same-nonce same-fee re-broadcast as
   underpriced, which is what happens if the original reappears between the
   on-chain check and the send.
-- **The 12-confirmation finality cut needs an explicit decision** (ADR-0004
-  decision 5). `confirmed` is terminal, so a reorg deeper than 12 blocks leaves a
-  payment marked confirmed that no longer exists on chain. Recorded as accepted
-  residual risk because it matches the default, never actually chosen.
+- **The 12-confirmation finality cut is accepted** (ADR-0004 decision 5, agreed
+  2026-07-29). `confirmed` is terminal, so a reorg deeper than 12 blocks leaves a
+  payment marked confirmed that no longer exists on chain. This is now a chosen
+  position rather than an inherited default; raising
+  `ETH402_REQUIRED_CONFIRMATIONS` narrows it at the cost of latency.
 - **Signer balance and burn-rate alerting does not exist.** ADR-0004 decision 8
   makes the bounded hot balance *the* operative signer-compromise control, so
   without the alert that bound is a convention rather than a control.
