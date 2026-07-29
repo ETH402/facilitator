@@ -93,17 +93,52 @@ jobs:
           # docs/COLLABORATION.md so one command line works everywhere.
           psql -h localhost -U eth402 -d postgres -c 'CREATE DATABASE eth402_test OWNER eth402'
 
-      - name: Configure commit signing for this agent
+      - name: Preflight and configure signing
+        id: preflight
         env:
           SIGNING_KEY: ${{ secrets[format('AGENT_SIGNING_KEY_{0}', steps.pick.outputs.agent)] }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          KIMI_INSTALL: ${{ vars.KIMI_INSTALL }}
         run: |
           set -euo pipefail
           agent='${{ steps.pick.outputs.agent }}'
-          if [ -z "${SIGNING_KEY:-}" ]; then
-            echo "::error::missing secret AGENT_SIGNING_KEY_${agent} (uppercase)."
-            echo "Generate it with scripts/agent-signing-setup ${agent} and store the private key."
-            exit 1
+          missing=""
+
+          [ -n "${SIGNING_KEY:-}" ] || missing="$missing AGENT_SIGNING_KEY_$(echo "$agent" | tr a-z A-Z)"
+          case "$agent" in
+          claude) [ -n "${ANTHROPIC_API_KEY:-}" ] || missing="$missing ANTHROPIC_API_KEY" ;;
+          codex)  [ -n "${OPENAI_API_KEY:-}" ]    || missing="$missing OPENAI_API_KEY" ;;
+          kimi)
+            [ -n "${KIMI_API_KEY:-}" ] || missing="$missing KIMI_API_KEY"
+            # Kimi ships as a standalone binary with its own OAuth flow rather than
+            # an npm package, so its install command cannot be hardcoded here.
+            [ -n "${KIMI_INSTALL:-}" ] || missing="$missing vars.KIMI_INSTALL"
+            ;;
+          esac
+
+          if [ -n "$missing" ]; then
+            # A run someone asked for must fail loudly; an unattended hourly run
+            # must not, or an unconfigured repository generates 24 failure emails a
+            # day and the signal is lost in the noise.
+            if [ '${{ github.event_name }}' = "workflow_dispatch" ]; then
+              echo "::error::$agent cannot run; missing:$missing"
+              exit 1
+            fi
+            echo "::warning::$agent skipped; missing:$missing"
+            {
+              echo "### Agent rotation: $agent — skipped"
+              echo ""
+              echo "Not configured yet. Missing:"
+              for item in $missing; do echo "- \`$item\`"; done
+              echo ""
+              echo "See \`docs/COLLABORATION.md\` for what each one is for."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SIGNING_KEY" > "$HOME/.ssh/eth402_agent_${agent}"
           chmod 600 "$HOME/.ssh/eth402_agent_${agent}"
@@ -116,8 +151,10 @@ jobs:
             echo "::warning::${agent} is not listed in .github/allowed_signers;"
             echo "its commits will verify as an unlisted key until that is committed."
           fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Install the agent CLI
+        if: steps.preflight.outputs.ready == 'true'
         env:
           KIMI_INSTALL: ${{ vars.KIMI_INSTALL }}
         run: |
@@ -135,15 +172,12 @@ jobs:
             # than an npm package, so its install command is not hardcoded here:
             # a guessed URL would fail silently at 02:00 every third hour. Set the
             # repository variable KIMI_INSTALL to the documented command.
-            if [ -z "${KIMI_INSTALL:-}" ]; then
-              echo "::error::set the repository variable KIMI_INSTALL to Kimi's install command."
-              exit 1
-            fi
             sh -c "$KIMI_INSTALL"
             ;;
           esac
 
       - name: Run the agent's turn
+        if: steps.preflight.outputs.ready == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -166,7 +200,7 @@ jobs:
           esac
 
       - name: Report what the turn produced
-        if: always()
+        if: always() && steps.preflight.outputs.ready == 'true' 
         run: |
           set -euo pipefail
           echo "### Agent rotation: ${{ steps.pick.outputs.agent }}" >> "$GITHUB_STEP_SUMMARY"
