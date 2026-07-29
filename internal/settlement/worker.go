@@ -6,8 +6,28 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"time"
 )
+
+// guard converts a panic into a logged error.
+//
+// Workers run as bare goroutines, where an unrecovered panic terminates the
+// whole process and takes HTTP serving down with it — the HTTP path has
+// recovery middleware, so without this a single malformed row is a worse
+// outage than a failed request. Every worker tick and every per-payment step
+// runs inside one, so one bad payment neither kills the process nor skips the
+// rest of its batch.
+func guard(ctx context.Context, logger *slog.Logger, worker, stage string, fn func()) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.ErrorContext(ctx, "settlement worker panic recovered",
+				"worker", worker, "stage", stage, "panic", recovered,
+				"stack", string(debug.Stack()))
+		}
+	}()
+	fn()
+}
 
 // workerBatch bounds how many payments a worker leases per tick. Small on
 // purpose: settlement latency is dominated by block times, and a bounded batch
@@ -69,7 +89,8 @@ func (s *Service) worker(name string, states []State, advance func(context.Conte
 // tick runs immediately so a restart does not idle for a full interval while
 // intents wait.
 func (w *Worker) Run(ctx context.Context) {
-	w.process(ctx)
+	tick := func() { guard(ctx, w.logger, w.name, "tick", func() { w.process(ctx) }) }
+	tick()
 	ticker := time.NewTicker(w.service.cfg.WorkerInterval)
 	defer ticker.Stop()
 	for {
@@ -77,7 +98,7 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.process(ctx)
+			tick()
 		}
 	}
 }
@@ -103,11 +124,15 @@ func (w *Worker) process(ctx context.Context) {
 		// Transitions are audited with the coarse actor type the schema
 		// allows; the full identity stays on the lease, where granularity
 		// matters for ownership.
-		if err := w.advance(ctx, lease.PaymentID, "worker"); err != nil {
-			w.logger.WarnContext(ctx, "advance payment failed",
-				"worker", w.name, "payment_id", lease.PaymentID,
-				"payment_identity", lease.PaymentIdentity, "error", err)
-		}
+		guard(ctx, w.logger, w.name, "advance", func() {
+			if err := w.advance(ctx, lease.PaymentID, "worker"); err != nil {
+				w.logger.WarnContext(ctx, "advance payment failed",
+					"worker", w.name, "payment_id", lease.PaymentID,
+					"payment_identity", lease.PaymentIdentity, "error", err)
+			}
+		})
+		// Released outside the guard so a panicking advance still frees its lease
+		// instead of stranding the payment until the lease lapses.
 		w.service.release(ctx, lease.PaymentID, w.identity)
 	}
 }

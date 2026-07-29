@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ETH402/facilitator/internal/config"
+	"github.com/ETH402/facilitator/internal/signer"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	x402evm "github.com/x402-foundation/x402/go/v2/mechanisms/evm"
@@ -96,5 +98,26 @@ func TestTransferWithAuthorizationDataRejectsBadInput(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+// TestBuiltCalldataPassesSignerAllowlist cross-checks the two independent
+// derivations of the transferWithAuthorization selector: the calldata builder
+// packs it from the official ABI, while signer.Transaction.Validate derives it
+// from the canonical signature string. If either drifts, settlement would either
+// sign the wrong function or refuse to sign at all, so this pins them together.
+func TestBuiltCalldataPassesSignerAllowlist(t *testing.T) {
+	t.Parallel()
+	data, err := TransferWithAuthorizationData(testAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := signer.Transaction{
+		ChainID: config.MainnetChainID, Nonce: 3, To: config.MainnetUSDC,
+		Data: data, Value: "0", GasLimit: 120000,
+		MaxFeePerGas: "30000000000", MaxPriorityFeePerGas: "1000000000",
+	}
+	if err := tx.Validate(); err != nil {
+		t.Fatalf("real settlement calldata rejected by the signer allowlist: %v", err)
 	}
 }

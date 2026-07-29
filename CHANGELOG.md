@@ -99,6 +99,18 @@ versioned where noted.
 
 ### Changed
 
+- The signer calldata allowlist is now enforced. `signer.Transaction.Validate`
+  requires the canonical Ethereum-mainnet USDC recipient and the
+  `transferWithAuthorization` selector, alongside the existing mainnet, zero-value
+  and fee checks. ADR-0004, the threat model, and a comment in the KMS backend all
+  claimed this allowlist existed; only the zero-value and mainnet halves did.
+  Because Cloud KMS signs opaque digests, this is the only barrier between a
+  compromised process and an arbitrary signed transaction.
+- Settlement workers recover from panics. They run as bare goroutines, so an
+  unrecovered panic terminated the whole process and took HTTP serving with it,
+  while the HTTP path had recovery middleware of its own. Every worker tick and
+  per-payment step is now guarded, and a panicking step still releases its lease
+  instead of stranding the payment.
 - Enabling a settlement signer now requires non-zero max fee per gas and max gas
   limit, and a priority fee may not exceed the total fee ceiling.
 - Rate limits key on the client address resolved through `ETH402_TRUSTED_PROXIES`

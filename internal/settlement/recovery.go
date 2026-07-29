@@ -45,7 +45,8 @@ func (s *Service) RecoveryWorker() *RecoveryWorker {
 // Run recovers until the context is cancelled, on the same tick cadence as
 // the other settlement workers.
 func (w *RecoveryWorker) Run(ctx context.Context) {
-	w.process(ctx)
+	tick := func() { guard(ctx, w.logger, "recovery", "tick", func() { w.process(ctx) }) }
+	tick()
 	ticker := time.NewTicker(w.service.cfg.WorkerInterval)
 	defer ticker.Stop()
 	for {
@@ -53,7 +54,7 @@ func (w *RecoveryWorker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.process(ctx)
+			tick()
 		}
 	}
 }
@@ -62,11 +63,13 @@ func (w *RecoveryWorker) Run(ctx context.Context) {
 // payments first (they may re-enter the active pipeline), then the
 // query-based watches that need no lease because no other worker touches
 // those rows.
+// Each pass is guarded independently so a panic in one concern does not skip
+// the other three, which resolve unrelated stuck transactions.
 func (w *RecoveryWorker) process(ctx context.Context) {
-	w.recoverLeased(ctx)
-	w.observeReplacements(ctx)
-	w.fillNonceGaps(ctx)
-	w.observeGapFillers(ctx)
+	guard(ctx, w.logger, "recovery", "leased", func() { w.recoverLeased(ctx) })
+	guard(ctx, w.logger, "recovery", "replacements", func() { w.observeReplacements(ctx) })
+	guard(ctx, w.logger, "recovery", "nonce-gaps", func() { w.fillNonceGaps(ctx) })
+	guard(ctx, w.logger, "recovery", "gap-fillers", func() { w.observeGapFillers(ctx) })
 }
 
 // recoverLeased claims payments that may need intervention: manual_review
@@ -90,11 +93,13 @@ func (w *RecoveryWorker) recoverLeased(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := w.service.recoverPayment(ctx, lease.PaymentID, "worker"); err != nil {
-			w.logger.WarnContext(ctx, "recover payment failed",
-				"payment_id", lease.PaymentID,
-				"payment_identity", lease.PaymentIdentity, "error", err)
-		}
+		guard(ctx, w.logger, "recovery", "recover-payment", func() {
+			if err := w.service.recoverPayment(ctx, lease.PaymentID, "worker"); err != nil {
+				w.logger.WarnContext(ctx, "recover payment failed",
+					"payment_id", lease.PaymentID,
+					"payment_identity", lease.PaymentIdentity, "error", err)
+			}
+		})
 		w.service.release(ctx, lease.PaymentID, w.identity)
 	}
 }

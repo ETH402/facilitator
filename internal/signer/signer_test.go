@@ -7,15 +7,52 @@ import (
 	"testing"
 )
 
+// settlementCalldata is transferWithAuthorization calldata: the real selector
+// followed by nine 32-byte words. Only the selector is inspected by the
+// allowlist, but the shape matches what the calldata builder produces.
+func settlementCalldata() []byte {
+	data := make([]byte, 4+9*32)
+	copy(data, transferWithAuthorizationSelector)
+	return data
+}
+
 func validTransaction() Transaction {
 	return Transaction{
 		ChainID: 1, Nonce: 7,
 		To:                   "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-		Data:                 []byte{0xe3, 0xee, 0x39, 0xc4},
+		Data:                 settlementCalldata(),
 		Value:                "0",
 		GasLimit:             120000,
 		MaxFeePerGas:         "30000000000",
 		MaxPriorityFeePerGas: "1000000000",
+	}
+}
+
+// The allowlist is the only barrier between a compromised process and an
+// arbitrary signed transaction, because Cloud KMS cannot inspect calldata.
+func TestValidateEnforcesCalldataAllowlist(t *testing.T) {
+	t.Parallel()
+	cases := map[string]func(*Transaction){
+		"another contract":   func(tx *Transaction) { tx.To = "0x1111111111111111111111111111111111111111" },
+		"ether transfer":     func(tx *Transaction) { tx.To = "0x1111111111111111111111111111111111111111"; tx.Data = nil },
+		"wrong selector":     func(tx *Transaction) { tx.Data = append([]byte{0xa9, 0x05, 0x9c, 0xbb}, tx.Data[4:]...) },
+		"truncated calldata": func(tx *Transaction) { tx.Data = tx.Data[:3] },
+	}
+	for name, mutate := range cases {
+		tx := validTransaction()
+		mutate(&tx)
+		if err := tx.Validate(); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+		if _, err := (TestSigner{}).SignTransaction(context.Background(), tx); err == nil {
+			t.Fatalf("%s was signed", name)
+		}
+	}
+	// The canonical address in mixed-case checksum form must still be accepted.
+	tx := validTransaction()
+	tx.To = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+	if err := tx.Validate(); err != nil {
+		t.Fatalf("checksummed USDC address rejected: %v", err)
 	}
 }
 
@@ -47,6 +84,7 @@ func TestTransactionValidateRejectsUnsafeTransactions(t *testing.T) {
 		"non-mainnet chain":     func(tx *Transaction) { tx.ChainID = 8453 },
 		"missing recipient":     func(tx *Transaction) { tx.To = "" },
 		"missing calldata":      func(tx *Transaction) { tx.Data = nil },
+		"foreign recipient":     func(tx *Transaction) { tx.To = "0x2222222222222222222222222222222222222222" },
 		"zero gas limit":        func(tx *Transaction) { tx.GasLimit = 0 },
 		"non-zero value":        func(tx *Transaction) { tx.Value = "1" },
 		"malformed value":       func(tx *Transaction) { tx.Value = "" },
@@ -88,7 +126,7 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty transaction accepted")
 	}
-	for _, want := range []string{"mainnet", "recipient", "calldata", "gas limit", "zero wei", "max fee per gas"} {
+	for _, want := range []string{"mainnet", "USDC", "transferWithAuthorization", "gas limit", "zero wei", "max fee per gas"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not mention %q", err, want)
 		}

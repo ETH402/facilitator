@@ -169,6 +169,12 @@ wrong. A small service can parse the unsigned transaction, assert
 `value == 0`, and the gas ceilings, then delegate signing to KMS. Key custody
 stays in KMS and the allowlist becomes a real boundary.
 
+`signer.Transaction.Validate` now enforces exactly those assertions in process,
+deriving the selector from the canonical EIP-3009 signature independently of the
+calldata builder so the check is not a restatement of the code it guards. That
+makes the in-process half real; moving it behind the signing boundary is what
+remains deferred.
+
 This is deferred rather than rejected: the bounded balance delivers most of the
 protection immediately, so the policy signer is Milestone 4 hardening and does
 not block settlement.
@@ -247,14 +253,33 @@ than merely return a wrong answer. The controls above are database invariants or
 fail-closed configuration wherever possible, chosen over application-level
 discipline for that reason.
 
-New surface this implies, none of which exists yet:
+New surface this implies. Delivered:
 
-- migrations for `signer_accounts` and the worker lease columns
-- `ETH402_SIGNER_ADDRESS` (or KMS key resolution) pinned at startup
-- `ETH402_SETTLEMENT_EXPIRY_MARGIN`, a signing timeout, and a per-merchant
-  settlement quota
-- a minimum-balance threshold and burn-rate alert for the signer address
-- extended `signer.Transaction` per decision 7
+- migrations `000002`–`000004`: `signer_accounts`, worker lease columns, the
+  payer signature, and the persisted signing gas and fee pair
+- the signer address resolved from the backend at startup and the nonce sequence
+  seeded from the chain's transaction count
+- `ETH402_SETTLEMENT_EXPIRY_MARGIN`, `ETH402_SIGNING_TIMEOUT`,
+  `ETH402_SETTLEMENT_LEASE_DURATION`, `ETH402_SETTLEMENT_RECOVERY_GRACE`,
+  `ETH402_SETTLEMENT_REPLACEMENT_AFTER`, `ETH402_KMS_KEY_NAME`
+- `signer.Transaction` per decision 7, with the in-process allowlist of decision 8
+
+Outstanding, and each one weakens a control this ADR claims:
+
+- **a per-merchant settlement quota.** Decision 9's residual-risk argument rests
+  on it. Until it exists, an admitted merchant's gas spend is bounded only by the
+  shared per-client rate limit.
+- **a minimum-balance threshold and burn-rate alert** for the signer address.
+  Decision 8 makes the bounded hot balance the operative signer-compromise
+  control, so without the alert the bound is a convention rather than a control.
+- **pre-broadcast simulation or an `authorizationState` re-read in `/settle`.**
+  Verification checks the nonce on chain, but a nonce consumed between `/verify`
+  and `/settle` — the threat model's conflicting-facilitators race — currently
+  buys a revert with the operator's gas.
+- **confirmation that Cloud KMS signing is reproducible.** Decision 4's
+  identical re-broadcast depends on it; `TestCloudKMSSigningIsDeterministic`
+  answers it against a real key. If KMS is non-deterministic, ambiguous recovery
+  is on-chain lookup only and that claim must be withdrawn.
 
 These configuration keys are deliberately **not** added ahead of the code that
 reads them, so that no documented option silently does nothing.

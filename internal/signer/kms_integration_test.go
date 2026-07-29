@@ -4,6 +4,7 @@ package signer
 
 import (
 	"context"
+	"encoding/hex"
 	"math/big"
 	"os"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"golang.org/x/crypto/sha3"
 )
 
 // TestCloudKMSSettlementEndToEnd proves the production signer path against a
@@ -56,8 +58,8 @@ func TestCloudKMSSettlementEndToEnd(t *testing.T) {
 	}
 	signed, err := backend.SignTransaction(ctx, Transaction{
 		ChainID: 1, Nonce: nonce,
-		To:    "0x1111111111111111111111111111111111111111",
-		Data:  []byte{0xa9, 0x05, 0x9c, 0xbb}, // selector-shaped dummy calldata
+		To:    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+		Data:  settlementCalldata(), // selector-shaped dummy calldata
 		Value: "0", GasLimit: 100000,
 		MaxFeePerGas: "30000000000", MaxPriorityFeePerGas: "2000000000",
 	})
@@ -138,4 +140,62 @@ func awaitReceipt(t *testing.T, rpc *ethereum.Client, txHash string) *ethereum.R
 	}
 	t.Fatalf("transaction %s never mined", txHash)
 	return nil
+}
+
+// TestCloudKMSSigningIsDeterministic decides whether ADR-0004's ambiguous
+// broadcast recovery actually works with the production signer.
+//
+// settlement.signIdentical re-signs a stored transaction after an ambiguous
+// broadcast and refuses to send unless the re-signed bytes hash to the value
+// already recorded. That is only possible if signing is reproducible. The
+// development signer is deterministic (RFC 6979 via go-ethereum), but Cloud KMS
+// makes no such promise and HSM-backed ECDSA commonly uses a random k.
+//
+// If this fails, no funds are at risk — signIdentical refuses rather than
+// broadcasting a different transaction — but ambiguous broadcasts can then only
+// ever be resolved by on-chain lookup, and after the grace window they stay in
+// manual_review until an operator intervenes. Document it and drop the
+// re-broadcast claim rather than leaving the capability advertised.
+func TestCloudKMSSigningIsDeterministic(t *testing.T) {
+	keyName := os.Getenv("ETH402_TEST_KMS_KEY_NAME")
+	if keyName == "" {
+		t.Skip("ETH402_TEST_KMS_KEY_NAME is not set")
+	}
+	ctx := context.Background()
+	kmsClient, err := NewCloudKMSClient(ctx)
+	if err != nil {
+		t.Fatalf("KMS client: %v", err)
+	}
+	defer func() { _ = kmsClient.Close() }()
+	backend, err := NewCloudKMS(ctx, kmsClient, keyName)
+	if err != nil {
+		t.Fatalf("KMS signer: %v", err)
+	}
+	tx := Transaction{
+		ChainID: 1, Nonce: 11,
+		To:    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+		Data:  settlementCalldata(),
+		Value: "0", GasLimit: 120000,
+		MaxFeePerGas: "30000000000", MaxPriorityFeePerGas: "2000000000",
+	}
+	hashes := make([]string, 0, 3)
+	for range 3 {
+		signed, err := backend.SignTransaction(ctx, tx)
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		keccak := sha3.NewLegacyKeccak256()
+		keccak.Write(signed.Raw)
+		hashes = append(hashes, hex.EncodeToString(keccak.Sum(nil)))
+	}
+	t.Logf("Cloud KMS signed-transaction hashes: %v", hashes)
+	for i, hash := range hashes {
+		if hash != hashes[0] {
+			t.Fatalf("Cloud KMS signing is NOT deterministic (attempt %d hashed %s, first %s).\n"+
+				"settlement.signIdentical can therefore never reproduce a stored transaction, so the "+
+				"ambiguous re-broadcast path in ADR-0004 decision 4 is unreachable with this backend. "+
+				"Recovery degrades to on-chain lookup only; update the ADR, SETTLEMENT_FLOW.md, and "+
+				"OPERATIONS.md rather than leaving the capability documented.", i, hash, hashes[0])
+		}
+	}
 }

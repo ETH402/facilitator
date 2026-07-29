@@ -91,7 +91,7 @@ func kmsTransaction() Transaction {
 	return Transaction{
 		ChainID: 1, Nonce: 7,
 		To:    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-		Data:  []byte{0xa9, 0x05, 0x9c, 0xbb},
+		Data:  settlementCalldata(),
 		Value: "0", GasLimit: 120000,
 		MaxFeePerGas: "30000000000", MaxPriorityFeePerGas: "2000000000",
 	}

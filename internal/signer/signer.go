@@ -1,12 +1,33 @@
 package signer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math/big"
+	"strings"
+
+	"github.com/ETH402/facilitator/internal/config"
+	"golang.org/x/crypto/sha3"
 )
 
 var ErrDisabled = errors.New("transaction signing is disabled in this build")
+
+// transferWithAuthorizationSelector is the only function this service may ever
+// ask a signer to call.
+//
+// It is derived here from the canonical EIP-3009 v/r/s signature rather than
+// shared with the calldata builder, so the allowlist is an independent check on
+// what gets signed instead of a restatement of the code it guards. A
+// cross-check test asserts it matches what the builder actually packs.
+var transferWithAuthorizationSelector = functionSelector(
+	"transferWithAuthorization(address,address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32)")
+
+func functionSelector(signature string) []byte {
+	keccak := sha3.NewLegacyKeccak256()
+	keccak.Write([]byte(signature))
+	return keccak.Sum(nil)[:4]
+}
 
 // Transaction is a fully determined EIP-1559 transaction. Every field is an
 // input: the signer contributes a signature and nothing else.
@@ -34,11 +55,15 @@ func (t Transaction) Validate() error {
 	if t.ChainID != 1 {
 		errs = append(errs, errors.New("only Ethereum mainnet may be signed"))
 	}
-	if t.To == "" {
-		errs = append(errs, errors.New("recipient is required"))
+	// The calldata allowlist. Cloud KMS signs opaque digests and cannot inspect
+	// calldata, so this is the only thing standing between a compromised process
+	// and an arbitrary signed transaction (ADR-0004 decision 8); loss is
+	// otherwise bounded only by the signer's hot balance.
+	if !strings.EqualFold(t.To, config.MainnetUSDC) {
+		errs = append(errs, errors.New("only canonical Ethereum-mainnet USDC may be called"))
 	}
-	if len(t.Data) == 0 {
-		errs = append(errs, errors.New("calldata is required"))
+	if len(t.Data) < 4 || !bytes.Equal(t.Data[:4], transferWithAuthorizationSelector) {
+		errs = append(errs, errors.New("only transferWithAuthorization calldata may be signed"))
 	}
 	if t.GasLimit == 0 {
 		errs = append(errs, errors.New("gas limit must be non-zero"))

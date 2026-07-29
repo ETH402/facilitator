@@ -156,6 +156,22 @@ the public listener, and Prometheus scrapes `app:8080` directly on the container
 network. Keep both controls in place: metrics are an operational disclosure
 boundary, not public data.
 
+## Settlement controls not yet implemented
+
+Two controls ADR-0004 relies on are absent, and both bound gas spend:
+
+- **Per-merchant settlement quotas.** `/settle` admits only payments whose
+  recipient is an active registered merchant, but nothing then caps how much an
+  admitted merchant spends beyond the shared per-client rate limit. Watch
+  per-merchant settlement volume and suspend abusers manually until quotas exist.
+- **A signer balance and burn-rate alert.** The bounded hot balance is the
+  operative signer-compromise control, so alert on both the absolute balance and
+  the rate of change; without that the bound is a convention.
+
+`/settle` also does not re-simulate or re-read `authorizationState`. A buyer who
+submits the same authorization to another facilitator between `/verify` and
+`/settle` causes a revert paid for with operator gas. Alert on the revert rate.
+
 ## Verification attempt retention
 
 Every `/verify` call appends a `verification_attempts` row, including malformed
