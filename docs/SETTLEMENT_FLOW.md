@@ -52,9 +52,10 @@ would be broadcast. `/verify` already read `authorizationState`, but a nonce
 consumed between `/verify` and `/settle` — the conflicting-facilitators race —
 would otherwise be discovered by spending gas on a certain revert and by handing
 the caller a transaction hash for a doomed transfer. A revert retires the intent
-as `failed` with its transaction `dropped`, unbroadcast and unsigned; the
-allocated nonce becomes a gap the recovery worker fills only if a later nonce is
-actually blocked, so the revert is paid for once if ever rather than always. A
+as `failed` with its transaction `dropped`, unbroadcast and unsigned. If the
+allocated nonce later blocks another, recovery fills it only after `validBefore`
+plus the full safety margin has passed, so the authorization cannot become a
+delayed transfer. A
 simulation that cannot *run* is transient and leaves the committed intent for the
 next tick, because abandoning a payment over a rate-limited RPC would lose one
 that could have settled.
@@ -65,7 +66,8 @@ payment lease and runs the pipeline inline — build the
 `ETH402_SIGNING_TIMEOUT`, record the signed-transaction hash, broadcast once
 against the primary RPC, record the transaction hash — and returns the official
 `SettleResponse` with the hash. A duplicate call for an already-broadcast
-payment returns the recorded hash. If the inline attempt cannot finish (signer
+payment returns the recorded hash, including after it becomes terminally
+`confirmed` or `reverted`. If the inline attempt cannot finish (signer
 or RPC failure), the durable intent remains and the broadcast worker retries it
 on `ETH402_WORKER_INTERVAL`; a send whose outcome is unknown becomes
 `ambiguous` and moves the payment to `manual_review` for recovery — never a
@@ -76,7 +78,8 @@ rather than buying a predictable revert (decision 11).
 
 The confirmation worker leases payments in `broadcast`/`confirming`/`replaced`,
 reads the receipt, and finalizes at `ETH402_REQUIRED_CONFIRMATIONS` (default
-12) canonical confirmations; a `status=0` receipt becomes `reverted`. A
+12) canonical confirmations; successful and `status=0` receipts pass the same
+canonical-hash and depth checks before becoming terminal. A
 transaction previously seen mined whose receipt disappears from the canonical
 chain was reorged out: it returns to `broadcast` and is observed from scratch.
 
@@ -111,9 +114,11 @@ fee-bumped transaction on the same nonce (tip ×1.125, ceiling-capped); when
 the ceiling leaves no headroom the transaction is left pending for an operator
 decision. If the network mines the original instead, recovery records the
 original as the truth and drops the never-minable replacement. A `dropped`
-nonce blocking a later in-flight nonce of the same signer is filled by
-re-broadcasting the original expired intent, whose predictable revert consumes
-the nonce. A filler the chain *accepts* is an anomaly — USDC moved on an
+nonce blocking a later in-flight nonce of the same signer is filled only after
+the authorization has been expired for a full safety margin, whether the payment
+was retired as `expired` or `failed`. Its exact signed bytes are persisted before
+broadcast and reused after an ambiguous send; the predictable revert consumes
+the nonce without reviving the payment. A filler the chain *accepts* is an anomaly — USDC moved on an
 authorization judged expired, so the record disagrees with the ledger — and is
 escalated once to `manual_review` with its receipt for a human to reconcile,
 which is the only edge out of `expired`. Recovery never finalizes a payment itself — it re-attaches hashes

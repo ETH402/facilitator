@@ -22,6 +22,13 @@ versioned where noted.
   that re-checks ownership under the row lock, so two workers can never hold the
   same payment. `ErrLeaseLost` tells an overrunning worker to stop rather than
   risk duplicating work.
+- Settlement batches renew each payment lease immediately before acting and
+  skip work whose ownership has lapsed.
+- Canonical receipt finality checks block hash as well as depth for successful
+  and reverted transactions.
+- Terminal `/settle` retries return the original durable transaction hash.
+- Nonce-gap fillers wait through authorization expiry plus the safety margin and
+  persist exact signed bytes before broadcast (migration `000007`).
 - Durable settlement intent. One transaction locks the payment, applies admission
   (verified state, recipient is an active registered merchant, authorization not
   inside the expiry margin), allocates the nonce, moves the payment to

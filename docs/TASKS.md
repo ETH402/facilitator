@@ -11,14 +11,15 @@ held.
 
 | Task | Status | Notes |
 |---|---|---|
-| Gap-filler raw transaction persistence (migration `000007`) | claimed — owner unknown | Uncommitted in the shared tree when this protocol was adopted. Whoever owns it: put your name here. |
+| PR #2 settlement review fixes | in review (PR #2) | Implemented by Codex: terminal idempotency, canonical finality, lease renewal, and KMS scalar validation. |
+| Gap-filler raw transaction persistence (migration `000007`) | in review (PR #2) | Implemented by Codex; exact signed bytes are persisted before broadcast and retried identically. |
+| Range-check `r`/`s` in `ethereumSignature` | in review (PR #2) | Implemented by Codex with malformed DER regression coverage. |
 
 ## Open — no human decision needed
 
 | Task | Status | Notes |
 |---|---|---|
 | Lease the three unleased recovery passes | open | `observeReplacements`, `fillNonceGaps`, `observeGapFillers` run without a lease, which constrains deployment to one application instance. Two instances would each re-estimate fees and broadcast different transactions for one nonce gap. Documented in `OPERATIONS.md` as a constraint. |
-| Range-check `r`/`s` in `ethereumSignature` | open | `internal/signer/kms.go` passes DER-parsed values to `big.Int.FillBytes`, which panics on a negative value, and `asn1` parses INTEGER as signed. Workers are panic-guarded so this degrades rather than crashing, but the check is missing. |
 | Exercise the differing-signature re-broadcast against a real node | open | The branch is correct by inspection and covered by fake signers, but no test has watched a real mempool reject a same-nonce same-fee re-broadcast as underpriced — which is what happens if the original reappears between the on-chain check and the send. |
 
 ## Blocked on a human decision

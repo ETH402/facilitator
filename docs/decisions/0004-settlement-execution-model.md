@@ -249,6 +249,10 @@ RPC call, so with `ETH402_DATABASE_MAX_CONNS` at 10 and `ETH402_RPC_TIMEOUT` at
 handling down with it. Leases cost more code and require stale-lease reclaim for
 workers that die mid-lease.
 
+Batch claims renew each payment immediately before its RPC work. If the original
+batch lease has already expired, that item is skipped and must be reclaimed;
+the former owner never proceeds on stale ownership.
+
 ### 11. Expiry margin
 
 Settlement refuses to broadcast when `valid_before` falls inside a configured
@@ -261,6 +265,13 @@ configurable because the safe window widens during gas spikes.
 A payment that expires before broadcast becomes `expired`. One already
 broadcast is left to its receipt, which yields `reverted` — the chain decides,
 not the application.
+
+A dropped nonce is filled only after `validBefore` plus the same safety margin
+has elapsed. This applies to both `expired` and simulation-`failed` payments:
+the payment remains permanently retired, while the now-impossible authorization
+is used only to consume the facilitator account nonce with a predictable revert.
+The exact signed filler bytes are persisted before sending so ambiguous Cloud
+KMS broadcasts can be retried identically.
 
 ### 12. Pre-broadcast simulation retires proven-unsettleable intents
 
@@ -293,7 +304,8 @@ New surface this implies. Delivered:
 
 - migrations `000002`–`000004`: `signer_accounts`, worker lease columns, the
   payer signature, and the persisted signing gas and fee pair; migration
-  `000006`: the deterministic `sighash` recovery compares signatures by
+  `000006`: the deterministic `sighash` recovery uses to compare signatures;
+  migration `000007`: exact signed bytes for ambiguity-safe nonce-gap fillers
 - the signer address resolved from the backend at startup and the nonce sequence
   seeded from the chain's transaction count
 - `ETH402_SETTLEMENT_EXPIRY_MARGIN`, `ETH402_SIGNING_TIMEOUT`,

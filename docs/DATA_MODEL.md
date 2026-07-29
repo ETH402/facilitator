@@ -69,6 +69,13 @@ Migration `000006_recovery_sighash` adds:
   back to the raw-hash comparison, which only a deterministic signer
   satisfies.
 
+Migration `000007_gap_filler_raw_transaction` adds:
+
+- `ethereum_transactions.raw_transaction`: nullable signed transaction bytes
+  used only for nonce-gap fillers. Recovery persists them before the first RPC
+  send and reuses them byte-for-byte when the send outcome is ambiguous, so
+  randomized Cloud KMS signatures cannot turn one filler into multiple hashes.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

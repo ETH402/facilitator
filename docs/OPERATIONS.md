@@ -78,7 +78,8 @@ transactions to `confirming`, `confirmed` (at
 transactions to `broadcast`, and the recovery worker reconciles the failure
 modes below. Workers claim payments with leases of
 `ETH402_SETTLEMENT_LEASE_DURATION` (default 2m); a dead worker's payments are
-reclaimed when the lease lapses. A signing failure leaves the intent untouched
+reclaimed when the lease lapses. Batched workers renew each payment immediately
+before acting and skip it if ownership has already lapsed. A signing failure leaves the intent untouched
 for the next tick; a broadcast failure marks the transaction `ambiguous` and
 moves the payment to `manual_review` (ADR-0004 decision 4).
 `ETH402_SETTLEMENT_EXPIRY_MARGIN` (default 60s) retires intents whose
@@ -102,8 +103,11 @@ Recovery handles four cases automatically:
   fee-bumped transaction on the same nonce (tip ×1.125, capped by
   `ETH402_MAX_FEE_PER_GAS_WEI`). Whichever version mines, the recorded history
   is corrected to match.
-- **Nonce gaps.** A `dropped` expired intent blocking a later in-flight nonce
-  is re-broadcast as-is; its predictable revert consumes the nonce.
+- **Nonce gaps.** A dropped `expired` or simulation-`failed` intent blocking a
+  later in-flight nonce waits until `validBefore` plus the settlement safety
+  margin, then is signed and re-broadcast. Its exact signed bytes are stored
+  before the first send and reused after ambiguity; its predictable revert
+  consumes the signer nonce without moving USDC.
 - **Reorgs.** A transaction whose block leaves the canonical chain returns to
   `broadcast` and is observed from scratch.
 
@@ -188,10 +192,10 @@ Still outstanding:
 
 The recovery worker's replacement, nonce-gap, and gap-filler passes deliberately
 run without a lease, on the basis that no other worker touches those rows. That
-holds for a single instance only. With two, both could fill the same nonce gap,
-and because each re-estimates fees independently they would produce *different*
-transactions, so the deduplicating hash lookup misses and both broadcast — one
-replacing the other. Scale vertically until those passes take leases.
+holds for a single instance only. Database status guards prevent two instances
+from preparing different gap fillers, but replacement and observation passes
+are still designed and operated as a singleton. Scale vertically until those
+passes take leases.
 
 ## Verification attempt retention
 

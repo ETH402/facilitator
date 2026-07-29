@@ -14,6 +14,9 @@ allowlist into the signing boundary is Milestone 4 hardening. Rate limits,
 audited access, separate staging and production keys, dual control for policy
 changes, and emergency disable remain operational requirements. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).
+KMS DER signatures are treated as untrusted boundary data: both scalars must be
+strictly inside the secp256k1 order, trailing DER is rejected, and only a
+signature that recovers the configured signer address is accepted.
 
 Raw private keys are permitted only in explicit development/test mode and are
 never printed, stored in database, embedded in images, or committed. No funded

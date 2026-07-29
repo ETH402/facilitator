@@ -65,12 +65,15 @@ payments and makes a completed suspension revoke later settlement requests.
 An ambiguous broadcast records signed-transaction identity and is reconciled
 by the recovery worker: on-chain lookup first, then — after a grace window and
 only from the stored nonce, gas, and fee fields — an identical re-broadcast
-whose recomputed hash must match the stored one. Receipt observations record
+whose deterministic sighash must match the stored one. Receipt observations record
 block hash/number; finalization requires canonical confirmations. Reorgs
 return non-final transactions to broadcast. Replacement uses the same Ethereum
 account nonce, is linked explicitly, bumps fees within the configured ceiling,
 and never changes USDC calldata; whichever version mines becomes the recorded
-truth. Process or database restart resumes from durable states.
+truth. A nonce-gap filler is not eligible until the EIP-3009 authorization has
+been expired for a full safety margin, and its exact signed bytes are committed
+before broadcast so an ambiguous send is retried identically. Process or
+database restart resumes from durable states.
 
 See [settlement flow](SETTLEMENT_FLOW.md), [data model](DATA_MODEL.md), and
 [ADR-0001](decisions/0001-modular-monolith-and-scope.md).
