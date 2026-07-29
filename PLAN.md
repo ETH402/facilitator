@@ -88,10 +88,6 @@ development key signer remains for local use.
 
 Not blocking the milestone, but each one is a control that is weaker than it looks:
 
-- **The recovery worker's replacement, nonce-gap, and gap-filler passes run without
-  a lease**, which constrains deployment to a single application instance: two
-  would each re-estimate fees and broadcast different transactions for one nonce
-  gap. Recorded as a constraint in `docs/OPERATIONS.md`.
 - **The differing-signature re-broadcast has only fake-signer coverage.** No test
   has watched a real mempool reject a same-nonce same-fee re-broadcast as
   underpriced, which is what happens if the original reappears between the

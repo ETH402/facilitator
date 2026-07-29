@@ -141,6 +141,13 @@ versioned where noted.
 
 ### Changed
 
+- The recovery worker's replacement, nonce-gap, and gap-filler passes now claim the
+  payment lease before acting, removing the single-instance deployment constraint.
+  They iterate over query results rather than a leased batch, so two instances would
+  otherwise each re-estimate fees for one nonce gap and broadcast different signed
+  transactions — the deduplicating hash lookup misses and both send, one replacing
+  the other.
+
 - A nonce-gap filler the chain accepts is escalated to `manual_review` once
   instead of being re-reported on every worker tick forever. Success means USDC
   moved on an authorization believed expired, so the record disagreed with the

@@ -114,6 +114,32 @@ func (w *RecoveryWorker) recoverLeased(ctx context.Context) {
 	}
 }
 
+// underLease claims the payment, runs fn, and releases.
+//
+// A payment another worker already holds is skipped rather than waited on: that
+// worker is doing this exact work. Without this, two application instances each
+// re-estimate fees for the same nonce gap and produce *different* transactions, so
+// the deduplicating hash lookup misses and both broadcast — one replacing the
+// other for no benefit.
+//
+// The guard runs inside the lease and the release is deferred outside it, so a
+// panicking pass frees the payment instead of stranding it until the lease lapses.
+func (w *RecoveryWorker) underLease(ctx context.Context, paymentID, stage string, fn func()) {
+	if paymentID == "" {
+		return
+	}
+	if _, err := w.service.store.ClaimPayment(ctx, paymentID, w.identity,
+		w.service.cfg.LeaseDuration, w.now()); err != nil {
+		if !errors.Is(err, ErrLeaseUnavailable) && !errors.Is(err, context.Canceled) {
+			w.logger.WarnContext(ctx, "claim payment for recovery failed",
+				"payment_id", paymentID, "stage", stage, "error", err)
+		}
+		return
+	}
+	defer w.service.release(ctx, paymentID, w.identity)
+	guard(ctx, w.logger, "recovery", stage, fn)
+}
+
 // recoverPayment dispatches on the active transaction's status: ambiguous
 // transactions are reconciled on chain, stale broadcasts are fee-bumped.
 // Anything else (a fresh broadcast still inside its window) is left to the
@@ -342,21 +368,23 @@ func (w *RecoveryWorker) observeReplacements(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		receipt, err := w.service.chain.TransactionReceipt(ctx, t.TxHash)
-		if err != nil {
-			w.logger.WarnContext(ctx, "fetch replaced transaction receipt failed",
-				"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
-			continue
-		}
-		if receipt == nil {
-			continue
-		}
-		if err := w.service.store.MarkReplacementLanded(ctx, t.PaymentID, t.TransactionID,
-			receipt.Status == 1, receipt.BlockNumber, receipt.BlockHash,
-			receipt.GasUsed, receipt.EffectiveGasPrice, "worker"); err != nil {
-			w.logger.WarnContext(ctx, "record landed original failed",
-				"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
-		}
+		w.underLease(ctx, t.PaymentID, "replacements", func() {
+			receipt, err := w.service.chain.TransactionReceipt(ctx, t.TxHash)
+			if err != nil {
+				w.logger.WarnContext(ctx, "fetch replaced transaction receipt failed",
+					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+				return
+			}
+			if receipt == nil {
+				return
+			}
+			if err := w.service.store.MarkReplacementLanded(ctx, t.PaymentID, t.TransactionID,
+				receipt.Status == 1, receipt.BlockNumber, receipt.BlockHash,
+				receipt.GasUsed, receipt.EffectiveGasPrice, "worker"); err != nil {
+				w.logger.WarnContext(ctx, "record landed original failed",
+					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+			}
+		})
 	}
 }
 
@@ -380,10 +408,12 @@ func (w *RecoveryWorker) fillNonceGaps(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := w.service.fillNonceGap(ctx, work); err != nil {
-			w.logger.WarnContext(ctx, "fill nonce gap failed",
-				"payment_id", work.PaymentID, "nonce", work.Nonce, "error", err)
-		}
+		w.underLease(ctx, work.PaymentID, "nonce-gaps", func() {
+			if err := w.service.fillNonceGap(ctx, work); err != nil {
+				w.logger.WarnContext(ctx, "fill nonce gap failed",
+					"payment_id", work.PaymentID, "nonce", work.Nonce, "error", err)
+			}
+		})
 	}
 }
 
@@ -444,53 +474,63 @@ func (w *RecoveryWorker) observeGapFillers(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		receipt, err := w.service.chain.TransactionReceipt(ctx, t.TxHash)
+		tracked := t
+		w.underLease(ctx, tracked.PaymentID, "gap-fillers", func() {
+			w.observeGapFiller(ctx, tracked)
+		})
+	}
+}
+
+// observeGapFiller resolves one gap filler. Extracted from the loop rather than
+// inlined as a closure so its early returns read as early returns; the caller
+// holds the payment lease.
+func (w *RecoveryWorker) observeGapFiller(ctx context.Context, t TrackedTransaction) {
+	receipt, err := w.service.chain.TransactionReceipt(ctx, t.TxHash)
+	if err != nil {
+		w.logger.WarnContext(ctx, "fetch gap filler receipt failed",
+			"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+		return
+	}
+	if receipt == nil {
+		known, err := w.service.chain.TransactionByHash(ctx, t.TxHash)
 		if err != nil {
-			w.logger.WarnContext(ctx, "fetch gap filler receipt failed",
+			w.logger.WarnContext(ctx, "fetch prepared gap filler failed",
 				"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
-			continue
+			return
 		}
-		if receipt == nil {
-			known, err := w.service.chain.TransactionByHash(ctx, t.TxHash)
+		if known == nil {
+			returnedHash, err := w.service.chain.SendRawTransaction(ctx,
+				"0x"+hex.EncodeToString(t.RawTransaction))
 			if err != nil {
-				w.logger.WarnContext(ctx, "fetch prepared gap filler failed",
+				w.logger.WarnContext(ctx, "re-broadcast prepared gap filler failed",
 					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
-				continue
+				return
 			}
-			if known == nil {
-				returnedHash, err := w.service.chain.SendRawTransaction(ctx,
-					"0x"+hex.EncodeToString(t.RawTransaction))
-				if err != nil {
-					w.logger.WarnContext(ctx, "re-broadcast prepared gap filler failed",
-						"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
-					continue
-				}
-				if !strings.EqualFold(returnedHash, t.TxHash) {
-					w.logger.ErrorContext(ctx, "gap filler provider returned mismatched hash",
-						"payment_id", t.PaymentID, "expected", t.TxHash, "returned", returnedHash)
-				}
+			if !strings.EqualFold(returnedHash, t.TxHash) {
+				w.logger.ErrorContext(ctx, "gap filler provider returned mismatched hash",
+					"payment_id", t.PaymentID, "expected", t.TxHash, "returned", returnedHash)
 			}
-			continue
 		}
-		if receipt.Status == 1 {
-			// The chain accepted an authorization believed expired, so USDC moved
-			// and the record disagrees with the ledger. Escalate once rather than
-			// re-reporting every tick, and leave the reconciliation to a human.
-			w.logger.ErrorContext(ctx, "gap filler succeeded on an expired authorization; escalating to manual review",
-				"payment_id", t.PaymentID, "transaction_id", t.TransactionID,
-				"tx_hash", t.TxHash, "block_number", receipt.BlockNumber)
-			if err := w.service.store.MarkGapFillerSucceeded(ctx, t.PaymentID, t.TransactionID,
-				receipt.BlockNumber, receipt.BlockHash, receipt.GasUsed,
-				receipt.EffectiveGasPrice, "worker"); err != nil {
-				w.logger.WarnContext(ctx, "escalate succeeded gap filler failed",
-					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
-			}
-			continue
-		}
-		if err := w.service.store.MarkGapFillerResolved(ctx, t.TransactionID,
-			receipt.GasUsed, receipt.EffectiveGasPrice); err != nil {
-			w.logger.WarnContext(ctx, "resolve gap filler failed",
+		return
+	}
+	if receipt.Status == 1 {
+		// The chain accepted an authorization believed expired, so USDC moved
+		// and the record disagrees with the ledger. Escalate once rather than
+		// re-reporting every tick, and leave the reconciliation to a human.
+		w.logger.ErrorContext(ctx, "gap filler succeeded on an expired authorization; escalating to manual review",
+			"payment_id", t.PaymentID, "transaction_id", t.TransactionID,
+			"tx_hash", t.TxHash, "block_number", receipt.BlockNumber)
+		if err := w.service.store.MarkGapFillerSucceeded(ctx, t.PaymentID, t.TransactionID,
+			receipt.BlockNumber, receipt.BlockHash, receipt.GasUsed,
+			receipt.EffectiveGasPrice, "worker"); err != nil {
+			w.logger.WarnContext(ctx, "escalate succeeded gap filler failed",
 				"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
 		}
+		return
+	}
+	if err := w.service.store.MarkGapFillerResolved(ctx, t.TransactionID,
+		receipt.GasUsed, receipt.EffectiveGasPrice); err != nil {
+		w.logger.WarnContext(ctx, "resolve gap filler failed",
+			"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
 	}
 }

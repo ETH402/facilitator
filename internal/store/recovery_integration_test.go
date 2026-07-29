@@ -5,7 +5,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -536,5 +538,55 @@ WHERE p.id = $1`, paymentID).Scan(&state, &txStatus, &blockNumber); err != nil {
 	if err := store.MarkGapFillerSucceeded(ctx, paymentID, intent.TransactionID,
 		12345, "0x"+repeat("b", 64), 51000, "31000000000", "worker"); err == nil {
 		t.Fatal("second escalation succeeded; the transition is not guarded")
+	}
+}
+
+// TestConcurrentRecoveryWorkersDoNotBothActOnAPayment is the property that removes
+// the single-instance deployment constraint.
+//
+// The replacement, nonce-gap, and gap-filler passes iterate over query results
+// rather than a leased batch. Unleased, two application instances would each
+// re-estimate fees for the same nonce gap and produce *different* signed
+// transactions, so the deduplicating hash lookup misses and both broadcast — one
+// replacing the other for no benefit. The lease makes the second instance skip.
+func TestConcurrentRecoveryWorkersDoNotBothActOnAPayment(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	identity := "pay_" + repeat("7", 64)
+	paymentID := seedPayment(t, store, paymentFixture{
+		identity: identity, state: "broadcast", registered: true,
+	})
+
+	const workers = 8
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	claimed := make([]bool, workers)
+	for i := range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			// Exactly what underLease does: claim the specific payment, and skip
+			// when another worker already holds it.
+			_, err := store.ClaimPayment(ctx, paymentID,
+				fmt.Sprintf("recovery/instance-%d", i), time.Minute, time.Now())
+			claimed[i] = err == nil
+			if err != nil && !errors.Is(err, settlement.ErrLeaseUnavailable) {
+				t.Errorf("worker %d: unexpected error %v", i, err)
+			}
+		}()
+	}
+	close(start)
+	wait.Wait()
+
+	winners := 0
+	for _, ok := range claimed {
+		if ok {
+			winners++
+		}
+	}
+	// One instance acts; the rest skip rather than duplicating a broadcast.
+	if winners != 1 {
+		t.Fatalf("%d of %d instances claimed the payment, want exactly 1", winners, workers)
 	}
 }
