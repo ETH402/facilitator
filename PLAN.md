@@ -101,13 +101,13 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
   payment marked confirmed that no longer exists on chain. This is now a chosen
   position rather than an inherited default; raising
   `ETH402_REQUIRED_CONFIRMATIONS` narrows it at the cost of latency.
-- **Signer balance and burn-rate alerting does not exist.** ADR-0004 decision 8
-  makes the bounded hot balance *the* operative signer-compromise control, so
-  without the alert that bound is a convention rather than a control.
-- **No human has read the settlement code.** It signs Ethereum transactions and
-  spends ETH. `internal/settlement/recovery.go` is the place to start: the most
-  intricate code in the repository, and its hardest paths need adversarial chain
-  conditions no test reproduces.
+- **Proceeding without an independent read of the settlement code**, accepted by
+  the operator on 2026-07-29. It signs Ethereum transactions and spends ETH, and
+  the same party wrote and reviewed nearly all of it. This is a recorded risk
+  acceptance, not a review: no independent read has happened.
+  `internal/settlement/recovery.go` is where one should start — the most intricate
+  code in the repository, whose hardest paths need adversarial chain conditions no
+  test reproduces.
 
 ## Milestone 4 — public deployment
 

@@ -129,6 +129,9 @@ func main() {
 		go settlementService.BroadcastWorker().Run(root)
 		go settlementService.ConfirmationWorker().Run(root)
 		go settlementService.RecoveryWorker().Run(root)
+		// The hot balance is the bound on a signer compromise (ADR-0004 decision
+		// 8), so publish it for alerting; a bound nobody watches is a convention.
+		go settlementService.BalanceWorker(rpc, registry).Run(root)
 	}
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,

@@ -167,6 +167,36 @@ the public listener, and Prometheus scrapes `app:8080` directly on the container
 network. Keep both controls in place: metrics are an operational disclosure
 boundary, not public data.
 
+## Signer balance monitoring
+
+`/metrics` publishes the settlement signer's balance so the bound on a compromise
+is observable. ADR-0004 decision 8 makes that bound the operative control: Cloud
+KMS signs opaque digests and cannot inspect calldata, so the allowlist lives
+inside the ETH402 process and a compromise is limited by what the signer can spend
+rather than by what it is permitted to sign.
+
+| Metric | Meaning |
+|---|---|
+| `eth402_signer_balance_wei` | current balance; float precision, adequate for thresholds |
+| `eth402_signer_balance_updated_timestamp_seconds` | when it was last read successfully |
+| `eth402_signer_balance_read_errors_total` | failed reads |
+
+Alert on **all three**. Depletion alone is not enough: a failing read leaves the
+last figure in place, which looks healthy while the depletion and drain alerts are
+both blind — so staleness is alerted separately. Example rules are in
+`deploy/alerts.yml`; the thresholds there are illustrative and should come from
+your own figures.
+
+Burn rate is deliberately not computed in-process. Prometheus derives it from the
+gauge with `deriv()`, correctly across restarts, which is exactly when a
+compromise would be noticed.
+
+The balance is only published after a successful read: an unset gauge is absent
+rather than zero, because zero is indistinguishable from a drained account.
+
+Top up from a source ETH402 cannot spend from, and keep the working balance small —
+that is what caps instant-drain loss.
+
 ## Settlement gas exposure
 
 `ETH402_MERCHANT_SETTLEMENT_QUOTA` bounds how many settlement intents one
@@ -184,9 +214,6 @@ Replacements and gap fillers reuse existing rows and do not count.
 
 Still outstanding:
 
-- **A signer balance and burn-rate alert.** The bounded hot balance is the
-  operative signer-compromise control, so alert on both the absolute balance and
-  the rate of change; without that the bound is a convention.
 
 ## Run one application instance
 

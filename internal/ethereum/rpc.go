@@ -352,6 +352,27 @@ func (c *Client) BlockByNumber(ctx context.Context, number *uint64) (*Block, err
 	return &Block{Hash: strings.ToLower(raw.Hash), Number: blockNumber, BaseFee: baseFee}, nil
 }
 
+// Balance returns an address's ether balance in wei at the latest block.
+//
+// A big.Int rather than uint64: a funded account can exceed 2^64 wei, and
+// silently truncating the number that bounds the operator's loss exposure would
+// be the worst possible place to do it.
+func (c *Client) Balance(ctx context.Context, address string) (*big.Int, error) {
+	result, err := c.readRaw(ctx, "eth_getBalance", []any{address, "latest"})
+	if err != nil {
+		return nil, err
+	}
+	var value string
+	if err := json.Unmarshal(result, &value); err != nil || value == "" {
+		return nil, errors.New("balance result is empty")
+	}
+	wei, ok := new(big.Int).SetString(strings.TrimPrefix(value, "0x"), 16)
+	if !ok {
+		return nil, fmt.Errorf("balance %q is not hexadecimal", value)
+	}
+	return wei, nil
+}
+
 // ErrSimulationReverted means the EVM executed the call and reverted, so
 // broadcasting the same transaction would burn gas to reach the same outcome.
 var ErrSimulationReverted = errors.New("transaction simulation reverted")

@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,8 +24,14 @@ type Registry struct {
 	verifyFailures atomic.Uint64
 	settlements    atomic.Uint64
 	settleFailures atomic.Uint64
-	mu             sync.Mutex
-	status         map[string]uint64
+	// Signer balance is stored as a string so an arbitrarily large wei value
+	// survives; it is converted only at exposition, where Prometheus requires a
+	// float anyway.
+	signerBalanceWei atomic.Value
+	signerBalanceAt  atomic.Int64
+	signerBalanceErr atomic.Uint64
+	mu               sync.Mutex
+	status           map[string]uint64
 }
 
 func New() *Registry { return &Registry{status: make(map[string]uint64)} }
@@ -49,6 +56,22 @@ func (r *Registry) IncVerification()              { r.verifications.Add(1) }
 func (r *Registry) IncVerificationFailure()       { r.verifyFailures.Add(1) }
 func (r *Registry) IncSettlement()                { r.settlements.Add(1) }
 func (r *Registry) IncSettlementFailure()         { r.settleFailures.Add(1) }
+
+// SetSignerBalance records the settlement signer's ether balance and when it was
+// read. The timestamp matters as much as the value: if a balance read starts
+// failing, the last figure would otherwise sit there looking healthy, so alerts
+// need to detect staleness as well as depletion.
+func (r *Registry) SetSignerBalance(wei *big.Int, at time.Time) {
+	if wei == nil {
+		return
+	}
+	r.signerBalanceWei.Store(wei.String())
+	r.signerBalanceAt.Store(at.Unix())
+}
+
+// IncSignerBalanceError counts failed balance reads, so a persistently
+// unreadable balance is visible rather than merely stale.
+func (r *Registry) IncSignerBalanceError() { r.signerBalanceErr.Add(1) }
 
 func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -82,4 +105,35 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, "# TYPE eth402_confirmation_lag_blocks gauge\neth402_confirmation_lag_blocks 0\n# TYPE eth402_worker_healthy gauge\neth402_worker_healthy 0\n")
 	_, _ = io.WriteString(w, "# TYPE eth402_settlement_latency_seconds histogram\neth402_settlement_latency_seconds_bucket{le=\"+Inf\"} 0\neth402_settlement_latency_seconds_sum 0\neth402_settlement_latency_seconds_count 0\n")
 	_, _ = io.WriteString(w, "# TYPE eth402_rpc_requests_total counter\neth402_rpc_requests_total 0\n")
+	r.writeSignerBalance(w)
+}
+
+// writeSignerBalance exposes the bound on how much a compromised process can
+// spend. ADR-0004 decision 8 makes the hot balance the operative
+// signer-compromise control, because Cloud KMS cannot inspect calldata and the
+// allowlist therefore lives inside this process — so the balance is only a
+// control if somebody is watching it.
+//
+// Burn rate is deliberately not computed here. Prometheus derives it from this
+// gauge with deriv() or rate(), correctly across restarts, which an in-process
+// counter could not.
+func (r *Registry) writeSignerBalance(w io.Writer) {
+	stored, _ := r.signerBalanceWei.Load().(string)
+	if stored == "" {
+		// No signer configured, or no successful read yet. Emitting nothing is
+		// better than emitting zero, which is indistinguishable from a drained
+		// account.
+		return
+	}
+	wei, ok := new(big.Float).SetString(stored)
+	if !ok {
+		return
+	}
+	balance, _ := wei.Float64()
+	_, _ = fmt.Fprintf(w, "# HELP eth402_signer_balance_wei Settlement signer balance in wei; float precision, adequate for thresholds.\n"+
+		"# TYPE eth402_signer_balance_wei gauge\neth402_signer_balance_wei %g\n", balance)
+	_, _ = fmt.Fprintf(w, "# HELP eth402_signer_balance_updated_timestamp_seconds When the balance was last read successfully.\n"+
+		"# TYPE eth402_signer_balance_updated_timestamp_seconds gauge\neth402_signer_balance_updated_timestamp_seconds %d\n", r.signerBalanceAt.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_signer_balance_read_errors_total Failed signer balance reads.\n"+
+		"# TYPE eth402_signer_balance_read_errors_total counter\neth402_signer_balance_read_errors_total %d\n", r.signerBalanceErr.Load())
 }

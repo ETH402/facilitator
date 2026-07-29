@@ -128,6 +128,17 @@ versioned where noted.
   is transient and leaves the intent for the next tick, so a rate-limited RPC
   never abandons a payment that could have settled.
 
+### Added
+
+- Settlement signer balance monitoring: `eth402_signer_balance_wei`,
+  `eth402_signer_balance_updated_timestamp_seconds`, and
+  `eth402_signer_balance_read_errors_total`, with example alert rules in
+  `deploy/alerts.yml`. ADR-0004 decision 8 makes the bounded hot balance the
+  operative signer-compromise control, and a bound nobody observes is a convention
+  rather than a control. Freshness is published alongside the value because a
+  failing read leaves the last figure looking healthy; burn rate is left to
+  Prometheus, which derives it correctly across restarts.
+
 ### Changed
 
 - A nonce-gap filler the chain accepts is escalated to `manual_review` once
