@@ -37,13 +37,18 @@ type Dependencies struct {
 	Metrics             *metrics.Registry
 	ExpectedChainID     uint64
 	PublicRatePerMinute int
-	RegistrationRate    int
-	Merchant            *merchant.Service
-	AllowedOrigin       string
-	OperatorToken       string
-	Verification        *verification.Service
-	Settlement          *settlement.Service
-	MetricsEnabled      bool
+	// FairUse accounts authenticated requests per merchant. Nil disables the
+	// control, which is what tests and verification-only deployments want.
+	FairUse                   FairUseAccountant
+	MerchantRequestsPerWindow int64
+	FairUseWindow             time.Duration
+	RegistrationRate          int
+	Merchant                  *merchant.Service
+	AllowedOrigin             string
+	OperatorToken             string
+	Verification              *verification.Service
+	Settlement                *settlement.Service
+	MetricsEnabled            bool
 	// TrustedProxies lists reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is used.
 	TrustedProxies []netip.Prefix

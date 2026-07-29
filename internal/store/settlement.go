@@ -179,6 +179,30 @@ WHERE merchant_id = $1 AND settlement_requested_at > $2`,
 		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
 			settlement.ReasonMerchantQuotaExceeded, settlement.ErrMerchantQuotaExceeded)
 	}
+	// The facilitator-wide ceiling. The merchant row lock above serialises one
+	// merchant's requests but says nothing about two merchants settling at once, so
+	// without a lock covering every merchant, concurrent requests would each count
+	// the same pre-limit snapshot and collectively exceed the total — exactly the
+	// bug the merchant lock was added to fix, one level up.
+	//
+	// This serialises settlement admission across all merchants, which costs
+	// nothing real: every settlement must allocate a nonce from the same
+	// signer_accounts row a few lines below, so admission was already one at a
+	// time. Lock order is payment → merchant row → global → signer row, the same
+	// in every transaction, so the added lock introduces no deadlock cycle.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, globalSettlementLockKey); err != nil {
+		return settlement.Intent{}, fmt.Errorf("take global settlement lock: %w", err)
+	}
+	var settledOverall int
+	if err := tx.QueryRow(ctx, `
+SELECT count(*) FROM payment_records
+WHERE settlement_requested_at > $1`, request.Now.Add(-request.QuotaWindow)).Scan(&settledOverall); err != nil {
+		return settlement.Intent{}, fmt.Errorf("count facilitator settlements: %w", err)
+	}
+	if settledOverall >= request.GlobalQuota {
+		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
+			settlement.ReasonGlobalQuotaExceeded, settlement.ErrGlobalQuotaExceeded)
+	}
 	// The payment identity hash binds the signature, so a stored value can only
 	// ever equal the request's. A mismatch means the durable record was written
 	// by something outside this flow; fail loudly rather than sign over it.

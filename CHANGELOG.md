@@ -7,6 +7,29 @@ versioned where noted.
 
 ### Added
 
+- Fair-use enforcement (`docs/FAIR_USE.md`), all of it commercial policy kept out of
+  the protocol path:
+
+  - A **facilitator-wide settlement ceiling** (`ETH402_GLOBAL_SETTLEMENT_QUOTA`).
+    The per-merchant quota alone left total exposure at merchants × quota, so the
+    operator's worst-case gas spend was set by the size of the merchant list rather
+    than by a decision. Counted under an advisory lock spanning every merchant,
+    because the merchant row lock serialises one merchant and says nothing about two
+    settling at once — without it, two concurrent callers commit two intents against
+    a ceiling of one, which the new race test demonstrates.
+  - **Per-merchant fair use** on authenticated endpoints, keyed on the merchant
+    rather than the API key, since minting keys is self-service and would otherwise
+    multiply the allowance. Fails open, exempts key revocation, and reports
+    `X-RateLimit-*` plus `Retry-After`.
+  - Migration `000008` with a pruning worker, so counters do not become an
+    indefinite per-merchant activity log.
+
+  Deliberately **not** added: a per-merchant request limit on `/verify` and
+  `/settle`. Those are unauthenticated and the merchant comes from the
+  caller-supplied `payTo`, so such a limit would let anyone exhaust an innocent
+  merchant's allowance — a weapon rather than a control. Reasoning recorded in
+  `docs/FAIR_USE.md`.
+
 - An abuse test suite (`-tags=abuse`) covering bucket-map memory under 250,000
   distinct client addresses, flood behaviour in both directions, hostile JSON
   against `/verify` and `/settle`, and concurrent load across the public surface.

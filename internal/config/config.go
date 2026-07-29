@@ -89,11 +89,22 @@ type Config struct {
 	// MerchantQuotaWindow. Quota × MaxGasLimit × MaxFeePerGasWei is the
 	// operator's worst-case gas exposure per merchant per window.
 	MerchantSettlementQuota int
-	MerchantQuotaWindow     time.Duration
-	LogLevel                string
-	MetricsEnabled          bool
-	PublicRatePerMin        int
-	RegistrationRate        int
+	// GlobalSettlementQuota bounds settlement intents across *all* merchants per
+	// MerchantQuotaWindow. Without it the operator's total exposure is
+	// merchants × MerchantSettlementQuota, which grows with the merchant list
+	// rather than with anything the operator decided.
+	GlobalSettlementQuota int
+	MerchantQuotaWindow   time.Duration
+	LogLevel              string
+	MetricsEnabled        bool
+	PublicRatePerMin      int
+	RegistrationRate      int
+	// MerchantRequestsPerWindow bounds authenticated requests per merchant per
+	// FairUseWindow. Keyed on the merchant rather than the API key, since minting
+	// keys is self-service and would otherwise multiply the allowance. Zero
+	// disables the control.
+	MerchantRequestsPerWindow int64
+	FairUseWindow             time.Duration
 	// TrustedProxies lists the reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is always
 	// the client, which is correct only when the service is exposed directly.
@@ -149,11 +160,14 @@ func Load() (Config, error) {
 		SettlementRecoveryGrace:    l.duration("ETH402_SETTLEMENT_RECOVERY_GRACE", 2*time.Minute),
 		SettlementReplacementAfter: l.duration("ETH402_SETTLEMENT_REPLACEMENT_AFTER", 5*time.Minute),
 		MerchantSettlementQuota:    l.int("ETH402_MERCHANT_SETTLEMENT_QUOTA", 1000),
+		GlobalSettlementQuota:      l.int("ETH402_GLOBAL_SETTLEMENT_QUOTA", 10_000),
 		MerchantQuotaWindow:        l.duration("ETH402_MERCHANT_QUOTA_WINDOW", 24*time.Hour),
 		LogLevel:                   l.str("ETH402_LOG_LEVEL", "info"),
 		MetricsEnabled:             l.boolean("ETH402_METRICS_ENABLED", true),
 		PublicRatePerMin:           l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
 		RegistrationRate:           l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
+		MerchantRequestsPerWindow:  int64(l.int("ETH402_MERCHANT_REQUESTS_PER_WINDOW", 5_000)),
+		FairUseWindow:              l.duration("ETH402_FAIR_USE_WINDOW", time.Hour),
 		TrustedProxies:             l.prefixes("ETH402_TRUSTED_PROXIES"),
 	}
 	return cfg, errors.Join(cfg.Validate(), errors.Join(l.errs...))
@@ -195,6 +209,20 @@ func (c Config) Validate() error {
 	// positive number. Raising it is a deliberate exposure decision.
 	if c.MerchantSettlementQuota < 1 || c.MerchantQuotaWindow <= 0 {
 		errs = append(errs, errors.New("merchant settlement quota and window must be positive"))
+	}
+	// The same reasoning one level up: the total the facilitator can spend per
+	// window must be a number somebody chose, not merchants × per-merchant quota.
+	if c.MerchantRequestsPerWindow < 0 || c.FairUseWindow < 0 {
+		errs = append(errs, errors.New("merchant fair-use limit and window must not be negative"))
+	}
+	if c.MerchantRequestsPerWindow > 0 && c.FairUseWindow <= 0 {
+		errs = append(errs, errors.New("a merchant fair-use limit requires a positive window"))
+	}
+	if c.GlobalSettlementQuota < 1 {
+		errs = append(errs, errors.New("global settlement quota must be positive"))
+	}
+	if c.GlobalSettlementQuota > 0 && c.MerchantSettlementQuota > c.GlobalSettlementQuota {
+		errs = append(errs, errors.New("global settlement quota must not be below the per-merchant quota"))
 	}
 	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.RecipientCooldown < 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
 		errs = append(errs, errors.New("durations must be positive (stats cache may be zero)"))

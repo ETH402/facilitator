@@ -33,6 +33,7 @@ type Registry struct {
 	signerBalanceErr atomic.Uint64
 	rpcRequests      atomic.Uint64
 	rpcErrors        atomic.Uint64
+	fairUseRefusals  atomic.Uint64
 	// Worker heartbeats, keyed by worker name. A worker is healthy when it has
 	// ticked recently; absence is as meaningful as staleness, so a worker that
 	// never started is never reported healthy.
@@ -97,6 +98,11 @@ func (r *Registry) Heartbeat(worker string, at time.Time) {
 	r.heartbeats.Store(worker, at.Unix())
 }
 
+// IncFairUseRefusal counts requests refused by the per-merchant fair-use control.
+// Separate from the per-IP 429 count: the two have different causes and different
+// responses, and a single counter would hide which one is firing.
+func (r *Registry) IncFairUseRefusal() { r.fairUseRefusals.Add(1) }
+
 // WorkerHeartbeats returns the last tick time per worker, so the public status
 // page can derive settlement health from the same observations Prometheus scrapes
 // rather than from a second, separately-maintained notion of health.
@@ -134,6 +140,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		"verification_failures_total":        r.verifyFailures.Load(),
 		"settlement_requests_total":          r.settlements.Load(),
 		"settlement_failures_total":          r.settleFailures.Load(),
+		"fair_use_refusals_total":            r.fairUseRefusals.Load(),
 	} {
 		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s %d\n", name, name, value)
 	}

@@ -18,12 +18,15 @@ func (d Dependencies) merchantRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/merchants/verify-email", d.verifyEmail)
 	mux.HandleFunc("POST /v1/merchants/wallet-challenge", d.walletChallenge)
 	mux.HandleFunc("POST /v1/merchants/verify-wallet", d.verifyWallet)
-	mux.HandleFunc("GET /v1/me", d.withMerchant(d.me))
-	mux.HandleFunc("POST /v1/api-keys", d.withMerchant(d.createKey))
-	mux.HandleFunc("GET /v1/api-keys", d.withMerchant(d.listKeys))
+	mux.HandleFunc("GET /v1/me", d.withMerchant(d.fairUse(d.me)))
+	mux.HandleFunc("POST /v1/api-keys", d.withMerchant(d.fairUse(d.createKey)))
+	mux.HandleFunc("GET /v1/api-keys", d.withMerchant(d.fairUse(d.listKeys)))
+	// Revocation is deliberately not fair-use limited: it is the operation a
+	// merchant reaches for when a key has leaked, and refusing it because the same
+	// merchant has been noisy would keep a compromised credential alive.
 	mux.HandleFunc("DELETE /v1/api-keys/{id}", d.withMerchant(d.revokeKey))
-	mux.HandleFunc("POST /v1/me/recipient-change", d.withMerchant(d.recipientChallenge))
-	mux.HandleFunc("POST /v1/me/recipient-change/verify", d.withMerchant(d.recipientVerify))
+	mux.HandleFunc("POST /v1/me/recipient-change", d.withMerchant(d.fairUse(d.recipientChallenge)))
+	mux.HandleFunc("POST /v1/me/recipient-change/verify", d.withMerchant(d.fairUse(d.recipientVerify)))
 	mux.HandleFunc("POST /v1/admin/merchants/{id}/suspend", d.operator(d.suspend))
 	mux.HandleFunc("POST /v1/admin/merchants/{id}/reinstate", d.operator(d.reinstate))
 }

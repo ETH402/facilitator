@@ -146,7 +146,9 @@ Milestone 4 is complete.
       parsers; found and fixed a rate-limiter denial of service
 - [x] responsible disclosure readiness — `SECURITY.md` now states the real scope
       instead of claiming no payments are processed
-- [ ] fair-use enforcement
+- [x] fair-use enforcement — a facilitator-wide settlement ceiling so exposure is
+      not merchants × quota, plus per-merchant limits on authenticated endpoints;
+      deliberately not applied where the identity is caller-supplied
 - [ ] incident simulations
 - [ ] public documentation
 - [ ] limited mainnet dry runs — needs funded keys and an operator decision; the

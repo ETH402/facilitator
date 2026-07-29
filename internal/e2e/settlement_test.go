@@ -99,6 +99,20 @@ func (r rpc) call(method string, params ...any) json.RawMessage {
 		r.t.Fatalf("%s: %s", method, raw)
 	}
 	if decoded.Error != nil {
+		// A forked Anvil pins the block it started from, and public endpoints serve
+		// only a short window of historical state. Once the chain moves past that
+		// window the fork can no longer read the state it needs, and the upstream
+		// error names archive access rather than anything about this test — which
+		// reads like a permissions problem in the facilitator. Say what it is.
+		if strings.Contains(decoded.Error.Message, "Archive request") ||
+			strings.Contains(decoded.Error.Message, "archive") {
+			r.t.Fatalf("%s failed because the mainnet fork has aged out of its upstream's "+
+				"historical window; restart it and rerun:\n"+
+				"  docker rm -f eth402-fork && docker run -d --name eth402-fork -p 8546:8545 \\\n"+
+				"    --entrypoint anvil ghcr.io/foundry-rs/foundry:stable \\\n"+
+				"    --host 0.0.0.0 --fork-url https://ethereum-rpc.publicnode.com --chain-id 1\n"+
+				"upstream said: %s", method, decoded.Error.Message)
+		}
 		r.t.Fatalf("%s: %s", method, decoded.Error.Message)
 	}
 	return decoded.Result
@@ -253,7 +267,7 @@ func TestFacilitatorMovesRealUSDC(t *testing.T) {
 		Confirmations: 1, GasLimit: 250_000,
 		MaxFeePerGas: "500000000000", MaxPriorityFeeGas: "2000000000",
 		RecoveryGrace: 2 * time.Minute, ReplacementAfter: 5 * time.Minute,
-		MerchantQuota: 100, QuotaWindow: 24 * time.Hour,
+		MerchantQuota: 100, GlobalQuota: 10_000, QuotaWindow: 24 * time.Hour,
 	}, logger)
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: client,

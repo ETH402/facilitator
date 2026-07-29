@@ -251,7 +251,7 @@ func testConfig() Config {
 	return Config{
 		SignerAddress: "0x00000000000000000000000000000000000000b2",
 		ExpiryMargin:  time.Minute,
-		MerchantQuota: 100, QuotaWindow: 24 * time.Hour,
+		MerchantQuota: 100, GlobalQuota: 10_000, QuotaWindow: 24 * time.Hour,
 		SigningTimeout:    5 * time.Second,
 		LeaseDuration:     2 * time.Minute,
 		WorkerInterval:    time.Second,

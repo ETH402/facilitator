@@ -180,6 +180,7 @@ paths:
               schema: { $ref: "#/components/schemas/Merchant" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/api-keys:
     get:
       operationId: listAPIKeys
@@ -197,6 +198,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/APIKey" }
         "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
     post:
       operationId: createAPIKey
       security: [{ MerchantAPIKey: [] }]
@@ -222,6 +224,7 @@ paths:
                   key: { $ref: "#/components/schemas/APIKey" }
                   api_key: { type: string }
         "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/api-keys/{id}:
     delete:
       operationId: revokeAPIKey
@@ -256,6 +259,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/WalletChallenge" }
         "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/me/recipient-change/verify:
     post:
       operationId: verifyRecipientChange
@@ -560,6 +564,7 @@ components:
             - recipient_not_registered
             - authorization_expiring
             - merchant_quota_exceeded
+            - facilitator_quota_exceeded
             - simulation_reverted
             - broadcast_failed
             - settlement_unavailable

@@ -14,6 +14,7 @@ const (
 	ReasonRecipientNotMerchant  = "recipient_not_registered"
 	ReasonAuthorizationExpiring = "authorization_expiring"
 	ReasonMerchantQuotaExceeded = "merchant_quota_exceeded"
+	ReasonGlobalQuotaExceeded   = "facilitator_quota_exceeded"
 	ReasonSimulationReverted    = "simulation_reverted"
 )
 
@@ -48,6 +49,12 @@ var (
 	// window.
 	ErrMerchantQuotaExceeded = errors.New("merchant settlement quota exceeded for the current window")
 
+	// ErrGlobalQuotaExceeded means the facilitator as a whole has spent its
+	// allowance for the window. Unlike the per-merchant case this is not the
+	// caller's fault, so it is reported separately: a merchant that sees it should
+	// retry later rather than conclude it did something wrong.
+	ErrGlobalQuotaExceeded = errors.New("facilitator settlement quota exceeded for the current window")
+
 	// ErrPaymentUnsettleable means simulation proved the transfer cannot succeed,
 	// so the intent was retired without broadcasting. The usual cause is the
 	// authorization nonce having been consumed elsewhere between /verify and
@@ -71,6 +78,14 @@ type IntentRequest struct {
 	// policy stays owned by the caller and testable.
 	Quota       int
 	QuotaWindow time.Duration
+	// GlobalQuota bounds how many settlement intents *all* merchants together may
+	// commit inside QuotaWindow.
+	//
+	// The per-merchant quota alone leaves total exposure at merchants × Quota, so
+	// it grows with the merchant list rather than with anything the operator
+	// decided. Gas is the facilitator's own money and the one cost it cannot pass
+	// on, so the total needs its own ceiling.
+	GlobalQuota int
 	Now         time.Time
 }
 
@@ -117,6 +132,15 @@ func (r IntentRequest) Validate() error {
 	}
 	if r.QuotaWindow <= 0 {
 		errs = append(errs, errors.New("merchant settlement quota window must be positive"))
+	}
+	if r.GlobalQuota <= 0 {
+		errs = append(errs, errors.New("global settlement quota must be positive"))
+	}
+	if r.GlobalQuota > 0 && r.Quota > 0 && r.GlobalQuota < r.Quota {
+		// A global ceiling below the per-merchant one makes the per-merchant number
+		// a lie: no merchant could ever reach it. Refuse rather than silently
+		// letting the smaller bound win.
+		errs = append(errs, errors.New("global settlement quota must not be below the per-merchant quota"))
 	}
 	if r.Now.IsZero() {
 		errs = append(errs, errors.New("current time is required"))

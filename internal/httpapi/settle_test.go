@@ -163,7 +163,7 @@ func settleTestService(txHash string) *settlement.Service {
 	return settlement.NewService(settleFakeStore{work: work}, settleFakeSigner{}, settleFakeChain{txHash: txHash}, settlement.Config{
 		SignerAddress: "0x00000000000000000000000000000000000000b2",
 		ExpiryMargin:  time.Minute, SigningTimeout: 5 * time.Second,
-		MerchantQuota: 100, QuotaWindow: 24 * time.Hour,
+		MerchantQuota: 100, GlobalQuota: 10_000, QuotaWindow: 24 * time.Hour,
 		LeaseDuration: 2 * time.Minute, WorkerInterval: time.Second, Confirmations: 12,
 		GasLimit: 120000, MaxFeePerGas: "30000000000", MaxPriorityFeeGas: "2000000000",
 	}, nil)

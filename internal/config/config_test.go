@@ -18,7 +18,7 @@ func validConfig() Config {
 		SettlementExpiryMargin: 1, SigningTimeout: 1, SettlementLeaseDuration: 1,
 		SettlementRecoveryGrace: 1, SettlementReplacementAfter: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
-		MerchantSettlementQuota: 10, MerchantQuotaWindow: time.Hour,
+		MerchantSettlementQuota: 10, GlobalSettlementQuota: 100, MerchantQuotaWindow: time.Hour,
 		TermsVersion: "test", APIKeyPepper: "01234567890123456789012345678901",
 	}
 }

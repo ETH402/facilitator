@@ -111,7 +111,7 @@ func intentRequest(identity string) settlement.IntentRequest {
 		PaymentIdentity: identity, SignerAddress: intentSigner,
 		PayerSignature: "0x" + repeat("1", 64) + repeat("2", 64) + "1b",
 		ExpiryMargin:   time.Minute, Now: time.Now(),
-		Quota: 100, QuotaWindow: 24 * time.Hour,
+		Quota: 100, GlobalQuota: 10_000, QuotaWindow: 24 * time.Hour,
 	}
 }
 
@@ -607,4 +607,227 @@ func nextNonce(t *testing.T, store *Store) string {
 		t.Fatal(err)
 	}
 	return next
+}
+
+// seedPaymentForMerchant inserts a verified payment attributed to a merchant with
+// its own recipient address, so two of them are genuinely two merchants. The
+// shared seedPayment helper reuses one recipient, which the merchants table treats
+// as one merchant — fine for per-merchant tests, useless for a facilitator-wide one.
+func seedPaymentForMerchant(t *testing.T, store *Store, identity, recipient string) string {
+	t.Helper()
+	ctx := context.Background()
+	var merchantID string
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO merchants
+		(name,business_email,email_domain,recipient_address,terms_version,terms_accepted_at,status,email_verified_at,wallet_verified_at)
+		VALUES ('Global',$1,'example.com',$2,'v1',now(),'active',now(),now())
+		RETURNING id`, identity+"@example.com", recipient).Scan(&merchantID); err != nil {
+		t.Fatal(err)
+	}
+	var paymentID string
+	err := store.Pool.QueryRow(ctx, `INSERT INTO payment_records
+		(payment_identity,merchant_id,x402_version,scheme,network,asset,payer_address,recipient_address,
+		 amount_atomic,authorization_nonce,valid_after,valid_before,payload_hash,verification_status,state)
+		VALUES ($1,$2,2,'exact','eip155:1','0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+		        '0x3333333333333333333333333333333333333333',$3,
+		        42,$4,now()-interval '1 minute',now()+interval '1 hour',$5,'verified','verified')
+		RETURNING id`,
+		identity, merchantID, recipient, nextFixtureNonce(), repeat("f", 64)).Scan(&paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paymentID
+}
+
+// TestGlobalQuotaHoldsAcrossMerchantsConcurrently is the test the per-merchant
+// quota cannot cover.
+//
+// The merchant row lock serialises one merchant's requests. It says nothing about
+// two *different* merchants settling at the same moment, so without a lock spanning
+// every merchant both would count the same pre-limit snapshot and both commit —
+// collectively exceeding the facilitator's own ceiling. That ceiling bounds gas,
+// which is the operator's money, so an approximate answer is not good enough.
+//
+// Both callers are parked on the global lock before it is released, which is what
+// makes this a real race rather than two calls that happened to be sequential.
+func TestGlobalQuotaHoldsAcrossMerchantsConcurrently(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+
+	first := seedPaymentForMerchant(t, store, "global-a", "0x4444444444444444444444444444444444444444")
+	second := seedPaymentForMerchant(t, store, "global-b", "0x5555555555555555555555555555555555555555")
+	identities := map[string]string{"global-a": first, "global-b": second}
+
+	// Hold the facilitator-wide lock so both callers reach it and wait.
+	blocker, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(ctx) }()
+	if _, err := blocker.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, globalSettlementLockKey); err != nil {
+		t.Fatal(err)
+	}
+
+	type outcome struct{ err error }
+	results := make(chan outcome, len(identities))
+	var wait sync.WaitGroup
+	for identity := range identities {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			request := intentRequest(identity)
+			// Both bounds are one, which isolates the global one anyway: each
+			// merchant has settled nothing, so each passes its own quota, and only
+			// the facilitator-wide count can refuse the second. Setting the
+			// per-merchant quota higher than the global one is refused by
+			// IntentRequest.Validate, because in production that combination makes
+			// the per-merchant number unreachable and therefore a lie.
+			request.Quota, request.GlobalQuota = 1, 1
+			_, err := store.CreateSettlementIntent(ctx, request)
+			results <- outcome{err: err}
+		}()
+	}
+
+	// Wait until both are blocked on the advisory lock rather than sleeping, which
+	// would pass whenever one goroutine simply ran first.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := store.Pool.QueryRow(ctx, `
+SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database()
+  AND wait_event_type = 'Lock'
+  AND query LIKE '%pg_advisory_xact_lock%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= len(identities) {
+			break
+		}
+		if time.Now().After(deadline) {
+			// Deliberately not a failure. This poll forces the interleaving for the
+			// current implementation; if the global lock is ever replaced by another
+			// mechanism, the invariant below still needs checking and a harness
+			// precondition failing here would report the wrong thing.
+			// TestGlobalQuotaHoldsUnderRepeatedRaces checks the same invariant
+			// without depending on any lock existing.
+			t.Logf("callers did not park on a facilitator-wide lock (%d of %d); "+
+				"checking the invariant anyway", waiting, len(identities))
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wait.Wait()
+	close(results)
+
+	accepted, rejected := 0, 0
+	for result := range results {
+		switch {
+		case result.err == nil:
+			accepted++
+		case errors.Is(result.err, settlement.ErrGlobalQuotaExceeded):
+			rejected++
+		default:
+			t.Fatalf("concurrent settlement returned unexpected error: %v", result.err)
+		}
+	}
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("accepted=%d rejected=%d, want one of each; the facilitator-wide ceiling was exceeded", accepted, rejected)
+	}
+	var committed int
+	if err := store.Pool.QueryRow(ctx, `
+SELECT count(*) FROM payment_records WHERE settlement_requested_at IS NOT NULL`).Scan(&committed); err != nil {
+		t.Fatal(err)
+	}
+	if committed != 1 {
+		t.Fatalf("committed intents = %d, want 1", committed)
+	}
+	// A rejection must not consume a nonce, or the ceiling would create nonce gaps.
+	if next := nextNonce(t, store); next != "1" {
+		t.Fatalf("next_nonce = %s, want 1; a global-quota rejection consumed a nonce", next)
+	}
+}
+
+// TestGlobalQuotaRejectsBeforePerMerchantQuotaIsReached confirms the two bounds are
+// independent: a merchant that has settled nothing, and so is inside its own
+// allowance, is still refused once the facilitator has spent its total.
+func TestGlobalQuotaRejectsBeforePerMerchantQuotaIsReached(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	first := seedPaymentForMerchant(t, store, "cap-a", "0x6666666666666666666666666666666666666666")
+	_ = first
+	second := seedPaymentForMerchant(t, store, "cap-b", "0x7777777777777777777777777777777777777777")
+	_ = second
+
+	request := intentRequest("cap-a")
+	request.Quota, request.GlobalQuota = 1, 1
+	if _, err := store.CreateSettlementIntent(ctx, request); err != nil {
+		t.Fatalf("first settlement within both bounds failed: %v", err)
+	}
+	next := intentRequest("cap-b")
+	next.Quota, next.GlobalQuota = 1, 1
+	_, err := store.CreateSettlementIntent(ctx, next)
+	if !errors.Is(err, settlement.ErrGlobalQuotaExceeded) {
+		t.Fatalf("second settlement returned %v, want ErrGlobalQuotaExceeded", err)
+	}
+	// Reported as the facilitator's limit, not the merchant's: the merchant did
+	// nothing wrong and should retry later rather than investigate itself.
+	if errors.Is(err, settlement.ErrMerchantQuotaExceeded) {
+		t.Error("a facilitator-wide refusal must not be reported as the merchant's quota")
+	}
+}
+
+// TestGlobalQuotaHoldsUnderRepeatedRaces checks the facilitator-wide ceiling without
+// referring to how it is enforced.
+//
+// Each round releases two merchants' settlements simultaneously from a barrier and
+// raises the ceiling by exactly one, so the committed total must equal the round
+// number. If concurrent callers can both pass the same snapshot, the total runs
+// ahead and the round that does it fails — and unlike the lock-parking test above,
+// this keeps working if the mechanism changes.
+func TestGlobalQuotaHoldsUnderRepeatedRaces(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	const rounds = 25
+
+	for round := 1; round <= rounds; round++ {
+		left := fmt.Sprintf("race-%d-a", round)
+		right := fmt.Sprintf("race-%d-b", round)
+		seedPaymentForMerchant(t, store, left, fmt.Sprintf("0x%040x", round*2+0x100))
+		seedPaymentForMerchant(t, store, right, fmt.Sprintf("0x%040x", round*2+0x101))
+
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		errs := make(chan error, 2)
+		for _, identity := range []string{left, right} {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				request := intentRequest(identity)
+				request.Quota, request.GlobalQuota = round, round
+				<-start
+				_, err := store.CreateSettlementIntent(ctx, request)
+				errs <- err
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil && !errors.Is(err, settlement.ErrGlobalQuotaExceeded) &&
+				!errors.Is(err, settlement.ErrMerchantQuotaExceeded) {
+				t.Fatalf("round %d: unexpected error: %v", round, err)
+			}
+		}
+		var committed int
+		if err := store.Pool.QueryRow(ctx, `
+SELECT count(*) FROM payment_records WHERE settlement_requested_at IS NOT NULL`).Scan(&committed); err != nil {
+			t.Fatal(err)
+		}
+		if committed > round {
+			t.Fatalf("round %d: %d intents committed against a ceiling of %d; "+
+				"concurrent callers exceeded the facilitator-wide quota", round, committed, round)
+		}
+	}
 }

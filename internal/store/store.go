@@ -77,6 +77,12 @@ SELECT
 	return a, nil
 }
 
+// globalSettlementLockKey serialises the facilitator-wide settlement ceiling. It
+// is a fixed key rather than a derived one because it must be the same value for
+// every merchant — that is the entire point. Chosen to be nowhere near the range
+// authorizationLockKey produces, which is a full 63-bit hash.
+const globalSettlementLockKey int64 = 0x455448343032_01
+
 // authorizationLockKey derives the advisory-lock key that serialises writers for
 // one buyer authorization. Collisions only cost extra serialisation, never
 // correctness.

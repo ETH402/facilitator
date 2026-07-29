@@ -18,6 +18,7 @@ const (
 	WireReasonRecipientNotMerchant  = ReasonRecipientNotMerchant
 	WireReasonAuthorizationExpiring = ReasonAuthorizationExpiring
 	WireReasonMerchantQuotaExceeded = ReasonMerchantQuotaExceeded
+	WireReasonGlobalQuotaExceeded   = ReasonGlobalQuotaExceeded
 	WireReasonSimulationReverted    = ReasonSimulationReverted
 
 	// WireReasonSettlementUnavailable means the facilitator could not complete

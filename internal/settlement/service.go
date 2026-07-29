@@ -78,6 +78,7 @@ type Config struct {
 	SignerAddress     string
 	ExpiryMargin      time.Duration
 	MerchantQuota     int
+	GlobalQuota       int
 	QuotaWindow       time.Duration
 	SigningTimeout    time.Duration
 	LeaseDuration     time.Duration
@@ -132,6 +133,7 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 		PayerSignature:  payment.Signature,
 		ExpiryMargin:    s.cfg.ExpiryMargin,
 		Quota:           s.cfg.MerchantQuota,
+		GlobalQuota:     s.cfg.GlobalQuota,
 		QuotaWindow:     s.cfg.QuotaWindow,
 		Now:             s.now(),
 	})

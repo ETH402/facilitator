@@ -6,7 +6,7 @@ provide honest chain data; external signer policy works. Residual risk remains.
 
 | Threat | Asset / attacker / path | Impact | Preventive control | Detective control | Residual risk |
 |---|---|---|---|---|---|
-| Gas draining | facilitator ETH; malicious buyer floods valid/reverting authorizations | ETH loss | verification simulates, settlement re-simulates the exact calldata before signing, per-merchant quotas, fee caps, bounded hot balance, calldata allowlist | gas/revert alerts | a nonce consumed between simulation and mining still reverts; an unbroadcast nonce gap costs one revert if a later nonce is blocked |
+| Gas draining | facilitator ETH; malicious buyer floods valid/reverting authorizations | ETH loss | verification simulates, settlement re-simulates the exact calldata before signing, per-merchant quotas, a facilitator-wide settlement ceiling so total exposure is not merchants × quota, fee caps, bounded hot balance, calldata allowlist | gas/revert alerts | a nonce consumed between simulation and mining still reverts; an unbroadcast nonce gap costs one revert if a later nonce is blocked |
 | Settlement replay | buyer nonce; merchant/observer resubmits | duplicate work/gas | EIP-3009 state, durable unique nonce and identity | duplicate metrics/audit | conflicting facilitators race |
 | Duplicate broadcast | signer nonce; retries/concurrency | gas/replacement confusion | DB intent/locks, signed hash, no blind retry, exact gap-filler bytes persisted before send | nonce reconciliation | RPC ambiguity |
 | Malicious merchant | buyers; deceptive recipient/resource | buyer loss/reputation | email/wallet proof, suspension, clear requirements | complaints/audit | verification is not legitimacy |

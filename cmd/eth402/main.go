@@ -197,7 +197,7 @@ func main() {
 		logger.Info("settlement signer enabled", "address", signerAddress, "next_nonce", seeded)
 		settlementService = settlement.NewService(database, transactionSigner, rpc, settlement.Config{
 			SignerAddress: signerAddress, ExpiryMargin: cfg.SettlementExpiryMargin,
-			MerchantQuota: cfg.MerchantSettlementQuota, QuotaWindow: cfg.MerchantQuotaWindow,
+			MerchantQuota: cfg.MerchantSettlementQuota, GlobalQuota: cfg.GlobalSettlementQuota, QuotaWindow: cfg.MerchantQuotaWindow,
 			SigningTimeout: cfg.SigningTimeout, LeaseDuration: cfg.SettlementLeaseDuration,
 			WorkerInterval: cfg.WorkerInterval, Confirmations: cfg.Confirmations,
 			GasLimit: cfg.MaxGasLimit, MaxFeePerGas: cfg.MaxFeePerGasWei,
@@ -223,9 +223,22 @@ func main() {
 		// 8), so publish it for alerting; a bound nobody watches is a convention.
 		start(settlementService.BalanceWorker(rpc, registry).Run)
 	}
+	// Fair-use pruning runs whether or not settlement is enabled: the counters are
+	// written by authenticated merchant endpoints, which exist either way. Retained
+	// rows would turn a rate counter into an indefinite per-merchant activity log,
+	// which docs/PRIVACY.md would then have to account for.
+	if cfg.MerchantRequestsPerWindow > 0 && cfg.FairUseWindow > 0 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			pruneFairUse(root, database, cfg.FairUseWindow, logger)
+		}()
+	}
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,
 		Metrics: registry, ExpectedChainID: cfg.ChainID, PublicRatePerMinute: cfg.PublicRatePerMin,
+		FairUse: database, MerchantRequestsPerWindow: cfg.MerchantRequestsPerWindow,
+		FairUseWindow:    cfg.FairUseWindow,
 		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
 		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
 		Verification: verificationService, Settlement: settlementService, MetricsEnabled: cfg.MetricsEnabled,
@@ -265,4 +278,34 @@ func main() {
 			"timeout", workerDrainTimeout)
 	}
 	logger.Info("ETH402 stopped")
+}
+
+// pruneFairUse deletes elapsed fair-use windows on a slow cadence. It is not
+// latency-sensitive and the rows are tiny, so it runs no more often than the window
+// itself; the delete is bounded by an index on window_start.
+//
+// Unlike the settlement workers this needs no shutdown protection: a prune
+// interrupted halfway just leaves rows for the next tick, whereas an interrupted
+// broadcast strands a payment.
+func pruneFairUse(ctx context.Context, database *store.Store, window time.Duration, logger *slog.Logger) {
+	interval := max(window, time.Hour)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			removed, err := store.PruneMerchantUsage(ctx, database.Pool, window, time.Now())
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					logger.WarnContext(ctx, "fair-use pruning failed", "error", err)
+				}
+				continue
+			}
+			if removed > 0 {
+				logger.InfoContext(ctx, "pruned elapsed fair-use windows", "rows", removed)
+			}
+		}
+	}
 }
