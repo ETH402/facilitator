@@ -244,6 +244,7 @@ func (s *Service) resolveAmbiguous(ctx context.Context, work Work, actor string)
 // deterministic signer can satisfy — with Cloud KMS that comparison refuses,
 // which is the safe outcome for a record that cannot be verified.
 func (s *Service) signIdentical(ctx context.Context, work Work) (raw []byte, rawHash string, err error) {
+	wire := work.Authorization.Wire()
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
 		return nil, "", fmt.Errorf("build calldata: %w", err)
@@ -258,6 +259,7 @@ func (s *Service) signIdentical(ctx context.Context, work Work) (raw []byte, raw
 		GasLimit:             work.GasLimit,
 		MaxFeePerGas:         work.MaxFeePerGas,
 		MaxPriorityFeePerGas: work.MaxPriorityFeePerGas,
+		Authorization:        &wire,
 	})
 	cancel()
 	if err != nil {
@@ -317,6 +319,7 @@ func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) err
 			"tx_hash", work.TxHash)
 		return nil
 	}
+	wire := work.Authorization.Wire()
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
 		return fmt.Errorf("build calldata: %w", err)
@@ -331,6 +334,7 @@ func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) err
 		GasLimit:             work.GasLimit,
 		MaxFeePerGas:         maxFee.String(),
 		MaxPriorityFeePerGas: priority.String(),
+		Authorization:        &wire,
 	})
 	cancel()
 	if err != nil {
@@ -421,6 +425,7 @@ func (w *RecoveryWorker) fillNonceGaps(ctx context.Context) {
 }
 
 func (s *Service) fillNonceGap(ctx context.Context, work Work) error {
+	wire := work.Authorization.Wire()
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
 		return fmt.Errorf("build calldata: %w", err)
@@ -439,6 +444,7 @@ func (s *Service) fillNonceGap(ctx context.Context, work Work) error {
 		GasLimit:             s.cfg.GasLimit,
 		MaxFeePerGas:         maxFee.String(),
 		MaxPriorityFeePerGas: priority.String(),
+		Authorization:        &wire,
 	})
 	cancel()
 	if err != nil {

@@ -79,13 +79,55 @@ intent. `--max-instances` above 1 is therefore fine. See
 |---|---|---|
 | Application | Cloud Run or GCE | see the CPU caveat above |
 | Database | Cloud SQL for PostgreSQL | private IP; separate owner, migration, and runtime roles |
-| Signer | Cloud KMS, `EC_SIGN_SECP256K1_SHA256` | `ETH402_SIGNER_MODE=external`, `ETH402_KMS_KEY_NAME` naming a key *version* |
+| Signer | Cloud KMS, `EC_SIGN_SECP256K1_SHA256` | `ETH402_SIGNER_MODE=policy` via the boundary below, or `external` to reach KMS directly |
+| Signing boundary | Cloud Run or GCE, own service identity | `cmd/policysigner`; the only identity granted the KMS key |
 | Secrets | Secret Manager | `ETH402_API_KEY_PEPPER`, `ETH402_OPERATOR_TOKEN`, database credentials |
 | Metrics | Managed Prometheus | scrape `/metrics` on the internal port; rules from `deploy/alerts.yml` |
 | TLS | Cloud Load Balancing, or Caddy | if terminating at the balancer, add its egress range to `ETH402_TRUSTED_PROXIES` |
 
 Grant the runtime identity only `roles/cloudkms.signerVerifier` on the one key
 version, and nothing on the key ring. It never needs to create or destroy keys.
+
+### The signing boundary
+
+`ETH402_SIGNER_MODE=policy` routes signing through `cmd/policysigner`, which
+receives authorization fields rather than a transaction or a digest and therefore
+*builds* what it signs. A compromised facilitator cannot express an ether transfer
+or a call to another contract, because there is no field for either. See
+[ADR-0004](decisions/0004-settlement-execution-model.md) decision 8.
+
+Two deployment facts carry the entire benefit:
+
+1. **The boundary gets its own service identity**, and it is the *only* identity
+   with `roles/cloudkms.signerVerifier` on the key version. Leaving that grant on
+   the facilitator lets it bypass the boundary, which makes the whole arrangement
+   decorative. This is the one thing to verify after deploying.
+2. **The ceilings are configured on the boundary**, not sent by the facilitator, so
+   set them at or above the facilitator's `ETH402_MAX_*` values — lower, and
+   legitimate settlements pass the facilitator's checks only to be refused at the
+   boundary.
+
+```sh
+docker build --target policysigner -t policysigner .
+gcloud run deploy policysigner \
+  --service-account=policysigner@PROJECT.iam.gserviceaccount.com \
+  --ingress=internal --no-allow-unauthenticated --port=8081
+```
+
+`--ingress=internal` matters: the boundary's bearer token is its only
+authentication, so it should not be reachable from the internet. The facilitator
+needs `ETH402_POLICY_SIGNER_URL` (HTTPS, enforced in production) and
+`ETH402_POLICY_SIGNER_TOKEN`; both processes read the same token from Secret
+Manager. Configuration reference: `deploy/policysigner.env.example`.
+
+The boundary needs no database, no migrations, and no merchant data. It does not
+need `--no-cpu-throttling`, because unlike the facilitator it is purely
+request-driven — but it does need `--min-instances=1` if a cold start would exceed
+`ETH402_SIGNING_TIMEOUT`, since a signing timeout leaves a committed intent
+unbroadcast for a tick.
+
+A wrong token or an unreachable boundary fails at facilitator **startup**, not on
+the first payment: the client resolves the signing identity during construction.
 
 ### Migrations run before rollout
 

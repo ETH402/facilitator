@@ -7,6 +7,28 @@ versioned where noted.
 
 ### Added
 
+- The KMS-fronted policy signer, closing the Milestone 4 item ADR-0004 decision 8
+  deferred. `ETH402_SIGNER_MODE=policy` signs through `cmd/policysigner`, a
+  separate workload holding the only grant on the KMS key, so the calldata
+  allowlist survives a compromise of the facilitator.
+
+  What crosses the boundary is the design: **authorization fields, never calldata
+  and never a digest.** The boundary builds the transaction itself — chain 1,
+  canonical USDC, zero ether value, `transferWithAuthorization` — so a caller
+  cannot express an ether transfer, another contract, or another function, because
+  there is no field for any of them. That makes the restriction structural rather
+  than a validation that must be kept complete. Spend ceilings are the boundary's
+  own configuration and unset ceilings mean sign nothing.
+
+  Distrust runs both ways: settlement records the returned transaction's hash as a
+  real payment's identity and re-signs against its sighash during recovery, so the
+  client checks every behaviour-determining field against what it asked for,
+  verifies the recovered sender, and derives the sighash itself rather than reading
+  it from the response.
+
+  The bounded hot balance is not superseded — a compromised facilitator can still
+  settle payments of its choosing, which the boundary does nothing about.
+
 - GCP deployment documentation, including the trap that Cloud Run's default CPU
   throttling and scale-to-zero stop the settlement workers entirely — committed
   intents are never broadcast — while `/verify` and `/settle` keep answering, so the

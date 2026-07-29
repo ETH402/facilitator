@@ -9,8 +9,11 @@ Production uses GCP Cloud KMS (`ETH402_SIGNER_MODE=external`) with an
 plus audit logging come with it. Policy enforcement for chain ID 1, canonical
 USDC destination, allowed calldata selector, zero ETH value, and gas limits
 lives inside ETH402 (`signer.Transaction.Validate`), because KMS signs digests
-and cannot inspect calldata; a KMS-fronted policy signer that moves the
-allowlist into the signing boundary is Milestone 4 hardening. Rate limits,
+and cannot inspect calldata. `ETH402_SIGNER_MODE=policy` additionally puts that
+enforcement behind the signing boundary (`cmd/policysigner`), which receives
+authorization fields rather than a transaction or a digest and therefore builds
+what it signs; grant the KMS key to the boundary's identity only, or the
+arrangement is decorative. Rate limits,
 audited access, separate staging and production keys, dual control for policy
 changes, and emergency disable remain operational requirements. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).

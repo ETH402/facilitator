@@ -37,6 +37,8 @@ type Config struct {
 	MaxPriorityFeeWei string
 	MaxGasLimit       uint64
 	SignerMode        string
+	PolicySignerURL   string
+	PolicySignerToken string
 	DevSignerKey      string
 	// KMSKeyName is the Cloud KMS key version resource (projects/…/locations/…/
 	// keyRings/…/cryptoKeys/…/cryptoKeyVersions/N) used by the external signer
@@ -109,6 +111,8 @@ func Load() (Config, error) {
 		MaxPriorityFeeWei:          l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
 		MaxGasLimit:                l.uint64("ETH402_MAX_GAS_LIMIT", 0),
 		SignerMode:                 l.str("ETH402_SIGNER_MODE", "disabled"),
+		PolicySignerURL:            l.str("ETH402_POLICY_SIGNER_URL", ""),
+		PolicySignerToken:          l.str("ETH402_POLICY_SIGNER_TOKEN", ""),
 		DevSignerKey:               os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
 		KMSKeyName:                 l.str("ETH402_KMS_KEY_NAME", ""),
 		AllowUnsafeSigner:          l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
@@ -225,8 +229,25 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("email domain %q cannot be both allowed and denied", domain))
 		}
 	}
-	if c.SignerMode != "disabled" && c.SignerMode != "development" && c.SignerMode != "external" {
-		errs = append(errs, errors.New("signer mode must be disabled, development, or external"))
+	if c.SignerMode != "disabled" && c.SignerMode != "development" &&
+		c.SignerMode != "external" && c.SignerMode != "policy" {
+		errs = append(errs, errors.New("signer mode must be disabled, development, external, or policy"))
+	}
+	if c.SignerMode == "policy" {
+		if c.PolicySignerURL == "" {
+			errs = append(errs, errors.New("policy signer requires ETH402_POLICY_SIGNER_URL"))
+		}
+		if len(c.PolicySignerToken) < 32 {
+			// The token is the only thing standing between the signing boundary and
+			// anything that can reach its port, so a weak one is a misconfiguration.
+			errs = append(errs, errors.New("policy signer requires ETH402_POLICY_SIGNER_TOKEN of at least 32 characters"))
+		}
+		if c.Environment == "production" && !strings.HasPrefix(c.PolicySignerURL, "https://") {
+			// Plaintext would put the bearer token and every authorization on the
+			// wire. Localhost is not exempted: in production the boundary is a
+			// separate workload, so a localhost URL is itself a misconfiguration.
+			errs = append(errs, errors.New("production policy signer URL must use HTTPS"))
+		}
 	}
 	if c.SignerMode == "development" && c.DevSignerKey == "" {
 		errs = append(errs, errors.New("development signer requires a private key"))

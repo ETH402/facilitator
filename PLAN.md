@@ -124,12 +124,13 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
 - [x] GCP deployment documentation
 - [ ] public status page
 - [ ] privacy-preserving analytics
-- [ ] KMS-fronted policy signer, moving the zero-value/USDC-selector allowlist out
-      of the ETH402 process and into the signing boundary
+- [x] KMS-fronted policy signer, moving the zero-value/USDC-selector allowlist out
+      of the ETH402 process and into the signing boundary — the boundary receives
+      authorization fields rather than a transaction, so it builds what it signs
+      and the restriction is structural rather than a check
 
-The remaining three need infrastructure decisions from the operator — a hosting
-target, a status-page provider, an analytics posture, and whether the policy signer
-is worth another service in the settlement path — rather than more code here.
+The remaining two need decisions from the operator — a status-page provider and an
+analytics posture — rather than more code here.
 
 ## Milestone 5 — public beta
 

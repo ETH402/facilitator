@@ -118,9 +118,12 @@ Broadcasts fail while intents remain committed, so nonces are allocated and unus
 2. The broadcast worker retries committed intents on its own once gas is affordable.
 3. Check whether depletion was legitimate volume or a drain: compare
    `deriv(eth402_signer_balance_wei[15m])` against settlement volume over the same
-   window. A compromised process cannot sign arbitrary transactions — the
-   in-process allowlist restricts it to `transferWithAuthorization` on USDC — but it
-   can settle payments of its choosing until the balance is gone.
+   window. A compromised process cannot sign arbitrary transactions — the allowlist
+   restricts it to `transferWithAuthorization` on USDC, structurally so under
+   `ETH402_SIGNER_MODE=policy` — but it can settle payments of its choosing until
+   the balance is gone. Refusals logged by the boundary as `refused to sign` are
+   the signal to look at: they are either a caller bug or the first visible sign
+   of a compromised caller.
 
 ## Worker stalled
 

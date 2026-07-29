@@ -72,6 +72,29 @@ services:
       retries: 3
       start_period: 10s
 
+  # Not started by default: it needs a real Cloud KMS key version, so it cannot run
+  # in the local stack. Present so the wiring is reviewable, and because the
+  # separate-identity requirement is easier to remember when the topology is
+  # visible. Local development uses ETH402_SIGNER_MODE=development instead.
+  policysigner:
+    build:
+      context: .
+      target: policysigner
+    profiles: ["policy-signer"]
+    env_file: deploy/policysigner.env
+    expose:
+      - "8081"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+
   caddy:
     image: caddy:2.10.0-alpine@sha256:ae4458638da8e1a91aafffb231c5f8778e964bca650c8a8cb23a7e8ac557aa3c
     ports:

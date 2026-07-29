@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ETH402/facilitator/internal/config"
+	"github.com/ETH402/facilitator/internal/policy"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -45,6 +46,12 @@ type Transaction struct {
 	GasLimit             uint64
 	MaxFeePerGas         string
 	MaxPriorityFeePerGas string
+
+	// Authorization is the EIP-3009 authorization Data was packed from. The
+	// policy-boundary backend needs it because that boundary builds calldata
+	// itself rather than trusting what this process packed; every other backend
+	// ignores it. Optional so backends that sign calldata directly still work.
+	Authorization *policy.Authorization
 }
 
 // Validate rejects transactions that are unsafe to sign regardless of backend.

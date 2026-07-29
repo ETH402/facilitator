@@ -262,6 +262,7 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 		}
 		return "", ErrAuthorizationExpiring
 	}
+	wire := work.Authorization.Wire()
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
 		return "", fmt.Errorf("build calldata: %w", err)
@@ -300,6 +301,7 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 		GasLimit:             s.cfg.GasLimit,
 		MaxFeePerGas:         maxFee.String(),
 		MaxPriorityFeePerGas: priorityFee.String(),
+		Authorization:        &wire,
 	})
 	cancel()
 	if err != nil {

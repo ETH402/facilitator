@@ -144,6 +144,16 @@ func main() {
 				os.Exit(1)
 			}
 			transactionSigner = cloudKMS
+		case "policy":
+			// The boundary holds the KMS grant; this process holds only a bearer
+			// token. See internal/policy and cmd/policysigner.
+			policySigner, err := signer.NewPolicyClient(root, cfg.PolicySignerURL,
+				cfg.PolicySignerToken, cfg.SigningTimeout)
+			if err != nil {
+				logger.Error("policy signer initialization failed", "error", err)
+				os.Exit(1)
+			}
+			transactionSigner = policySigner
 		default:
 			// Config validation rejects every other mode; this is defense in
 			// depth so a future mode cannot start without its backend.

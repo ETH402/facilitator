@@ -1,6 +1,7 @@
 package settlement
 
 import (
+	"bytes"
 	"encoding/hex"
 	"math/big"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ETH402/facilitator/internal/config"
+	"github.com/ETH402/facilitator/internal/policy"
 	"github.com/ETH402/facilitator/internal/signer"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -206,5 +208,62 @@ func TestSplitSignatureRecoveryIds(t *testing.T) {
 		if tc.wantOK != (err == nil) {
 			t.Fatalf("v=%s: err=%v, wantOK=%v", tc.v, err, tc.wantOK)
 		}
+	}
+}
+
+// TestPolicyBoundaryPacksIdenticalCalldata is the check that makes two
+// implementations safe rather than merely duplicated.
+//
+// The signing boundary builds transferWithAuthorization calldata independently
+// (internal/policy) so that it does not trust code running inside the process it
+// protects. Independence is only useful if the two agree: if they diverge, the
+// boundary either refuses to sign what settlement wants signed — every payment
+// fails — or signs something settlement did not intend, which is worse. This is
+// the same pattern that already guards the selector, and that pattern has caught
+// a real defect before.
+func TestPolicyBoundaryPacksIdenticalCalldata(t *testing.T) {
+	cases := map[string]Authorization{
+		"ordinary payment": {
+			From:        "0x1111111111111111111111111111111111111111",
+			To:          "0x2222222222222222222222222222222222222222",
+			Value:       "1500000",
+			ValidAfter:  time.Unix(1700000000, 0),
+			ValidBefore: time.Unix(1700003600, 0),
+			Nonce:       "0x" + strings.Repeat("ab", 32),
+			Signature:   "0x" + strings.Repeat("cd", 64) + "1b",
+		},
+		"low recovery id": {
+			From:        "0x1111111111111111111111111111111111111111",
+			To:          "0x2222222222222222222222222222222222222222",
+			Value:       "1",
+			ValidAfter:  time.Unix(0, 0),
+			ValidBefore: time.Unix(1, 0),
+			Nonce:       "0x" + strings.Repeat("00", 31) + "01",
+			Signature:   "0x" + strings.Repeat("11", 64) + "00",
+		},
+		"large value and mixed-case addresses": {
+			From:        "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+			To:          "0xbBbBBBBbbBBBbbbBbbBbbbbbBBbBbbbbBbBbbBBb",
+			Value:       "340282366920938463463374607431768211455",
+			ValidAfter:  time.Unix(1700000000, 0),
+			ValidBefore: time.Unix(2000000000, 0),
+			Nonce:       "0x" + strings.Repeat("ff", 32),
+			Signature:   "0x" + strings.Repeat("ee", 64) + "1c",
+		},
+	}
+	for name, auth := range cases {
+		t.Run(name, func(t *testing.T) {
+			mine, err := TransferWithAuthorizationData(auth)
+			if err != nil {
+				t.Fatalf("settlement builder: %v", err)
+			}
+			theirs, err := policy.TransferWithAuthorizationData(auth.Wire())
+			if err != nil {
+				t.Fatalf("policy builder: %v", err)
+			}
+			if !bytes.Equal(mine, theirs) {
+				t.Errorf("the two builders disagree:\n settlement %x\n policy     %x", mine, theirs)
+			}
+		})
 	}
 }

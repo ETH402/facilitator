@@ -36,10 +36,10 @@ cannot detect.
 
 The settlement signer address holds a deliberately small working balance, topped
 up from a source ETH402 cannot spend from, with alerting on both absolute balance
-and burn rate. Cloud KMS signs digests and cannot inspect calldata, so a
-compromised process can have an arbitrary transaction signed; bounding the hot
-balance is what caps that loss. This is required before enabling any signer, and
-is not superseded by the in-process calldata allowlist. See
+and burn rate. A compromised process can settle real payments of its choosing
+whatever the signing boundary allows, so bounding the hot balance is what caps
+that loss. This is required before enabling any signer, and is superseded neither
+by the in-process calldata allowlist nor by the policy boundary. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).
 
 ## Cloud KMS signer
@@ -189,10 +189,10 @@ boundary, not public data.
 ## Signer balance monitoring
 
 `/metrics` publishes the settlement signer's balance so the bound on a compromise
-is observable. ADR-0004 decision 8 makes that bound the operative control: Cloud
-KMS signs opaque digests and cannot inspect calldata, so the allowlist lives
-inside the ETH402 process and a compromise is limited by what the signer can spend
-rather than by what it is permitted to sign.
+is observable. ADR-0004 decision 8 keeps that bound the operative control even
+with the policy boundary deployed: the boundary constrains *what* can be signed,
+but a compromised facilitator can still settle payments of its choosing, so the
+limit is what the signer can spend.
 
 | Metric | Meaning |
 |---|---|

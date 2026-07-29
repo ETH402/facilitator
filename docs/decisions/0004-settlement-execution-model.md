@@ -181,24 +181,57 @@ caps instant-drain loss at the hot balance **whether or not an allowlist
 exists**, needs no additional service, and is standard hot-wallet practice. It is
 required before any signer is enabled.
 
-#### Deferred to Milestone 4: a KMS-fronted policy signer
+#### Delivered in Milestone 4: a KMS-fronted policy signer
 
 A policy layer in front of KMS is **compatible with** KMS, not an alternative to
 it — an earlier draft of this ADR framed these as mutually exclusive, which was
-wrong. A small service can parse the unsigned transaction, assert
-`chainId == 1`, `to == USDC`, `selector == transferWithAuthorization`,
-`value == 0`, and the gas ceilings, then delegate signing to KMS. Key custody
-stays in KMS and the allowlist becomes a real boundary.
+wrong. Key custody stays in KMS and the allowlist becomes a real boundary.
 
-`signer.Transaction.Validate` now enforces exactly those assertions in process,
-deriving the selector from the canonical EIP-3009 signature independently of the
-calldata builder so the check is not a restatement of the code it guards. That
-makes the in-process half real; moving it behind the signing boundary is what
-remains deferred.
+This is now built: `internal/policy` and `cmd/policysigner`, selected with
+`ETH402_SIGNER_MODE=policy`.
 
-This is deferred rather than rejected: the bounded balance delivers most of the
-protection immediately, so the policy signer is Milestone 4 hardening and does
-not block settlement.
+**One design detail decided the value of the whole thing: what crosses the
+boundary.** The obvious construction — send the unsigned transaction and have the
+boundary parse and validate it — is materially weaker than it looks, because a
+boundary that *validates* a caller's transaction is only as good as the
+completeness of its validation, and every new field is a new thing to remember to
+check. Sending a digest is weaker still: that is precisely the KMS problem
+restated.
+
+So the boundary receives **the authorization fields, and nothing else**. It builds
+the transaction itself: chain 1, canonical USDC, zero ether value, and
+`transferWithAuthorization` calldata packed from the authorization. A caller
+cannot name a recipient, a chain, an ether value, or a function, because those are
+not fields in the request. The restriction is structural rather than a check —
+there is nothing to bypass, and nothing to forget to validate.
+
+The ceilings are the boundary's own configuration
+(`POLICYSIGNER_MAX_FEE_PER_GAS_WEI`, `POLICYSIGNER_MAX_PRIORITY_FEE_PER_GAS_WEI`,
+`POLICYSIGNER_MAX_GAS_LIMIT`) and are never read from a request: a compromised
+caller that cannot change *what* is signed would otherwise simply raise what it
+can burn. Unset ceilings mean sign nothing, never sign anything.
+
+Two consequences worth stating:
+
+- **The boundary builds calldata independently of settlement.** It cannot share
+  the builder, because that code runs inside the process it is protecting. A
+  cross-check test requires the two constructions to agree byte for byte, and the
+  client also compares them on every live request — divergence would mean the
+  boundary refuses everything, or signs something unintended.
+- **Distrust runs both ways.** Settlement records the returned transaction's hash
+  as a real payment's identity and re-signs against its sighash during recovery,
+  so the client verifies every behaviour-determining field against what it asked
+  for, checks the recovered sender, and derives the sighash itself rather than
+  reading it from the response. A compromised boundary substituting a transaction
+  would otherwise have it recorded as though intended.
+
+`signer.Transaction.Validate` still runs in process. It is now redundant, and kept
+deliberately: a caller that starts building transactions this service should never
+sign fails in the test suite rather than only at a remote boundary.
+
+The bounded hot balance is **not** superseded. The boundary constrains what can be
+signed; it does nothing about a compromised process settling real payments of its
+choosing, which remains possible and remains bounded by the balance.
 
 #### Rejected alternatives
 
@@ -316,7 +349,9 @@ New surface this implies. Delivered:
 - `ETH402_SETTLEMENT_EXPIRY_MARGIN`, `ETH402_SIGNING_TIMEOUT`,
   `ETH402_SETTLEMENT_LEASE_DURATION`, `ETH402_SETTLEMENT_RECOVERY_GRACE`,
   `ETH402_SETTLEMENT_REPLACEMENT_AFTER`, `ETH402_KMS_KEY_NAME`
-- `signer.Transaction` per decision 7, with the in-process allowlist of decision 8
+- `signer.Transaction` per decision 7, with the allowlist of decision 8 — in
+  process, and additionally behind the signing boundary under
+  `ETH402_SIGNER_MODE=policy`
 - the per-merchant settlement quota decision 9 rests on
   (`ETH402_MERCHANT_SETTLEMENT_QUOTA` per `ETH402_MERCHANT_QUOTA_WINDOW`), counted
   while holding a merchant-scoped row lock inside the transaction that commits

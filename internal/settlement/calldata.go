@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ETH402/facilitator/internal/policy"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -25,6 +28,21 @@ type Authorization struct {
 	ValidBefore time.Time
 	Nonce       string // 0x-prefixed 32-byte hex
 	Signature   string // 0x-prefixed 65-byte hex
+}
+
+// Wire converts an authorization to the form the policy signing boundary parses.
+// Times become Unix seconds because the boundary parses every field itself rather
+// than trusting a caller's encoding (see internal/policy).
+func (a Authorization) Wire() policy.Authorization {
+	return policy.Authorization{
+		From:        a.From,
+		To:          a.To,
+		Value:       a.Value,
+		ValidAfter:  strconv.FormatInt(a.ValidAfter.Unix(), 10),
+		ValidBefore: strconv.FormatInt(a.ValidBefore.Unix(), 10),
+		Nonce:       a.Nonce,
+		Signature:   a.Signature,
+	}
 }
 
 // TransferWithAuthorizationData packs the EIP-3009 v/r/s calldata for an EOA
