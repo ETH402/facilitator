@@ -7,6 +7,12 @@ versioned where noted.
 
 ### Added
 
+- `docs/RUNBOOKS.md`: what to do about the states settlement actually produces —
+  ambiguous broadcasts, nonce gaps, a gap filler the chain accepted, a depleted
+  signer, a stalled worker, an intent that was never signed, and how to halt
+  settlement without stopping verification. Every query in it was run against the
+  schema before publishing.
+
 - Deployment hardening: base images pinned by digest, request body and header caps
   plus reverse-proxy timeouts in Caddy, security headers on the proxy's own error
   responses, memory and CPU limits on the application container, and

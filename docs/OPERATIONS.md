@@ -259,3 +259,10 @@ unauthenticated, so growth is bounded only by the rate limit above. Operators
 must plan capacity and, if pruning becomes necessary, do it as an explicit
 migration that drops and restores the trigger under audit rather than granting
 the runtime role deletion rights.
+
+## When something is stuck
+
+See [runbooks](RUNBOOKS.md). It starts with one triage query over every
+non-terminal payment and routes from there, and it is written so the rule that
+matters survives contact with an incident: an ambiguous broadcast is never resolved
+by sending another transaction before reconciling by hash and nonce.

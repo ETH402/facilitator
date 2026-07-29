@@ -114,10 +114,22 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
 
 ## Milestone 4 — public deployment
 
-Harden Caddy and image, document GCP deployment, integrate Cloud KMS, alerts,
-runbooks, public status, and privacy-preserving analytics. Add the KMS-fronted
-policy signer deferred from Milestone 3, which moves the zero-value/USDC-selector
-allowlist out of the ETH402 process and into the signing boundary.
+- [x] Cloud KMS signer integration
+- [x] hardened image and proxy: digest-pinned bases, distroless nonroot,
+      request and header caps, reverse-proxy timeouts, container resource limits,
+      and an in-binary health probe for a shell-less image
+- [x] real metrics and alert rules for RPC failure, worker liveness, and the signer
+      balance that bounds a compromise
+- [x] runbooks for the states settlement actually produces
+- [ ] GCP deployment documentation
+- [ ] public status page
+- [ ] privacy-preserving analytics
+- [ ] KMS-fronted policy signer, moving the zero-value/USDC-selector allowlist out
+      of the ETH402 process and into the signing boundary
+
+The remaining four need infrastructure decisions from the operator — a hosting
+target, a status-page provider, an analytics posture, and whether the policy signer
+is worth another service in the settlement path — rather than more code here.
 
 ## Milestone 5 — public beta
 
