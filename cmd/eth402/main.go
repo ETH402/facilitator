@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,12 +28,49 @@ import (
 	exactfacilitator "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/facilitator"
 )
 
+// healthCheck probes the local readiness endpoint and exits.
+//
+// The runtime image is distroless: no shell, no curl, nothing a container
+// healthcheck could otherwise invoke. Letting the binary probe itself keeps the
+// image minimal without leaving the container unmonitored. /health/ready checks
+// PostgreSQL and that the RPC reports chain 1, so this fails closed when a
+// dependency is down.
+func healthCheck(addr string) int {
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	client := &http.Client{Timeout: 4 * time.Second}
+	response, err := client.Get("http://" + addr + "/health/ready")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health check: %v\n", err)
+		return 1
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "health check: status %d\n", response.StatusCode)
+		return 1
+	}
+	return 0
+}
+
 func main() {
+	probe := flag.Bool("health-check", false,
+		"probe the local readiness endpoint and exit; used by the container healthcheck")
+	flag.Parse()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
+	}
+	if *probe {
+		// Runs after full configuration validation, so a container with broken
+		// configuration reports unhealthy rather than probing a port that will
+		// never open. Only HTTPAddr is used; the dependencies themselves are
+		// checked by the readiness endpoint being probed.
+		os.Exit(healthCheck(cfg.HTTPAddr))
 	}
 	logger.Info("starting ETH402", "config", cfg.RedactedSummary())
 

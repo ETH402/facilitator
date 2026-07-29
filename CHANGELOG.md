@@ -7,6 +7,11 @@ versioned where noted.
 
 ### Added
 
+- Deployment hardening: base images pinned by digest, request body and header caps
+  plus reverse-proxy timeouts in Caddy, security headers on the proxy's own error
+  responses, memory and CPU limits on the application container, and
+  `eth402 -health-check` so the distroless image can be probed without a shell in it.
+
 - Real RPC and worker-liveness metrics: `eth402_rpc_requests_total`,
   `eth402_rpc_errors_total`, and `eth402_worker_last_tick_timestamp_seconds` per
   worker, with alert rules in `deploy/alerts.yml`. RPC attempts are counted at the

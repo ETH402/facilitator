@@ -55,9 +55,25 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Bounded so a leak or a runaway loop degrades this container rather than the
+    # host, which in a single-host deployment is also the database's host.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    # The image is distroless and has no shell, so readiness is probed from Caddy,
+    # which does have one. /health/ready checks PostgreSQL and that the RPC reports
+    # chain 1, so it fails closed on a dependency outage.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/eth402", "-health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   caddy:
-    image: caddy:2.10.0-alpine
+    image: caddy:2.10.0-alpine@sha256:ae4458638da8e1a91aafffb231c5f8778e964bca650c8a8cb23a7e8ac557aa3c
     ports:
       - "80:80"
     volumes:
