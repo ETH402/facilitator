@@ -5,10 +5,16 @@ native USDC on Ethereum mainnet. It is a modular Go service designed for
 machine clients, APIs, merchants, and autonomous agents.
 
 Milestones 0–2 provide the validated architecture, merchant onboarding,
-operational APIs, and x402 v2 verification. ETH402 exposes `/supported` and
-`/verify` for exact EIP-3009 payments in native Ethereum-mainnet USDC. It still
-does **not** expose `/settle`, sign settlement transactions, or broadcast to
-Ethereum mainnet.
+operational APIs, and x402 v2 verification. ETH402 exposes `/supported`,
+`/verify`, and — with a settlement signer enabled — `/settle` for exact
+EIP-3009 payments in native Ethereum-mainnet USDC. `/settle` requires a prior
+successful `/verify` for the same payment and broadcasts
+`transferWithAuthorization` once, returning the transaction hash; confirmation
+completes asynchronously at 12 confirmations by default, with a recovery worker
+reconciling ambiguous broadcasts, stuck pendings, nonce gaps, and reorgs. The
+production signer backend is GCP Cloud KMS (`ETH402_SIGNER_MODE=external`);
+the disabled default and the development key signer for local use complete the
+available backends.
 
 Buyer USDC is designed to move directly from buyer to merchant through USDC's
 EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant
@@ -47,6 +53,7 @@ and [protocol research](docs/PROTOCOL_RESEARCH.md).
 - `GET /stats`
 - `GET /supported`
 - `POST /verify`
+- `POST /settle` (requires a settlement signer; otherwise `settlement_unavailable`)
 - merchant registration and email/wallet verification under `/v1/merchants/*`
 - authenticated profile, API-key, and recipient-change APIs under `/v1/*`
 - operator suspension and reinstatement under `/v1/admin/*`
@@ -55,6 +62,9 @@ The OpenAPI contract is in [openapi/eth402.yaml](openapi/eth402.yaml).
 Wallet proof currently supports EOA/EIP-191 signatures. ERC-1271 contract
 wallet proof and x402 payer signatures are explicit future security review
 items. `/verify` performs no settlement and requires no facilitator API key.
+`/settle` is likewise unauthenticated (the x402 facilitator shape); admission
+is gated on the payment's recipient being an active registered merchant, per
+ADR-0004.
 
 ## Independence notice
 

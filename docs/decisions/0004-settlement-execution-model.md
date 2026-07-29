@@ -1,0 +1,339 @@
+# ADR 0004: Settlement execution model
+
+Status: **accepted** — 2026-07-27. Extends
+[ADR-0002](0002-settlement-signer-boundary.md).
+
+Milestone 3 makes ETH402 spend money for the first time. This ADR fixes the
+execution model before any settlement code is written, and records the gaps
+found between the Milestone 0–2 scaffolding and what settlement actually needs.
+
+## Context
+
+The existing scaffolding already provides more than it appears to:
+
+- `payment_records` carries `settlement_requested_at`, `confirmed_at`, and the
+  `state` enum, plus `UNIQUE (network, asset, payer_address, authorization_nonce)`.
+- `ethereum_transactions` carries `tx_hash UNIQUE`, `transaction_nonce`,
+  `raw_transaction_hash`, `replaced_by_id`, `block_hash`, and the `ambiguous`
+  status, plus `UNIQUE (payment_id, transaction_nonce)` and the partial index
+  `ethereum_transactions_active_payment_unique` over the non-terminal statuses.
+- `settlement_attempts` mirrors `verification_attempts` with
+  `result IN ('accepted','duplicate','rejected')`.
+- `internal/settlement/state.go` encodes the payment state machine.
+
+That partial unique index is the idempotency backbone: it makes "at most one
+in-flight Ethereum transaction per payment" a database invariant rather than an
+application convention. The design below builds on it rather than adding
+coordination of its own.
+
+## Decisions
+
+### 1. Ethereum nonce allocation
+
+Settlement must assign each transaction a distinct account nonce for a single
+signer address, with no gaps and no reuse, across process restarts and
+concurrent requests.
+
+**Allocate from a dedicated durable row, not from the chain.**
+
+Add a `signer_accounts` table keyed by signer address holding `next_nonce`.
+Allocation happens inside the settlement transaction with `SELECT … FOR UPDATE`,
+so nonce assignment commits atomically with the settlement intent that uses it.
+`eth_getTransactionCount` is used only to *initialise* the row and to reconcile
+during recovery — never as the live allocator.
+
+Rejected alternatives:
+
+- **`eth_getTransactionCount` per settlement.** Pending-vs-latest semantics vary
+  by provider, and two concurrent settlements read the same value. This is the
+  standard way to produce two transactions sharing a nonce, one of which is
+  silently dropped.
+- **`max(transaction_nonce) + 1` over `ethereum_transactions`.** Correct only if
+  every historical row is still present and no row was ever created for a
+  transaction that was never broadcast. Both assumptions fail during recovery.
+
+Replacements deliberately reuse the same nonce and so must **not** allocate.
+
+### 2. Signer account topology
+
+**One signer address to begin with.** One nonce sequence and one gas balance to
+fund, monitor, and alert on.
+
+The cost is head-of-line blocking: because nonces are strictly sequential, a
+stuck transaction at nonce N prevents every later settlement from mining until
+it clears or is replaced. Replacement (same nonce, higher fee) is the designed
+escape hatch, and it is why decision 1 forbids allocating a fresh nonce for a
+replacement.
+
+`signer_accounts` is keyed by address and `ethereum_transactions.signer_address`
+is already `NOT NULL`, so a pool of addresses can be introduced later without a
+painful migration. The signer address must be resolved once at startup and
+pinned; a mid-flight change would corrupt the nonce sequence.
+
+### 3. Commit before sign, sign before broadcast
+
+The order is: verify → allocate nonce and insert intent (`state = broadcasting`,
+`ethereum_transactions.status = intent`) → commit → sign → record
+`raw_transaction_hash` and the deterministic `sighash` → broadcast once →
+record `tx_hash`.
+
+A crash after commit but before broadcast leaves a durable `intent` row that
+recovery can resolve. A crash after broadcast but before recording the hash is
+the ambiguous case below. Nothing is ever signed without a committed intent,
+which is what makes "never blindly retry" enforceable.
+
+### 4. Ambiguous broadcast
+
+An RPC error that leaves broadcast outcome unknown sets
+`ethereum_transactions.status = 'ambiguous'` and moves the payment to
+`manual_review`.
+
+`payment_records.state` deliberately gets **no** `ambiguous` value. Ambiguity is
+a property of a transaction, not of a payment, and `broadcasting → manual_review`
+already exists in the state machine. Recovery resolves ambiguity by looking up
+`raw_transaction_hash` on chain; it never re-signs with different terms and
+never allocates a fresh nonce.
+
+After the grace window it may re-sign the **identical** transaction — same
+nonce, gas, fees, and calldata — and re-broadcast it. Identity is proven by the
+**sighash** (keccak of the unsigned transaction, persisted at signing time),
+not by the raw transaction hash: Cloud KMS randomizes the ECDSA nonce, so the
+re-signed bytes legitimately differ from the recorded ones. When the hash
+differs, the fresh signature is recorded *replacement-shaped* — the ambiguous
+row becomes `replaced` under its derived hash, the re-signed row becomes the
+active broadcast, and the payment moves `manual_review → replaced` — so the
+network mining either signature resolves the payment through the ordinary
+replacement machinery instead of wedging it in manual review. Rows written
+before migration `000006` have no stored sighash and keep the old raw-hash
+comparison, which only a deterministic signer can satisfy; with KMS that
+comparison refuses, which is the safe outcome for a record that cannot be
+verified.
+
+### 5. Finality and reorgs
+
+`confirmed` is terminal, with **no** `confirmed → confirming` edge. Confirmation
+requires `ETH402_REQUIRED_CONFIRMATIONS` (default 12) canonical confirmations,
+and a reorg deeper than that is **accepted as residual risk** — already recorded
+as "deep reorg" in the threat model.
+
+This is a deliberate risk acceptance, stated here because
+`docs/ARCHITECTURE.md`'s "reorgs return non-final transactions to confirmation"
+reads more broadly than the state machine allows: it applies only to
+`broadcast`/`confirming`, never to `confirmed`. Reorg handling compares
+`block_hash` against the canonical chain and returns *non-final* transactions to
+`confirming`.
+
+### 6. Gas policy is mandatory
+
+Implemented ahead of this ADR: `Validate` rejects any non-disabled
+`ETH402_SIGNER_MODE` unless both `ETH402_MAX_FEE_PER_GAS_WEI` and
+`ETH402_MAX_GAS_LIMIT` are non-zero, and rejects a priority fee exceeding the
+total fee ceiling. Zero means unset, not unlimited, so the signer cannot be
+switched on with an unbounded spend ceiling.
+
+### 7. The signer interface must change
+
+`signer.Transaction{ChainID, To, Data, Value}` cannot express a settlement
+transaction. It is missing `Nonce`, `GasLimit`, `MaxFeePerGas`, and
+`MaxPriorityFeePerGas`. Because decision 3 requires the nonce to be persisted
+before signing, the nonce is an **input** chosen by the caller, not something
+the signer may pick. The interface gains those fields and stays value-typed so a
+signer implementation cannot reach back for chain state.
+
+`signer.Disabled` remains the default and `TestSigner` remains deliberately
+non-broadcastable.
+
+### 8. Signer backend: GCP Cloud KMS, with a bounded hot balance
+
+Milestone 4 already targets GCP deployment, and Cloud KMS supports secp256k1.
+Key material never leaves KMS, and per-key IAM plus audit logging come with it.
+
+Signing becomes a network round trip inside the settlement path, so the signer
+call needs its own timeout and must be treated as a failure mode distinct from
+RPC failure: a signing timeout leaves a committed `intent` row with no signed
+transaction, which recovery resolves by signing again — safe precisely because
+the nonce is already fixed and stored.
+
+#### What the calldata allowlist actually buys
+
+Cloud KMS signs digests and cannot inspect calldata, so the
+"zero-value/USDC selector allowlist" that `docs/THREAT_MODEL.md` lists as a
+signer-compromise control lives **inside** ETH402 rather than inside the signing
+boundary.
+
+The value of that control is narrower than it first appears. A compromised
+ETH402 can already settle payments of its choosing, because valid authorizations
+to registered merchants are exactly what policy permits; gas bleeds slowly and
+visibly. What the allowlist prevents is a single plain ETH transfer draining the
+**entire** balance at once. It converts instant total loss into bounded,
+observable bleed.
+
+#### The operative control for Milestone 3: bound the balance
+
+The signer address holds a deliberately small working balance, topped up from a
+source ETH402 cannot spend from, with alerting on balance and burn rate. This
+caps instant-drain loss at the hot balance **whether or not an allowlist
+exists**, needs no additional service, and is standard hot-wallet practice. It is
+required before any signer is enabled.
+
+#### Deferred to Milestone 4: a KMS-fronted policy signer
+
+A policy layer in front of KMS is **compatible with** KMS, not an alternative to
+it — an earlier draft of this ADR framed these as mutually exclusive, which was
+wrong. A small service can parse the unsigned transaction, assert
+`chainId == 1`, `to == USDC`, `selector == transferWithAuthorization`,
+`value == 0`, and the gas ceilings, then delegate signing to KMS. Key custody
+stays in KMS and the allowlist becomes a real boundary.
+
+`signer.Transaction.Validate` now enforces exactly those assertions in process,
+deriving the selector from the canonical EIP-3009 signature independently of the
+calldata builder so the check is not a restatement of the code it guards. That
+makes the in-process half real; moving it behind the signing boundary is what
+remains deferred.
+
+This is deferred rather than rejected: the bounded balance delivers most of the
+protection immediately, so the policy signer is Milestone 4 hardening and does
+not block settlement.
+
+#### Rejected alternatives
+
+- **Cloud HSM.** Higher key-custody assurance (FIPS 140-2 Level 3, dedicated
+  hardware) but it also signs digests and is equally blind to calldata. More
+  cost, identical exposure.
+- **Safe with a transaction guard.** The strongest option, because enforcement
+  is on-chain and survives full compromise of ETH402; EIP-3009's
+  `transferWithAuthorization` is callable by anyone, so a Safe can be
+  `msg.sender`. Rejected on economics: roughly 40–80k additional gas on every
+  settlement, against an operation whose entire operating cost is gas.
+- **Managed wallet infrastructure** (Fireblocks, Turnkey, and similar). These
+  ship real transaction policy engines that do exactly what is wanted, but they
+  are proprietary SaaS and `VISION.md` commits to operating without proprietary
+  dependencies.
+- **HashiCorp Vault.** Fits the self-hostable ethos, and a transaction-parsing
+  plugin could enforce the allowlist. Not chosen for Milestone 3, and secp256k1
+  support in Vault's `transit` engine needs verification before anyone relies on
+  it — `transit` is built around the NIST P-curves, so this may require a
+  community or bespoke Ethereum plugin.
+
+### 9. `/settle` admission: the recipient must be a registered merchant
+
+An attacker can construct a genuinely valid EIP-3009 authorization moving USDC
+between two wallets they control. Verification cannot reject it — nothing about
+the payment is invalid — and ETH402 pays the gas. Attacker cost is zero,
+operator cost is unbounded. **No protocol-level check can prevent this.**
+
+`/settle` therefore requires `payTo` to resolve to an **active registered
+merchant**: `payment_records.merchant_id` must be non-null. `internal/store`
+already performs that lookup; only the nullability is permissive today.
+
+This is a policy gate on the payment's destination, not authentication of the
+caller. `/settle` stays callable without merchant credentials, which preserves
+the x402 facilitator shape and keeps merchant identity separate from protocol
+logic per `AGENTS.md` #15. Gas spend becomes attributable to a party that
+accepted terms, can carry a quota, and can be suspended through the existing
+`merchant_suspensions` machinery.
+
+Residual risk: anyone completing email and wallet proof can still drain gas,
+bounded by per-merchant quotas. `docs/FAIR_USE_POLICY.md` already anticipates
+this, and ETH402 explicitly does not claim Sybil resistance.
+
+### 10. Worker leasing: an explicit lease
+
+Confirmation workers claim rows with `claimed_by` and `claimed_until` columns,
+take the lease, release the database transaction, and only then perform RPC
+work.
+
+`FOR UPDATE SKIP LOCKED` was rejected: it holds a transaction open across each
+RPC call, so with `ETH402_DATABASE_MAX_CONNS` at 10 and `ETH402_RPC_TIMEOUT` at
+5s, a handful of slow providers can starve the pool and take HTTP request
+handling down with it. Leases cost more code and require stale-lease reclaim for
+workers that die mid-lease.
+
+Batch claims renew each payment immediately before its RPC work. If the original
+batch lease has already expired, that item is skipped and must be reclaimed;
+the former owner never proceeds on stale ownership.
+
+### 11. Expiry margin
+
+Settlement refuses to broadcast when `valid_before` falls inside a configured
+margin, defaulting conservatively (60s). EIP-3009 enforces `validBefore`
+on-chain, so a late transaction reverts and the operator pays gas for a
+predictably doomed transaction. The official verifier already applies a 6s
+margin, so this extends existing precedent rather than inventing policy;
+configurable because the safe window widens during gas spikes.
+
+A payment that expires before broadcast becomes `expired`. One already
+broadcast is left to its receipt, which yields `reverted` — the chain decides,
+not the application.
+
+A dropped nonce is filled only after `validBefore` plus the same safety margin
+has elapsed. This applies to both `expired` and simulation-`failed` payments:
+the payment remains permanently retired, while the now-impossible authorization
+is used only to consume the facilitator account nonce with a predictable revert.
+The exact signed filler bytes are persisted before sending so ambiguous Cloud
+KMS broadcasts can be retried identically.
+
+### 12. Pre-broadcast simulation retires proven-unsettleable intents
+
+Before signing, the exact `transferWithAuthorization` calldata is simulated
+(`eth_call`) from the signer address. A proven revert retires the intent
+unsigned and unbroadcast: the payment becomes `failed`, the transaction
+`dropped`, and the caller gets `simulation_reverted` instead of a hash for a
+doomed transaction. A simulation that cannot be completed (provider error,
+timeout) is transient and leaves the committed intent for the next tick —
+only an explicit on-chain revert retires.
+
+The trade-off is accepted deliberately: one revert retires the payment
+**permanently**, with no retry. For a consumed EIP-3009 nonce — the
+conflicting-facilitators race, the case simulation exists for — that is
+precisely correct, because the authorization can never settle again. For an
+underfunded payer it is harsh: the payer might top up a minute later, but the
+record stands and the payment must be re-created through a new `/verify`. The
+alternative — retrying simulated reverts — reintroduces the gas-burning
+broadcast loop simulation was added to prevent, and distinguishes revert
+reasons the `eth_call` error does not reliably carry.
+
+## Consequences
+
+Settlement becomes the first component that can lose money through a bug rather
+than merely return a wrong answer. The controls above are database invariants or
+fail-closed configuration wherever possible, chosen over application-level
+discipline for that reason.
+
+New surface this implies. Delivered:
+
+- migrations `000002`–`000004`: `signer_accounts`, worker lease columns, the
+  payer signature, and the persisted signing gas and fee pair; migration
+  `000006`: the deterministic `sighash` recovery uses to compare signatures;
+  migration `000007`: exact signed bytes for ambiguity-safe nonce-gap fillers
+- the signer address resolved from the backend at startup and the nonce sequence
+  seeded from the chain's transaction count
+- `ETH402_SETTLEMENT_EXPIRY_MARGIN`, `ETH402_SIGNING_TIMEOUT`,
+  `ETH402_SETTLEMENT_LEASE_DURATION`, `ETH402_SETTLEMENT_RECOVERY_GRACE`,
+  `ETH402_SETTLEMENT_REPLACEMENT_AFTER`, `ETH402_KMS_KEY_NAME`
+- `signer.Transaction` per decision 7, with the in-process allowlist of decision 8
+- the per-merchant settlement quota decision 9 rests on
+  (`ETH402_MERCHANT_SETTLEMENT_QUOTA` per `ETH402_MERCHANT_QUOTA_WINDOW`), counted
+  while holding a merchant-scoped row lock inside the transaction that commits
+  the intent, and required to be positive
+- pre-broadcast simulation of the exact `transferWithAuthorization` calldata
+  from the signer address; a proven revert retires the intent unsigned and
+  unbroadcast
+
+Outstanding, and each one weakens a control this ADR claims:
+
+- **a minimum-balance threshold and burn-rate alert** for the signer address.
+  Decision 8 makes the bounded hot balance the operative signer-compromise
+  control, so without the alert the bound is a convention rather than a control.
+
+Resolved since:
+
+- **Cloud KMS signing is not reproducible** — confirmed against the production
+  key (three signatures of one transaction, three distinct raw hashes). This
+  invalidated decision 4's original raw-hash identity check; recovery now
+  proves identity by the persisted deterministic sighash and records a
+  differing re-signature replacement-shaped (decision 4, migration `000006`).
+  `TestCloudKMSSigHashStableAcrossSignatures` pins the property live.
+
+These configuration keys are deliberately **not** added ahead of the code that
+reads them, so that no documented option silently does nothing.

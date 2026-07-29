@@ -22,11 +22,18 @@ const (
 var transitions = map[State]map[State]bool{
 	StateReceived:     {StateVerificationFailed: true, StateVerified: true, StateExpired: true, StateManualReview: true},
 	StateVerified:     {StateBroadcasting: true, StateExpired: true, StateManualReview: true},
-	StateBroadcasting: {StateBroadcast: true, StateFailed: true, StateManualReview: true},
+	StateBroadcasting: {StateBroadcast: true, StateFailed: true, StateExpired: true, StateManualReview: true},
 	StateBroadcast:    {StateConfirming: true, StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
-	StateConfirming:   {StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
+	StateConfirming:   {StateBroadcast: true, StateConfirmed: true, StateReverted: true, StateReplaced: true, StateManualReview: true},
 	StateReplaced:     {StateConfirming: true, StateConfirmed: true, StateReverted: true, StateManualReview: true},
-	StateManualReview: {StateVerified: true, StateBroadcast: true, StateConfirming: true, StateFailed: true, StateExpired: true},
+	// Expired is otherwise terminal. The single exception is the chain
+	// contradicting the expiry judgement: a nonce-gap filler is a re-broadcast of
+	// an authorization believed expired and is expected to revert, so if it
+	// succeeds then USDC actually moved and the record disagrees with the ledger.
+	// That needs a human, and recovery never finalizes a payment itself
+	// (ADR-0004 decision 4), so manual_review is the only edge out.
+	StateExpired:      {StateManualReview: true},
+	StateManualReview: {StateVerified: true, StateBroadcast: true, StateConfirming: true, StateReplaced: true, StateFailed: true, StateExpired: true},
 }
 
 func CanTransition(from, to State) bool { return transitions[from][to] }

@@ -6,9 +6,9 @@ provide honest chain data; external signer policy works. Residual risk remains.
 
 | Threat | Asset / attacker / path | Impact | Preventive control | Detective control | Residual risk |
 |---|---|---|---|---|---|
-| Gas draining | facilitator ETH; malicious buyer floods valid/reverting authorizations | ETH loss | verify, simulate, quotas, fee caps, signer policy | gas/revert alerts | simulation/state race |
+| Gas draining | facilitator ETH; malicious buyer floods valid/reverting authorizations | ETH loss | verification simulates, settlement re-simulates the exact calldata before signing, per-merchant quotas, fee caps, bounded hot balance, calldata allowlist | gas/revert alerts | a nonce consumed between simulation and mining still reverts; an unbroadcast nonce gap costs one revert if a later nonce is blocked |
 | Settlement replay | buyer nonce; merchant/observer resubmits | duplicate work/gas | EIP-3009 state, durable unique nonce and identity | duplicate metrics/audit | conflicting facilitators race |
-| Duplicate broadcast | signer nonce; retries/concurrency | gas/replacement confusion | DB intent/locks, signed hash, no blind retry | nonce reconciliation | RPC ambiguity |
+| Duplicate broadcast | signer nonce; retries/concurrency | gas/replacement confusion | DB intent/locks, signed hash, no blind retry, exact gap-filler bytes persisted before send | nonce reconciliation | RPC ambiguity |
 | Malicious merchant | buyers; deceptive recipient/resource | buyer loss/reputation | email/wallet proof, suspension, clear requirements | complaints/audit | verification is not legitimacy |
 | Malicious buyer | merchant/gas; malformed or expiring signatures | DoS/gas loss | strict parse, expiry margin, simulation, limits | failure metrics | adaptive abuse |
 | Sybil registration | service capacity; determined actor | quota evasion | domain controls, throttles, review | linked-abuse analysis | no global Sybil proof |
@@ -21,7 +21,8 @@ provide honest chain data; external signer policy works. Residual risk remains.
 | DB race | idempotency | duplicate intent | unique constraints, transactions, row locks | constraint/audit alerts | application bug |
 | Record corruption | financial/audit state | incorrect stats/recovery | least privilege, checks, backups, append-only triggers | reconciliation/integrity checks | privileged DBA |
 | Insider abuse | all | theft/suppression/data leak | separation of duties, signer policy, immutable audit | access/audit review | collusion |
-| Signer compromise | facilitator ETH/reputation | arbitrary tx/gas loss | KMS/HSM policy, zero-value/USDC selector allowlist | chain monitoring | policy bypass/zero-day |
+| Signer compromise | facilitator ETH/reputation | arbitrary tx/gas loss | KMS-held key material, bounded hot balance with external top-up, in-process allowlist enforcing mainnet, the canonical USDC address, the `transferWithAuthorization` selector, and zero ether value | chain monitoring, balance and burn-rate alerts | Cloud KMS cannot enforce a calldata allowlist, so a compromised process can have any transaction signed; loss is capped at the hot balance until the Milestone 4 policy signer lands ([ADR-0004](decisions/0004-settlement-execution-model.md)) |
+| Gas draining via valid authorization | facilitator ETH; attacker settles a genuine self-to-self payment | bounded gas loss | `/settle` re-checks that the recipient belongs to an active merchant and serializes the positive per-merchant quota under that merchant's row lock; suspension revokes later admission | quota rejections and per-merchant spend dashboards | registration is not Sybil-resistant, so one actor can obtain multiple merchant quotas |
 | Denial of service | availability | outage | limits, timeouts, cache, circuit breaker, capacity | saturation/SLO alerts | volumetric attack |
 | Gas-price spike | ETH/availability | high cost or delayed settle | max-fee and admission policy | fee/pending alerts | payments expire |
 | Dependency compromise | build/runtime | code execution | minimal deps, checksums, pinned CI, review | vuln/SBOM scans | upstream compromise |

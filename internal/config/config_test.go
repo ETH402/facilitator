@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func validConfig() Config {
@@ -14,7 +15,10 @@ func validConfig() Config {
 		MaxFeePerGasWei: "0", MaxPriorityFeeWei: "0",
 		SignerMode: "disabled", EmailBackend: "log", EmailTokenTTL: 1,
 		EmailResend: 1, WalletChallengeTTL: 1, WorkerInterval: 1,
+		SettlementExpiryMargin: 1, SigningTimeout: 1, SettlementLeaseDuration: 1,
+		SettlementRecoveryGrace: 1, SettlementReplacementAfter: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
+		MerchantSettlementQuota: 10, MerchantQuotaWindow: time.Hour,
 		TermsVersion: "test", APIKeyPepper: "01234567890123456789012345678901",
 	}
 }
@@ -46,6 +50,60 @@ func TestProductionSafety(t *testing.T) {
 	cfg.DevSignerKey = "secret"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("unsafe production config accepted")
+	}
+}
+
+func TestSignerRequiresExplicitGasCeiling(t *testing.T) {
+	t.Parallel()
+	// Zero means unset, so a signer must not be enablable without a ceiling.
+	cfg := validConfig()
+	cfg.SignerMode = "development"
+	cfg.DevSignerKey = "development-only-placeholder"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("development signer accepted with zero gas policy")
+	}
+	cfg.MaxFeePerGasWei = "30000000000"
+	cfg.MaxGasLimit = 120000
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("development signer rejected with explicit gas policy: %v", err)
+	}
+	// The disabled signer keeps working with the zero placeholders.
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("disabled signer rejected: %v", err)
+	}
+}
+
+func TestExternalSignerRequiresKMSKeyName(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.SignerMode = "external"
+	cfg.MaxFeePerGasWei = "30000000000"
+	cfg.MaxGasLimit = 120000
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("external signer accepted without a KMS key name")
+	}
+	cfg.KMSKeyName = "projects/eth402/locations/europe-west1/keyRings/eth402-settlement/cryptoKeys/eth402-settlement-signer/cryptoKeyVersions/1"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("external signer rejected with a valid key name: %v", err)
+	}
+	// Signing always names a concrete version: the bare key is not enough.
+	cfg.KMSKeyName = "projects/eth402/locations/europe-west1/keyRings/eth402-settlement/cryptoKeys/eth402-settlement-signer"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("external signer accepted a key without a version")
+	}
+}
+
+func TestPriorityFeeCannotExceedMaxFee(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.MaxFeePerGasWei = "1000"
+	cfg.MaxPriorityFeeWei = "1001"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("priority fee above max fee accepted")
+	}
+	cfg.MaxPriorityFeeWei = "1000"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("priority fee equal to max fee rejected: %v", err)
 	}
 }
 

@@ -60,6 +60,10 @@ type Payment struct {
 	ValidAfter  time.Time
 	ValidBefore time.Time
 	PayloadHash string
+	// Signature is the payer's 65-byte EIP-3009 signature, lowercased hex with
+	// the 0x prefix. The payment identity binds it, so a payment row can only
+	// ever carry this exact value; settlement persists it with the intent.
+	Signature string
 }
 
 type Request struct {
@@ -96,7 +100,7 @@ func Supported() types.SupportedResponse {
 }
 
 func (s *Service) Verify(ctx context.Context, request Request) (*x402.VerifyResponse, error) {
-	payment, reason := validateRequest(request)
+	payment, reason := ParseRequest(request)
 	if reason != "" {
 		if err := s.record(ctx, Attempt{PaymentIdentity: identityOf(payment), Result: "failed", ReasonCode: reason}); err != nil {
 			return nil, err
@@ -211,7 +215,12 @@ func (s *Service) unavailable(ctx context.Context, payment *Payment, cause error
 	return cause
 }
 
-func validateRequest(request Request) (*Payment, string) {
+// ParseRequest strictly validates a facilitator request against the single
+// supported lane (x402 v2, exact, eip155:1, native USDC, EIP-3009) and returns
+// the derived payment, or an empty payment and a stable invalid reason. It is
+// shared by /verify and /settle so a settlement request can never describe a
+// payment verification would have rejected.
+func ParseRequest(request Request) (*Payment, string) {
 	if request.X402Version != 2 || request.PaymentPayload.X402Version != 2 {
 		return nil, x402.ErrInvalidVersion
 	}
@@ -301,6 +310,7 @@ func validateRequest(request Request) (*Payment, string) {
 		ValidAfter:  time.Unix(after.Int64(), 0).UTC(),
 		ValidBefore: time.Unix(before.Int64(), 0).UTC(),
 		PayloadHash: hex.EncodeToString(hash[:]),
+		Signature:   strings.ToLower(evmPayload.Signature),
 	}, ""
 }
 

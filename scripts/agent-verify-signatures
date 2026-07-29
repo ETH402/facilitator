@@ -1,0 +1,68 @@
+#!/bin/sh
+# Reports who signed each commit on this branch, and whether any are unattributed.
+#
+#   scripts/agent-verify-signatures [<base>]      # base defaults to origin/main
+#
+# This is what makes rule 5 checkable. "The author never merges its own PR" is
+# unenforceable by GitHub here, because all three agents act as one account — so
+# the reviewer needs a way to establish authorship that an agent cannot simply
+# assert. Signatures give that; a Co-Authored-By trailer does not.
+#
+# Exit status is 1 if any commit is unsigned or signed by a key not listed in
+# .github/allowed_signers, so this can gate a review.
+set -eu
+
+base="${1:-origin/main}"
+signers=".github/allowed_signers"
+
+[ -f "$signers" ] || { echo "missing $signers" >&2; exit 1; }
+git rev-parse --verify --quiet "$base" >/dev/null || {
+	echo "unknown base revision '$base'" >&2
+	exit 2
+}
+
+# Verification needs git pointed at the signers file; a checkout that never ran
+# agent-signing-setup would otherwise report every signature as unverifiable.
+configured="$(git config --get gpg.ssh.allowedSignersFile 2>/dev/null || true)"
+[ -n "$configured" ] || git config gpg.ssh.allowedSignersFile "$signers"
+
+unattributed=0
+total=0
+
+# %G? is G (good), U (good, untrusted), B (bad), N (none). %GS is the signer
+# principal from the allowed_signers file.
+# %x1f (unit separator) rather than a tab: tab is IFS whitespace, so an empty
+# signer field would collapse and shift the subject into it.
+git log --reverse --format='%h%x1f%G?%x1f%GS%x1f%GK%x1f%s' "$base..HEAD" > /tmp/agent-sigs.$$ || {
+	rm -f /tmp/agent-sigs.$$
+	exit 1
+}
+
+while IFS="$(printf '\037')" read -r sha status signer keyid subject; do
+	total=$((total + 1))
+	case "$status" in
+	G)
+		printf '%-10s signed by %-10s %s\n' "$sha" "${signer:-unknown}" "$subject"
+		;;
+	U)
+		# A real signature by a key this repository does not list. Report the
+		# fingerprint so the owning agent can add it.
+		printf '%-10s UNLISTED KEY %s  %s\n' "$sha" "$keyid" "$subject"
+		unattributed=$((unattributed + 1))
+		;;
+	*)
+		printf '%-10s UNSIGNED   %s\n' "$sha" "$subject"
+		unattributed=$((unattributed + 1))
+		;;
+	esac
+done < /tmp/agent-sigs.$$
+rm -f /tmp/agent-sigs.$$
+
+echo
+echo "$total commit(s) on $base..HEAD; $unattributed without verifiable attribution"
+if [ "$unattributed" -gt 0 ]; then
+	echo
+	echo "Commits predating signing adoption are expected here. New commits should"
+	echo "be signed — run scripts/agent-signing-setup <agent> once per checkout."
+	exit 1
+fi

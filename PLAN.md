@@ -57,15 +57,39 @@ remain deliberately unavailable.
 
 ## Milestone 3 — settlement
 
-Implement `/settle`, durable intent, transaction nonce coordination,
-simulation, gas estimation and policy, signer integration, idempotent
-broadcast/confirmation workers, ambiguous-RPC recovery, replacements, dropped
-transactions, reorg handling, and confirmed-only volume.
+Status: complete on `milestone-3-settlement`. The execution
+model is recorded in [ADR-0004](docs/decisions/0004-settlement-execution-model.md):
+GCP Cloud KMS, a single signer address, durable nonce allocation, recipient-gated
+`/settle` admission, explicit worker leases, and a configurable expiry margin.
+
+- [x] mandatory gas policy before any signer can be enabled
+- [x] accepted execution model and resolved design questions
+- [x] `signer_accounts` migration, worker lease columns, durable nonce allocation
+- [x] signer interface carrying nonce and EIP-1559 fields, with fail-closed validation
+- [x] settlement intent persisted atomically with nonce allocation and admission
+- [x] worker lease primitive: claim, renew, release, stale reclaim
+- [x] Cloud KMS signer behind the existing interface
+- [x] idempotent broadcast and confirmation workers over the lease
+- [x] ambiguous-RPC recovery, replacements, dropped transactions, reorg handling
+- [x] `/settle` endpoint and confirmed-only volume
+
+The `/settle` endpoint requires a prior `/verify` and runs the broadcast
+pipeline inline (sign once, broadcast once, record the hash), returning the
+official `SettleResponse`; the broadcast worker retries durable intents and the
+confirmation worker finalizes at the configured depth. The recovery worker
+reconciles ambiguous broadcasts on chain (identical re-broadcast after a grace
+window, proven by hash), replaces stuck pendings with same-nonce fee bumps,
+fills dropped nonce gaps that block later transactions, and returns reorged
+transactions to broadcast. The production signer is GCP Cloud KMS
+(`ETH402_SIGNER_MODE=external`, verified end-to-end against a real key); the
+development key signer remains for local use.
 
 ## Milestone 4 — public deployment
 
-Harden Caddy and image, document GCP deployment, integrate KMS/HSM/external
-signer, alerts, runbooks, public status, and privacy-preserving analytics.
+Harden Caddy and image, document GCP deployment, integrate Cloud KMS, alerts,
+runbooks, public status, and privacy-preserving analytics. Add the KMS-fronted
+policy signer deferred from Milestone 3, which moves the zero-value/USDC-selector
+allowlist out of the ETH402 process and into the signing boundary.
 
 ## Milestone 5 — public beta
 

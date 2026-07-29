@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,24 +20,28 @@ const (
 )
 
 type Config struct {
-	Environment        string
-	HTTPAddr           string
-	PublicBaseURL      string
-	DatabaseURL        string
-	DatabaseMaxConns   int32
-	EthereumRPCURL     string
-	FallbackRPCURL     string
-	ChainID            uint64
-	Network            string
-	USDCContract       string
-	RPCTimeout         time.Duration
-	RPCReadRetries     int
-	Confirmations      uint64
-	MaxFeePerGasWei    string
-	MaxPriorityFeeWei  string
-	MaxGasLimit        uint64
-	SignerMode         string
-	DevSignerKey       string
+	Environment       string
+	HTTPAddr          string
+	PublicBaseURL     string
+	DatabaseURL       string
+	DatabaseMaxConns  int32
+	EthereumRPCURL    string
+	FallbackRPCURL    string
+	ChainID           uint64
+	Network           string
+	USDCContract      string
+	RPCTimeout        time.Duration
+	RPCReadRetries    int
+	Confirmations     uint64
+	MaxFeePerGasWei   string
+	MaxPriorityFeeWei string
+	MaxGasLimit       uint64
+	SignerMode        string
+	DevSignerKey      string
+	// KMSKeyName is the Cloud KMS key version resource (projects/…/locations/…/
+	// keyRings/…/cryptoKeys/…/cryptoKeyVersions/N) used by the external signer
+	// backend. Credentials come from Application Default Credentials.
+	KMSKeyName         string
 	AllowUnsafeSigner  bool
 	EmailBackend       string
 	EmailFileDir       string
@@ -53,10 +58,31 @@ type Config struct {
 	EmailDenylist      []string
 	StatsCacheTTL      time.Duration
 	WorkerInterval     time.Duration
-	LogLevel           string
-	MetricsEnabled     bool
-	PublicRatePerMin   int
-	RegistrationRate   int
+	// SettlementExpiryMargin is the minimum lifetime an authorization must
+	// have left before ETH402 will broadcast it (ADR-0004 decision 11).
+	SettlementExpiryMargin time.Duration
+	// SigningTimeout bounds a single signer call. Signing is a network round
+	// trip in the settlement path, and its timeout is a failure mode distinct
+	// from RPC failure (ADR-0004 decision 8).
+	SigningTimeout time.Duration
+	// SettlementLeaseDuration is how long a worker holds a payment before the
+	// lease lapses and another worker may reclaim the work.
+	SettlementLeaseDuration time.Duration
+	// SettlementRecoveryGrace is how long recovery waits after an ambiguous
+	// broadcast before re-broadcasting the identical transaction.
+	SettlementRecoveryGrace time.Duration
+	// SettlementReplacementAfter is how long a broadcast may sit pending
+	// before recovery replaces it with a fee bump.
+	SettlementReplacementAfter time.Duration
+	// MerchantSettlementQuota bounds settlement intents per merchant per
+	// MerchantQuotaWindow. Quota × MaxGasLimit × MaxFeePerGasWei is the
+	// operator's worst-case gas exposure per merchant per window.
+	MerchantSettlementQuota int
+	MerchantQuotaWindow     time.Duration
+	LogLevel                string
+	MetricsEnabled          bool
+	PublicRatePerMin        int
+	RegistrationRate        int
 	// TrustedProxies lists the reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is always
 	// the client, which is correct only when the service is exposed directly.
@@ -66,45 +92,53 @@ type Config struct {
 func Load() (Config, error) {
 	var l loader
 	cfg := Config{
-		Environment:        l.str("ETH402_ENV", "development"),
-		HTTPAddr:           l.str("ETH402_HTTP_ADDR", ":8080"),
-		PublicBaseURL:      l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
-		DatabaseURL:        os.Getenv("ETH402_DATABASE_URL"),
-		DatabaseMaxConns:   l.int32("ETH402_DATABASE_MAX_CONNS", 10),
-		EthereumRPCURL:     os.Getenv("ETH402_ETHEREUM_RPC_URL"),
-		FallbackRPCURL:     os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
-		ChainID:            l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
-		Network:            l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
-		USDCContract:       l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
-		RPCTimeout:         l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
-		RPCReadRetries:     l.int("ETH402_RPC_READ_RETRIES", 2),
-		Confirmations:      l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
-		MaxFeePerGasWei:    l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
-		MaxPriorityFeeWei:  l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
-		MaxGasLimit:        l.uint64("ETH402_MAX_GAS_LIMIT", 0),
-		SignerMode:         l.str("ETH402_SIGNER_MODE", "disabled"),
-		DevSignerKey:       os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
-		AllowUnsafeSigner:  l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
-		EmailBackend:       l.str("ETH402_EMAIL_BACKEND", "log"),
-		EmailFileDir:       l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
-		EmailTokenTTL:      l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
-		EmailResend:        l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
-		WalletChallengeTTL: l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
-		RecipientCooldown:  l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
-		TermsVersion:       l.str("ETH402_TERMS_VERSION", "2026-07-27"),
-		APIKeyPepper:       l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
-		OperatorToken:      os.Getenv("ETH402_OPERATOR_TOKEN"),
-		BlockDisposable:    l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
-		RestrictFreeEmail:  l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
-		EmailAllowlist:     l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
-		EmailDenylist:      l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
-		StatsCacheTTL:      l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
-		WorkerInterval:     l.duration("ETH402_WORKER_INTERVAL", 15*time.Second),
-		LogLevel:           l.str("ETH402_LOG_LEVEL", "info"),
-		MetricsEnabled:     l.boolean("ETH402_METRICS_ENABLED", true),
-		PublicRatePerMin:   l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
-		RegistrationRate:   l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
-		TrustedProxies:     l.prefixes("ETH402_TRUSTED_PROXIES"),
+		Environment:                l.str("ETH402_ENV", "development"),
+		HTTPAddr:                   l.str("ETH402_HTTP_ADDR", ":8080"),
+		PublicBaseURL:              l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
+		DatabaseURL:                os.Getenv("ETH402_DATABASE_URL"),
+		DatabaseMaxConns:           l.int32("ETH402_DATABASE_MAX_CONNS", 10),
+		EthereumRPCURL:             os.Getenv("ETH402_ETHEREUM_RPC_URL"),
+		FallbackRPCURL:             os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
+		ChainID:                    l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
+		Network:                    l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
+		USDCContract:               l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
+		RPCTimeout:                 l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
+		RPCReadRetries:             l.int("ETH402_RPC_READ_RETRIES", 2),
+		Confirmations:              l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
+		MaxFeePerGasWei:            l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
+		MaxPriorityFeeWei:          l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
+		MaxGasLimit:                l.uint64("ETH402_MAX_GAS_LIMIT", 0),
+		SignerMode:                 l.str("ETH402_SIGNER_MODE", "disabled"),
+		DevSignerKey:               os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
+		KMSKeyName:                 l.str("ETH402_KMS_KEY_NAME", ""),
+		AllowUnsafeSigner:          l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
+		EmailBackend:               l.str("ETH402_EMAIL_BACKEND", "log"),
+		EmailFileDir:               l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
+		EmailTokenTTL:              l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
+		EmailResend:                l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
+		WalletChallengeTTL:         l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
+		RecipientCooldown:          l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
+		TermsVersion:               l.str("ETH402_TERMS_VERSION", "2026-07-27"),
+		APIKeyPepper:               l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
+		OperatorToken:              os.Getenv("ETH402_OPERATOR_TOKEN"),
+		BlockDisposable:            l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
+		RestrictFreeEmail:          l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
+		EmailAllowlist:             l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
+		EmailDenylist:              l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
+		StatsCacheTTL:              l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
+		WorkerInterval:             l.duration("ETH402_WORKER_INTERVAL", 15*time.Second),
+		SettlementExpiryMargin:     l.duration("ETH402_SETTLEMENT_EXPIRY_MARGIN", time.Minute),
+		SigningTimeout:             l.duration("ETH402_SIGNING_TIMEOUT", 10*time.Second),
+		SettlementLeaseDuration:    l.duration("ETH402_SETTLEMENT_LEASE_DURATION", 2*time.Minute),
+		SettlementRecoveryGrace:    l.duration("ETH402_SETTLEMENT_RECOVERY_GRACE", 2*time.Minute),
+		SettlementReplacementAfter: l.duration("ETH402_SETTLEMENT_REPLACEMENT_AFTER", 5*time.Minute),
+		MerchantSettlementQuota:    l.int("ETH402_MERCHANT_SETTLEMENT_QUOTA", 1000),
+		MerchantQuotaWindow:        l.duration("ETH402_MERCHANT_QUOTA_WINDOW", 24*time.Hour),
+		LogLevel:                   l.str("ETH402_LOG_LEVEL", "info"),
+		MetricsEnabled:             l.boolean("ETH402_METRICS_ENABLED", true),
+		PublicRatePerMin:           l.int("ETH402_PUBLIC_RATE_PER_MINUTE", 60),
+		RegistrationRate:           l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
+		TrustedProxies:             l.prefixes("ETH402_TRUSTED_PROXIES"),
 	}
 	return cfg, errors.Join(cfg.Validate(), errors.Join(l.errs...))
 }
@@ -140,8 +174,20 @@ func (c Config) Validate() error {
 	if c.PublicRatePerMin < 1 || c.RegistrationRate < 1 {
 		errs = append(errs, errors.New("rate limits must be positive"))
 	}
+	// Zero is not "unlimited": the quota is the only bound on how much gas an
+	// admitted merchant can spend (ADR-0004 decision 9), so it must be an explicit
+	// positive number. Raising it is a deliberate exposure decision.
+	if c.MerchantSettlementQuota < 1 || c.MerchantQuotaWindow <= 0 {
+		errs = append(errs, errors.New("merchant settlement quota and window must be positive"))
+	}
 	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.RecipientCooldown < 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
 		errs = append(errs, errors.New("durations must be positive (stats cache may be zero)"))
+	}
+	if c.SettlementExpiryMargin <= 0 || c.SigningTimeout <= 0 || c.SettlementLeaseDuration <= 0 {
+		errs = append(errs, errors.New("settlement expiry margin, signing timeout, and lease duration must be positive"))
+	}
+	if c.SettlementRecoveryGrace <= 0 || c.SettlementReplacementAfter <= 0 {
+		errs = append(errs, errors.New("settlement recovery grace and replacement delay must be positive"))
 	}
 	if len(c.APIKeyPepper) < 32 {
 		errs = append(errs, errors.New("API key pepper must be at least 32 bytes"))
@@ -152,13 +198,23 @@ func (c Config) Validate() error {
 	if c.EmailBackend != "log" && c.EmailBackend != "file" {
 		errs = append(errs, errors.New("email backend must be log or file in this build"))
 	}
-	for name, value := range map[string]string{
-		"max fee per gas": c.MaxFeePerGasWei, "max priority fee per gas": c.MaxPriorityFeeWei,
-	} {
-		n, ok := new(big.Int).SetString(value, 10)
-		if !ok || n.Sign() < 0 {
-			errs = append(errs, fmt.Errorf("%s must be an unsigned decimal integer", name))
-		}
+	maxFee, maxFeeOK := new(big.Int).SetString(c.MaxFeePerGasWei, 10)
+	priorityFee, priorityFeeOK := new(big.Int).SetString(c.MaxPriorityFeeWei, 10)
+	if !maxFeeOK || maxFee.Sign() < 0 {
+		errs = append(errs, errors.New("max fee per gas must be an unsigned decimal integer"))
+	}
+	if !priorityFeeOK || priorityFee.Sign() < 0 {
+		errs = append(errs, errors.New("max priority fee per gas must be an unsigned decimal integer"))
+	}
+	// EIP-1559 requires the priority fee to fit inside the total fee ceiling. A
+	// zero ceiling means "unset" and is checked by the signer gate below.
+	if maxFeeOK && priorityFeeOK && maxFee.Sign() > 0 && priorityFee.Cmp(maxFee) > 0 {
+		errs = append(errs, errors.New("max priority fee per gas must not exceed max fee per gas"))
+	}
+	// A settlement signer must never operate without an explicit spend ceiling:
+	// zero means unset, not unlimited. See docs/OPERATIONS.md.
+	if c.SignerMode != "disabled" && (!maxFeeOK || maxFee.Sign() <= 0 || c.MaxGasLimit == 0) {
+		errs = append(errs, errors.New("enabling a settlement signer requires non-zero max fee per gas and max gas limit"))
 	}
 	seenDomains := make(map[string]bool, len(c.EmailAllowlist))
 	for _, domain := range c.EmailAllowlist {
@@ -174,6 +230,9 @@ func (c Config) Validate() error {
 	}
 	if c.SignerMode == "development" && c.DevSignerKey == "" {
 		errs = append(errs, errors.New("development signer requires a private key"))
+	}
+	if c.SignerMode == "external" && !kmsKeyNamePattern.MatchString(c.KMSKeyName) {
+		errs = append(errs, errors.New("external signer requires ETH402_KMS_KEY_NAME as projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N"))
 	}
 	if c.Environment == "production" {
 		if c.PublicBaseURL != "" && !strings.HasPrefix(c.PublicBaseURL, "https://") {
@@ -194,6 +253,10 @@ func (c Config) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// kmsKeyNamePattern pins the Cloud KMS key version resource shape; signing
+// always names a concrete version so rotation is an explicit config change.
+var kmsKeyNamePattern = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[1-9][0-9]*$`)
 
 // loader reads environment variables and accumulates parse failures so that a
 // malformed value is reported by name instead of silently collapsing to a

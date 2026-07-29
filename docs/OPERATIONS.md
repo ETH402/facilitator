@@ -13,9 +13,115 @@ within bounds; transaction broadcast must not retry blindly. Alert on RPC/DB
 errors, worker health, confirmation lag, pending age, signer failures, revert
 rate, gas policy blocks, and stats-query failure.
 
-Gas maximums are typed decimal configuration but remain zero/disabled in the
-current build. Milestone 3 must require explicit non-zero policy before enabling
-any settlement signer.
+## Signer balance
+
+The settlement signer address holds a deliberately small working balance, topped
+up from a source ETH402 cannot spend from, with alerting on both absolute balance
+and burn rate. Cloud KMS signs digests and cannot inspect calldata, so a
+compromised process can have an arbitrary transaction signed; bounding the hot
+balance is what caps that loss. This is required before enabling any signer, and
+is not superseded by the in-process calldata allowlist. See
+[ADR-0004](decisions/0004-settlement-execution-model.md).
+
+## Cloud KMS signer
+
+The production backend is GCP Cloud KMS with an `EC_SIGN_SECP256K1_SHA256` key.
+Provision it once per environment:
+
+```sh
+gcloud services enable cloudkms.googleapis.com --project=PROJECT
+gcloud kms keyrings create eth402-settlement --location=REGION --project=PROJECT
+gcloud kms keys create eth402-settlement-signer \
+  --keyring=eth402-settlement --location=REGION --project=PROJECT \
+  --purpose=asymmetric-signing \
+  --default-algorithm=ec-sign-secp256k1-sha256 \
+  --protection-level=hsm
+```
+
+Cloud KMS offers secp256k1 only at HSM protection level — this is still the
+plain Cloud KMS API, IAM, and audit logging of ADR-0004 decision 8, not the
+dedicated Cloud HSM product the ADR weighed as a signer. The runtime identity
+needs `roles/cloudkms.signerVerifier` and `roles/cloudkms.publicKeyViewer` on
+the key (the public key read resolves the signer address at startup). In
+production that identity is a dedicated service account; locally,
+`gcloud auth application-default login` provides it through ADC.
+
+Set `ETH402_SIGNER_MODE=external` and `ETH402_KMS_KEY_NAME` to the full key
+*version* resource
+(`projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N`).
+Naming a version makes rotation an explicit config change: create the new
+version, point the variable at it, restart. Startup resolves and logs the
+derived signer address — fund it with the bounded hot balance only, and verify
+the address out-of-band before the first top-up.
+
+Key destruction in Cloud KMS is scheduled (24h minimum by default) rather than
+immediate, so an accidental destroy is recoverable within the window; never
+destroy the only enabled version while its nonce sequence has in-flight
+transactions.
+
+Gas maximums are typed decimal configuration. Enabling any non-disabled
+`ETH402_SIGNER_MODE` requires non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and
+`ETH402_MAX_GAS_LIMIT`: zero means unset, not unlimited, so a signer cannot be
+switched on without an explicit spend ceiling. A priority fee above the total
+fee ceiling is also rejected. Settlement transactions are estimated beneath the
+ceiling — initial max fee is `min(2·baseFee + tip, ETH402_MAX_FEE_PER_GAS_WEI)`
+— so the ceiling is a bound, not the spend; the worst-case per-settlement cost
+remains known in advance.
+
+## Settlement workers
+
+With a signer enabled, three workers run in-process on `ETH402_WORKER_INTERVAL`
+(default 15s): the broadcast worker retries durable intents whose inline
+`/settle` broadcast did not happen, the confirmation worker advances broadcast
+transactions to `confirming`, `confirmed` (at
+`ETH402_REQUIRED_CONFIRMATIONS`), or `reverted` and returns reorged-out
+transactions to `broadcast`, and the recovery worker reconciles the failure
+modes below. Workers claim payments with leases of
+`ETH402_SETTLEMENT_LEASE_DURATION` (default 2m); a dead worker's payments are
+reclaimed when the lease lapses. Batched workers renew each payment immediately
+before acting and skip it if ownership has already lapsed. A signing failure leaves the intent untouched
+for the next tick; a broadcast failure marks the transaction `ambiguous` and
+moves the payment to `manual_review` (ADR-0004 decision 4).
+`ETH402_SETTLEMENT_EXPIRY_MARGIN` (default 60s) retires intents whose
+authorization would expire before broadcast as `expired` instead of buying a
+predictable revert.
+
+Recovery handles four cases automatically:
+
+- **Ambiguous broadcasts.** The transaction is looked up on chain by its
+  signed-transaction hash; a sighting re-attaches the hash and returns the
+  payment to the pipeline. After `ETH402_SETTLEMENT_RECOVERY_GRACE` (default
+  2m) without a sighting, the identical transaction — same nonce, gas, and
+  fees, never a fresh nonce — is re-signed and re-broadcast, proven by the
+  stored deterministic sighash. Cloud KMS randomizes the ECDSA nonce, so the
+  re-signed hash legitimately differs from the stored one: the fresh signature
+  is then recorded as the replacement of the ambiguous original (payment moves
+  `manual_review → replaced`), and whichever signature the network mines
+  resolves the payment.
+- **Stuck pendings.** A broadcast pending beyond
+  `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced with a
+  fee-bumped transaction on the same nonce (tip ×1.125, capped by
+  `ETH402_MAX_FEE_PER_GAS_WEI`). Whichever version mines, the recorded history
+  is corrected to match.
+- **Nonce gaps.** A dropped `expired` or simulation-`failed` intent blocking a
+  later in-flight nonce waits until `validBefore` plus the settlement safety
+  margin, then is signed and re-broadcast. Its exact signed bytes are stored
+  before the first send and reused after ambiguity; its predictable revert
+  consumes the signer nonce without moving USDC.
+- **Reorgs.** A transaction whose block leaves the canonical chain returns to
+  `broadcast` and is observed from scratch.
+
+Keep alerting on payments entering `manual_review`: most leave on their own
+once recovery reconciles them, but three cases stay and need an operator —
+ambiguous rows written before migration `000004` (no stored fee fields to
+re-sign from), a recomputed sighash that does not match the stored one (treat
+the record as corrupt; reconcile the nonce on chain by hand — rows predating
+migration `000006` compare raw hashes instead, which a randomized-nonce signer
+like Cloud KMS can never satisfy, so those rows resolve by on-chain lookup
+only), and a stuck
+transaction already at the fee ceiling (raising `ETH402_MAX_FEE_PER_GAS_WEI`
+is a spend decision, not the worker's). A gap filler that *succeeds* on an
+expired authorization is logged as an error and left for investigation.
 
 Logs are structured JSON. Never log keys, tokens, signatures, raw
 authorizations, signed transactions, or unredacted email. Back up PostgreSQL,
@@ -60,6 +166,36 @@ false the route returns 404. The bundled `Caddyfile` also refuses `/metrics` on
 the public listener, and Prometheus scrapes `app:8080` directly on the container
 network. Keep both controls in place: metrics are an operational disclosure
 boundary, not public data.
+
+## Settlement gas exposure
+
+`ETH402_MERCHANT_SETTLEMENT_QUOTA` bounds how many settlement intents one
+merchant may commit per `ETH402_MERCHANT_QUOTA_WINDOW`. Because registration is
+not Sybil-resistant, the recipient gate alone says nothing about volume: this
+quota is what makes an admitted merchant's spend finite. Worst-case exposure per
+merchant per window is quota × `ETH402_MAX_GAS_LIMIT` ×
+`ETH402_MAX_FEE_PER_GAS_WEI`; compute it before raising either. Zero is rejected
+rather than treated as unlimited. Admission locks the current active merchant
+row before counting and keeps that lock through the intent commit. Different
+payments for one merchant therefore decide in commit order instead of observing
+the same pre-limit count. The same check makes a completed suspension revoke
+later settlement even when `/verify` attributed the payment beforehand.
+Replacements and gap fillers reuse existing rows and do not count.
+
+Still outstanding:
+
+- **A signer balance and burn-rate alert.** The bounded hot balance is the
+  operative signer-compromise control, so alert on both the absolute balance and
+  the rate of change; without that the bound is a convention.
+
+## Run one application instance
+
+The recovery worker's replacement, nonce-gap, and gap-filler passes deliberately
+run without a lease, on the basis that no other worker touches those rows. That
+holds for a single instance only. Database status guards prevent two instances
+from preparing different gap fillers, but replacement and observation passes
+are still designed and operated as a singleton. Scale vertically until those
+passes take leases.
 
 ## Verification attempt retention
 

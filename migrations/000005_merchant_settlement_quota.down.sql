@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS payment_records_merchant_settlement_idx;

@@ -30,9 +30,11 @@ flowchart LR
 - `internal/store` and migrations: durable truth and concurrency enforcement.
 - `internal/x402` and `verification`: deterministic identity plus the narrow
   v2/EIP-3009 verifier, built on the pinned official x402 Go implementation.
-- `internal/settlement`: explicit state rules; live settlement remains future.
+- `internal/settlement`: state rules, `/settle` admission, the broadcast
+  pipeline shared by HTTP and workers, and confirmation.
 - `internal/ethereum`: bounded health reads, read-only verification calls,
-  primary/fallback RPC, and a future non-blind broadcast path.
+  primary/fallback RPC reads, and the single-attempt broadcast path (a failed
+  send is ambiguous, so it never rotates providers).
 - `internal/signer`: transaction-signing boundary. Raw keys are development-only.
 - `internal/email`, `walletproof`, `auth`, `merchant`: onboarding boundary.
 - workers: database-leased/idempotent confirmation and recovery loops.
@@ -56,13 +58,22 @@ malformed signature cannot reserve/poison a buyer nonce in PostgreSQL.
 Verification attempts remain append-only, including malformed outer requests.
 Settlement intent is committed before signing/broadcast. Workers claim durable
 rows with transactional locking; repeated execution checks current state.
+Admission first locks the payment, then the currently active merchant row.
+The second lock serialises the per-merchant settlement quota across different
+payments and makes a completed suspension revoke later settlement requests.
 
-An ambiguous broadcast records signed-transaction identity and enters manual
-reconciliation rather than sending a new transaction. Receipt observations
-record block hash/number; finalization requires canonical confirmations.
-Reorgs return non-final transactions to confirmation. Replacement uses the
-same Ethereum account nonce, is linked explicitly, and never changes USDC
-calldata. Process or database restart resumes from durable states.
+An ambiguous broadcast records signed-transaction identity and is reconciled
+by the recovery worker: on-chain lookup first, then — after a grace window and
+only from the stored nonce, gas, and fee fields — an identical re-broadcast
+whose deterministic sighash must match the stored one. Receipt observations record
+block hash/number; finalization requires canonical confirmations. Reorgs
+return non-final transactions to broadcast. Replacement uses the same Ethereum
+account nonce, is linked explicitly, bumps fees within the configured ceiling,
+and never changes USDC calldata; whichever version mines becomes the recorded
+truth. A nonce-gap filler is not eligible until the EIP-3009 authorization has
+been expired for a full safety margin, and its exact signed bytes are committed
+before broadcast so an ambiguous send is retried identically. Process or
+database restart resumes from durable states.
 
 See [settlement flow](SETTLEMENT_FLOW.md), [data model](DATA_MODEL.md), and
 [ADR-0001](decisions/0001-modular-monolith-and-scope.md).

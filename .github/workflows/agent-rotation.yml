@@ -1,0 +1,215 @@
+name: agent-rotation
+
+# Runs one agent per hour in rotation: Claude, Codex, Kimi.
+#
+# GitHub's scheduler is UTC and not punctual — a run can lag well past the hour
+# under load — so treat the cadence as approximate. Scheduled workflows are also
+# disabled automatically after 60 days without repository activity.
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Which agent runs (auto = by the hour)"
+        type: choice
+        default: auto
+        options: [auto, claude, codex, kimi]
+
+# One agent at a time. The runner gives each job its own checkout, so the
+# working-tree lock is unnecessary here, but two agents pushing at once would
+# still race on branches and pull requests.
+concurrency:
+  group: agent-rotation
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: eth402
+          POSTGRES_USER: eth402
+          POSTGRES_PASSWORD: eth402_dev_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eth402 -d eth402"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - name: Choose the agent
+        id: pick
+        run: |
+          set -euo pipefail
+          requested='${{ inputs.agent }}'
+          if [ -n "$requested" ] && [ "$requested" != "auto" ]; then
+            agent="$requested"
+          else
+            # Rotation by UTC hour: 0,3,6.. claude; 1,4,7.. codex; 2,5,8.. kimi.
+            case "$(( $(date -u +%H) % 3 ))" in
+            0) agent=claude ;;
+            1) agent=codex ;;
+            *) agent=kimi ;;
+            esac
+          fi
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
+          echo "Agent for this run: $agent"
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # Full history: the agent reads commit messages and verifies signatures.
+          fetch-depth: 0
+          # A PAT if present, so commits the agent pushes trigger CI. Pushes made
+          # with GITHUB_TOKEN deliberately do not start other workflows, which
+          # would leave every agent pull request without checks.
+          token: ${{ secrets.AGENT_PAT || github.token }}
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      - name: Install verification tools
+        run: |
+          set -euo pipefail
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Create the test database
+        env:
+          PGPASSWORD: eth402_dev_only
+        run: |
+          set -euo pipefail
+          # The agent's verification commands target eth402_test, matching
+          # docs/COLLABORATION.md so one command line works everywhere.
+          psql -h localhost -U eth402 -d postgres -c 'CREATE DATABASE eth402_test OWNER eth402'
+
+      - name: Preflight and configure signing
+        id: preflight
+        env:
+          SIGNING_KEY: ${{ secrets[format('AGENT_SIGNING_KEY_{0}', steps.pick.outputs.agent)] }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          KIMI_INSTALL: ${{ vars.KIMI_INSTALL }}
+        run: |
+          set -euo pipefail
+          agent='${{ steps.pick.outputs.agent }}'
+          missing=""
+
+          [ -n "${SIGNING_KEY:-}" ] || missing="$missing AGENT_SIGNING_KEY_$(echo "$agent" | tr a-z A-Z)"
+          case "$agent" in
+          claude) [ -n "${ANTHROPIC_API_KEY:-}" ] || missing="$missing ANTHROPIC_API_KEY" ;;
+          codex)  [ -n "${OPENAI_API_KEY:-}" ]    || missing="$missing OPENAI_API_KEY" ;;
+          kimi)
+            [ -n "${KIMI_API_KEY:-}" ] || missing="$missing KIMI_API_KEY"
+            # Kimi ships as a standalone binary with its own OAuth flow rather than
+            # an npm package, so its install command cannot be hardcoded here.
+            [ -n "${KIMI_INSTALL:-}" ] || missing="$missing vars.KIMI_INSTALL"
+            ;;
+          esac
+
+          if [ -n "$missing" ]; then
+            # A run someone asked for must fail loudly; an unattended hourly run
+            # must not, or an unconfigured repository generates 24 failure emails a
+            # day and the signal is lost in the noise.
+            if [ '${{ github.event_name }}' = "workflow_dispatch" ]; then
+              echo "::error::$agent cannot run; missing:$missing"
+              exit 1
+            fi
+            echo "::warning::$agent skipped; missing:$missing"
+            {
+              echo "### Agent rotation: $agent — skipped"
+              echo ""
+              echo "Not configured yet. Missing:"
+              for item in $missing; do echo "- \`$item\`"; done
+              echo ""
+              echo "See \`docs/COLLABORATION.md\` for what each one is for."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SIGNING_KEY" > "$HOME/.ssh/eth402_agent_${agent}"
+          chmod 600 "$HOME/.ssh/eth402_agent_${agent}"
+          ssh-keygen -y -f "$HOME/.ssh/eth402_agent_${agent}" > "$HOME/.ssh/eth402_agent_${agent}.pub"
+          git config user.name "eth402-agent-${agent}"
+          git config user.email "${agent}@agents.eth402.invalid"
+          # Binds signing to the agent, exactly as the local lock does.
+          scripts/agent-lock acquire "$agent" "scheduled rotation turn"
+          if ! grep -q "^${agent} " .github/allowed_signers; then
+            echo "::warning::${agent} is not listed in .github/allowed_signers;"
+            echo "its commits will verify as an unlisted key until that is committed."
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install the agent CLI
+        if: steps.preflight.outputs.ready == 'true'
+        env:
+          KIMI_INSTALL: ${{ vars.KIMI_INSTALL }}
+        run: |
+          set -euo pipefail
+          case '${{ steps.pick.outputs.agent }}' in
+          claude)
+            curl -fsSL https://claude.ai/install.sh | bash
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            ;;
+          codex)
+            npm install -g @openai/codex@0.144.6
+            ;;
+          kimi)
+            # Kimi ships as a standalone binary with its own OAuth flow rather
+            # than an npm package, so its install command is not hardcoded here:
+            # a guessed URL would fail silently at 02:00 every third hour. Set the
+            # repository variable KIMI_INSTALL to the documented command.
+            sh -c "$KIMI_INSTALL"
+            ;;
+          esac
+
+      - name: Run the agent's turn
+        if: steps.preflight.outputs.ready == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || github.token }}
+          ETH402_TEST_DATABASE_URL: postgres://eth402:eth402_dev_only@localhost:5432/eth402_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          prompt="$(cat .github/agent-prompt.md)"
+          case '${{ steps.pick.outputs.agent }}' in
+          claude)
+            claude -p "$prompt" --permission-mode acceptEdits
+            ;;
+          codex)
+            codex exec --full-auto "$prompt"
+            ;;
+          kimi)
+            kimi -p "$prompt"
+            ;;
+          esac
+
+      - name: Report what the turn produced
+        if: always() && steps.preflight.outputs.ready == 'true' 
+        run: |
+          set -euo pipefail
+          echo "### Agent rotation: ${{ steps.pick.outputs.agent }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commits made this run:" >> "$GITHUB_STEP_SUMMARY"
+          git log --format='- `%h` %G? %GS %s' "origin/${GITHUB_REF_NAME}..HEAD" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || \
+            echo "- none" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # An unsigned or unlisted commit means attribution is broken, which
+          # makes "the author never merges" unenforceable for that commit.
+          scripts/agent-verify-signatures "origin/${GITHUB_REF_NAME}" >> "$GITHUB_STEP_SUMMARY" 2>&1 || \
+            echo "" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,74 @@
+#!/bin/sh
+# Configures this checkout to sign commits with an agent's own SSH key.
+#
+#   scripts/agent-signing-setup <agent>
+#
+# Generates ~/.ssh/eth402_agent_<agent> if absent, points git at it, enables
+# signing, and appends the public key to .github/allowed_signers.
+#
+# Why signing and not just the Co-Authored-By trailer: all three agents push as
+# one GitHub identity, so a trailer is only as trustworthy as whichever agent
+# typed it. A signature requires the private key, which makes authorship
+# auditable — and rule 5 in docs/COLLABORATION.md, "the author never merges",
+# depends on being able to tell authors apart after the fact.
+#
+# The key is signing-only. It is never registered as an authentication key, so it
+# grants access to nothing; the worst case for a leak is forged attribution, not
+# repository write access.
+#
+# Config is written repo-local (.git/config is not committed), so every agent
+# runs this once per checkout.
+set -eu
+
+agent="${1:?agent name required, e.g. claude, codex, kimi}"
+case "$agent" in
+*[!a-z0-9-]*) echo "agent name must be lowercase letters, digits, or dashes" >&2; exit 2 ;;
+esac
+
+key="$HOME/.ssh/eth402_agent_$agent"
+signers=".github/allowed_signers"
+
+if [ ! -f "$key" ]; then
+	# No passphrase: signing runs unattended, and a passphrase would either block
+	# the agent or end up in an environment variable, which is worse.
+	ssh-keygen -t ed25519 -N "" -C "eth402-agent-$agent" -f "$key" >/dev/null
+	echo "generated $key"
+else
+	echo "reusing existing $key"
+fi
+
+git config gpg.format ssh
+git config user.signingkey "$key.pub"
+git config commit.gpgsign true
+git config tag.gpgsign true
+git config gpg.ssh.allowedSignersFile "$signers"
+git config gpg.ssh.program "$(pwd)/scripts/agent-ssh-sign"
+echo "git configured to sign as $agent"
+
+if [ -f "$signers" ] && grep -q "^$agent " "$signers"; then
+	existing="$(sed -n "s/^$agent //p" "$signers" | head -1)"
+	if [ "$existing" != "$(cat "$key.pub")" ]; then
+		# Two different keys claiming one agent name makes attribution ambiguous,
+		# which defeats the purpose.
+		echo "WARNING: $signers already lists a different key for '$agent'." >&2
+		echo "Resolve that before committing, or attribution becomes ambiguous." >&2
+		exit 1
+	fi
+	echo "$signers already lists this key"
+else
+	printf '%s %s\n' "$agent" "$(cat "$key.pub")" >> "$signers"
+	echo "appended $agent to $signers — commit that change"
+fi
+
+cat <<NOTE
+
+Next:
+  1. Register the *public* key on GitHub as a signing key so commits show
+     Verified: https://github.com/settings/ssh/new (key type: signing key)
+       $(cat "$key.pub")
+  2. Commit $signers so other agents can verify your signatures.
+  3. Check the whole branch with: scripts/agent-verify-signatures
+
+For GitHub Actions, put the private key in a repository secret and write it to
+~/.ssh at job start. It signs only, so it authorises nothing.
+NOTE

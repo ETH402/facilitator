@@ -273,7 +273,7 @@ func FuzzVerifyRequestValidation(f *testing.F) {
 		if json.Unmarshal(data, &candidate) != nil {
 			return
 		}
-		_, _ = validateRequest(candidate)
+		_, _ = ParseRequest(candidate)
 	})
 }
 
