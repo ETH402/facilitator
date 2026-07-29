@@ -129,6 +129,31 @@ func TestSMTPSenderRejectsHeaderInjection(t *testing.T) {
 	}
 }
 
+func TestSMTPSenderProbeAuthenticatesWithoutDelivery(t *testing.T) {
+	t.Parallel()
+	certificate, roots := testCertificate(t)
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go serveSMTP(t, listener, false, nil, make(chan string, 1))
+	sender, err := NewSMTPSender(SMTPConfig{
+		Address: listener.Addr().String(), Username: "user", Password: "password",
+		From: "verify@example.com", TLSMode: SMTPModeTLS, Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.tlsConfig.RootCAs = roots
+	sender.tlsConfig.ServerName = "127.0.0.1"
+	if err := sender.Probe(context.Background()); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+}
+
 func serveSMTP(t *testing.T, listener net.Listener, advertiseSTARTTLS bool, certificate *tls.Certificate, delivered chan<- string) {
 	t.Helper()
 	connection, err := listener.Accept()
@@ -161,6 +186,8 @@ func serveSMTP(t *testing.T, listener net.Listener, advertiseSTARTTLS bool, cert
 			_ = writer.PrintfLine("235 authenticated")
 		case "MAIL", "RCPT":
 			_ = writer.PrintfLine("250 accepted")
+		case "NOOP":
+			_ = writer.PrintfLine("250 ok")
 		case "DATA":
 			_ = writer.PrintfLine("354 send data")
 			body, readErr := io.ReadAll(reader.DotReader())

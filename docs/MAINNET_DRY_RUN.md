@@ -23,6 +23,9 @@ Do not begin while any item is false:
   the migration role and verified before the application starts.
 - Two independently operated, authenticated mainnet RPCs agree on chain ID,
   head, USDC code, payer balance, and authorization nonce state.
+- PostgreSQL uses certificate-verified TLS (`sslmode=verify-full`), every
+  embedded migration is applied, and the production startup preflight passes
+  without exceptions.
 - `ETH402_SIGNER_MODE=policy` is deployed as described in
   [Deployment](DEPLOYMENT.md). The policy-signer identity is the only identity
   with the KMS signing grant; the facilitator cannot call KMS directly.

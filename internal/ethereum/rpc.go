@@ -73,6 +73,34 @@ func NewClient(url, fallback string, timeout time.Duration, retries int) *Client
 	return &Client{url: url, fallback: fallback, client: &http.Client{Timeout: timeout}, retries: retries}
 }
 
+// ValidateProviders checks each configured provider independently. The ordinary
+// read path succeeds as soon as one provider answers, which is correct for
+// availability but would let a dead or wrong-chain fallback go unnoticed until
+// the primary failed during an incident.
+func ValidateProviders(ctx context.Context, primary, fallback string, timeout time.Duration, expectedChainID uint64) error {
+	providers := []struct {
+		name string
+		url  string
+	}{{name: "primary", url: primary}}
+	if fallback != "" {
+		providers = append(providers, struct {
+			name string
+			url  string
+		}{name: "fallback", url: fallback})
+	}
+	for _, provider := range providers {
+		chainID, err := NewClient(provider.url, "", timeout, 0).ChainID(ctx)
+		if err != nil {
+			return fmt.Errorf("%s Ethereum RPC validation failed: %w", provider.name, err)
+		}
+		if chainID != expectedChainID {
+			return fmt.Errorf("%s Ethereum RPC reports chain ID %d, want %d",
+				provider.name, chainID, expectedChainID)
+		}
+	}
+	return nil
+}
+
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
 	Method  string `json:"method"`

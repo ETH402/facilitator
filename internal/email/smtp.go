@@ -90,57 +90,12 @@ func (s *SMTPSender) Send(ctx context.Context, message Message) error {
 	if err != nil {
 		return err
 	}
-
-	deadline := s.now().Add(s.timeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
-	connection, err := s.dialContext(ctx, "tcp", s.address)
+	client, err := s.open(ctx)
 	if err != nil {
-		return smtpError("connect", err)
-	}
-	defer func() { _ = connection.Close() }()
-	if err := connection.SetDeadline(deadline); err != nil {
-		return errors.New("SMTP deadline setup failed")
-	}
-
-	var client *smtp.Client
-	switch s.tlsMode {
-	case SMTPModeTLS:
-		secure := tls.Client(connection, s.tlsConfig.Clone())
-		if err := secure.HandshakeContext(ctx); err != nil {
-			return smtpError("TLS handshake", err)
-		}
-		client, err = smtp.NewClient(secure, s.host)
-	case SMTPModeSTARTTLS:
-		client, err = smtp.NewClient(connection, s.host)
-		if err == nil {
-			supported, _ := client.Extension("STARTTLS")
-			if !supported {
-				_ = client.Close()
-				return errors.New("SMTP server does not advertise required STARTTLS")
-			}
-			err = client.StartTLS(s.tlsConfig.Clone())
-		}
-	default:
-		// Construction rejects this; keep the send path fail-closed if a future
-		// caller creates the value without the constructor.
-		return errors.New("SMTP TLS mode is invalid")
-	}
-	if err != nil {
-		return smtpError("session setup", err)
+		return err
 	}
 	defer func() { _ = client.Close() }()
 
-	state, secure := client.TLSConnectionState()
-	if !secure || !state.HandshakeComplete {
-		return errors.New("SMTP session is not protected by TLS")
-	}
-	if s.username != "" {
-		if err := client.Auth(smtp.PlainAuth("", s.username, s.password, s.host)); err != nil {
-			return smtpError("authentication", err)
-		}
-	}
 	if err := client.Mail(s.from.Address); err != nil {
 		return smtpError("sender", err)
 	}
@@ -162,6 +117,83 @@ func (s *SMTPSender) Send(ctx context.Context, message Message) error {
 		return smtpError("quit", err)
 	}
 	return nil
+}
+
+// Probe verifies connectivity, certificate identity, mandatory TLS, and
+// authentication without sending a message.
+func (s *SMTPSender) Probe(ctx context.Context) error {
+	client, err := s.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.Noop(); err != nil {
+		return smtpError("probe", err)
+	}
+	if err := client.Quit(); err != nil {
+		return smtpError("quit", err)
+	}
+	return nil
+}
+
+func (s *SMTPSender) open(ctx context.Context) (*smtp.Client, error) {
+	deadline := s.now().Add(s.timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	connection, err := s.dialContext(ctx, "tcp", s.address)
+	if err != nil {
+		return nil, smtpError("connect", err)
+	}
+	release := true
+	defer func() {
+		if release {
+			_ = connection.Close()
+		}
+	}()
+	if err := connection.SetDeadline(deadline); err != nil {
+		return nil, errors.New("SMTP deadline setup failed")
+	}
+
+	var client *smtp.Client
+	switch s.tlsMode {
+	case SMTPModeTLS:
+		secure := tls.Client(connection, s.tlsConfig.Clone())
+		if err := secure.HandshakeContext(ctx); err != nil {
+			return nil, smtpError("TLS handshake", err)
+		}
+		client, err = smtp.NewClient(secure, s.host)
+	case SMTPModeSTARTTLS:
+		client, err = smtp.NewClient(connection, s.host)
+		if err == nil {
+			supported, _ := client.Extension("STARTTLS")
+			if !supported {
+				_ = client.Close()
+				return nil, errors.New("SMTP server does not advertise required STARTTLS")
+			}
+			err = client.StartTLS(s.tlsConfig.Clone())
+		}
+	default:
+		// Construction rejects this; keep the send path fail-closed if a future
+		// caller creates the value without the constructor.
+		return nil, errors.New("SMTP TLS mode is invalid")
+	}
+	if err != nil {
+		return nil, smtpError("session setup", err)
+	}
+
+	state, secure := client.TLSConnectionState()
+	if !secure || !state.HandshakeComplete {
+		_ = client.Close()
+		return nil, errors.New("SMTP session is not protected by TLS")
+	}
+	if s.username != "" {
+		if err := client.Auth(smtp.PlainAuth("", s.username, s.password, s.host)); err != nil {
+			return nil, smtpError("authentication", err)
+		}
+	}
+	release = false
+	return client, nil
 }
 
 func (s *SMTPSender) encode(message Message, to *mail.Address) ([]byte, error) {

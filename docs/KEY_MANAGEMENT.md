@@ -12,7 +12,8 @@ chain-1, canonical-USDC, zero-value call it signs. Grant the KMS key only to
 the boundary's identity; a direct grant to the facilitator bypasses the policy
 and makes the arrangement decorative. The in-process
 `signer.Transaction.Validate` remains defense in depth. Direct KMS mode
-(`external`) is implemented, but KMS alone cannot inspect calldata. Rate limits,
+(`external`) is implemented for controlled non-production validation, but KMS
+alone cannot inspect calldata and production configuration rejects it. Rate limits,
 audited access, separate staging and production keys, dual control for policy
 changes, and emergency disable remain operational requirements. See
 [ADR-0004](decisions/0004-settlement-execution-model.md).

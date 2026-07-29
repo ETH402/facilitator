@@ -23,6 +23,7 @@ func validConfig() Config {
 		PaymentRetention: 30 * 24 * time.Hour, EphemeralRetention: 24 * time.Hour,
 		RevokedKeyRetention: 30 * 24 * time.Hour, RetentionInterval: time.Hour,
 		RetentionBatchSize: 500,
+		MetricsEnabled:     true,
 		TermsVersion:       "test", APIKeyPepper: "01234567890123456789012345678901",
 	}
 }
@@ -162,6 +163,9 @@ func TestProductionAcceptsSMTP(t *testing.T) {
 	cfg := validConfig()
 	cfg.Environment = "production"
 	cfg.PublicBaseURL = "https://eth402.example"
+	cfg.DatabaseURL = "postgres://eth402@example.internal/eth402?sslmode=verify-full"
+	cfg.EthereumRPCURL = "https://primary-rpc.example"
+	cfg.FallbackRPCURL = "https://fallback-rpc.example"
 	cfg.EmailBackend = "smtp"
 	cfg.SMTPAddress = "smtp.example.com:465"
 	cfg.SMTPUsername = "production-smtp-user"
@@ -176,6 +180,54 @@ func TestProductionAcceptsSMTP(t *testing.T) {
 	summary := fmt.Sprint(cfg.RedactedSummary())
 	if strings.Contains(summary, cfg.SMTPPassword) || strings.Contains(summary, cfg.SMTPUsername) {
 		t.Fatal("SMTP credentials exposed in redacted configuration summary")
+	}
+}
+
+func TestProductionRequiresIndependentEncryptedDependencies(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Environment = "production"
+	cfg.PublicBaseURL = "https://eth402.example"
+	cfg.DatabaseURL = "postgres://eth402@example.internal/eth402?sslmode=verify-full"
+	cfg.EthereumRPCURL = "https://primary-rpc.example"
+	cfg.FallbackRPCURL = "https://fallback-rpc.example"
+	cfg.EmailBackend = "smtp"
+	cfg.SMTPAddress = "smtp.example.com:465"
+	cfg.SMTPFrom = "verify@example.com"
+	cfg.SMTPTLSMode = "tls"
+	cfg.SMTPTimeout = 10 * time.Second
+	cfg.APIKeyPepper = "independent-production-pepper-value"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("baseline production configuration rejected: %v", err)
+	}
+	cfg.FallbackRPCURL = cfg.EthereumRPCURL
+	cfg.DatabaseURL = "postgres://eth402@example.internal/eth402?sslmode=require"
+	cfg.MetricsEnabled = false
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("production accepted one RPC, non-verifying database TLS, and disabled metrics")
+	}
+}
+
+func TestProductionRequiresPolicySigner(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Environment = "production"
+	cfg.PublicBaseURL = "https://eth402.example"
+	cfg.DatabaseURL = "postgres://eth402@example.internal/eth402?sslmode=verify-full"
+	cfg.EthereumRPCURL = "https://primary-rpc.example"
+	cfg.FallbackRPCURL = "https://fallback-rpc.example"
+	cfg.EmailBackend = "smtp"
+	cfg.SMTPAddress = "smtp.example.com:465"
+	cfg.SMTPFrom = "verify@example.com"
+	cfg.SMTPTLSMode = "tls"
+	cfg.SMTPTimeout = 10 * time.Second
+	cfg.APIKeyPepper = "independent-production-pepper-value"
+	cfg.SignerMode = "external"
+	cfg.KMSKeyName = "projects/eth402/locations/europe-west1/keyRings/settlement/cryptoKeys/signer/cryptoKeyVersions/1"
+	cfg.MaxFeePerGasWei = "1"
+	cfg.MaxGasLimit = 1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("production accepted direct KMS mode")
 	}
 }
 

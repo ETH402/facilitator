@@ -228,3 +228,25 @@ func TestCallClassifiesRevertsAndTransientFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateProvidersChecksBothIndependently(t *testing.T) {
+	t.Parallel()
+	server := func(result string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + result + `"}`))
+		}))
+	}
+	primary := server("0x1")
+	defer primary.Close()
+	fallback := server("0x1")
+	defer fallback.Close()
+	if err := ValidateProviders(context.Background(), primary.URL, fallback.URL, time.Second, 1); err != nil {
+		t.Fatalf("valid providers rejected: %v", err)
+	}
+	wrong := server("0x2105")
+	defer wrong.Close()
+	err := ValidateProviders(context.Background(), primary.URL, wrong.URL, time.Second, 1)
+	if err == nil || !strings.Contains(err.Error(), "fallback") {
+		t.Fatalf("wrong-chain fallback error = %v", err)
+	}
+}

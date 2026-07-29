@@ -1,8 +1,9 @@
 # Operations
 
 Run migrations as a distinct deployment step. The application never creates
-schema. Use separate PostgreSQL owner, migration, and runtime roles; runtime
-needs only required table/sequence operations and no DDL.
+schema and refuses to start when applied and embedded versions differ. Use
+separate PostgreSQL owner, migration, and runtime roles; runtime needs only
+required table/sequence operations and no DDL.
 
 Readiness requires PostgreSQL ping and RPC `eth_chainId == 1`. Liveness only
 asserts the process can serve HTTP. Remove an instance from traffic on
@@ -81,7 +82,8 @@ The facilitator uses `ETH402_SIGNER_MODE=policy`,
 `ETH402_POLICY_SIGNER_URL`, and `ETH402_POLICY_SIGNER_TOKEN`; it must not hold
 the KMS signing grant. `ETH402_SIGNER_MODE=external` and
 `ETH402_KMS_KEY_NAME` connect the facilitator directly to KMS and therefore
-bypass the separate policy boundary.
+bypass the separate policy boundary. Production configuration rejects that
+mode; it remains available only for controlled non-production validation.
 
 Key destruction in Cloud KMS is scheduled (24h minimum by default) rather than
 immediate, so an accidental destroy is recoverable within the window; never

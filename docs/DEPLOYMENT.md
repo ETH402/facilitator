@@ -10,7 +10,7 @@ infrastructure, and operator approval.
 A production deployment should run the immutable application image
 behind Caddy or a managed TLS load balancer, use managed PostgreSQL with TLS
 and point-in-time recovery, two authenticated Ethereum RPCs, a real email
-provider, centralized secret management, and an external KMS/HSM/Vault signer.
+provider, centralized secret management, and the KMS-fronted policy signer.
 
 Production email uses the provider-neutral `smtp` backend with mandatory
 certificate-verified TLS. Set `ETH402_SMTP_TLS_MODE=starttls` for explicit
@@ -24,8 +24,20 @@ forbidden in production.
 
 Production also requires `ETH402_ENV=production`, an HTTPS public URL,
 canonical chain/asset constants, and managed secrets. The process rejects raw
-private keys unless a conspicuous dangerous override is set; production policy
-should prohibit that override.
+private keys, direct KMS mode, and unsafe signer overrides. Settlement must use
+`ETH402_SIGNER_MODE=policy` or remain disabled.
+
+Configuration validation additionally requires two distinct HTTPS RPC URLs,
+`sslmode=verify-full` on PostgreSQL, and enabled metrics. Startup queries both
+RPCs independently for chain ID 1, probes SMTP TLS/authentication without
+sending a message, and requires the database migration set to match the binary
+exactly. A missing migration cannot become a runtime SQL error, and an older
+binary cannot silently start against a newer unreviewed schema.
+
+Start from [`deploy/production.env.example`](../deploy/production.env.example).
+Before touching dependencies, validate a populated environment with
+`eth402 -check-config`; output is redacted and the command performs no network
+or database calls. A normal start then performs the dependency preflight above.
 
 Choose and record the retention values before rollout. The defaults tombstone
 terminal payment authorization data after 30 days, prune expired onboarding
@@ -98,7 +110,7 @@ intent. `--max-instances` above 1 is therefore fine. See
 |---|---|---|
 | Application | Cloud Run or GCE | see the CPU caveat above |
 | Database | Cloud SQL for PostgreSQL | private IP; separate owner, migration, and runtime roles |
-| Signer | Cloud KMS, `EC_SIGN_SECP256K1_SHA256` | `ETH402_SIGNER_MODE=policy` via the boundary below, or `external` to reach KMS directly |
+| Signer | Cloud KMS, `EC_SIGN_SECP256K1_SHA256` | `ETH402_SIGNER_MODE=policy` via the boundary below; direct `external` mode is rejected in production |
 | Signing boundary | Cloud Run or GCE, own service identity | `cmd/policysigner`; the only identity granted the KMS key |
 | Secrets | Secret Manager | `ETH402_API_KEY_PEPPER`, `ETH402_OPERATOR_TOKEN`, database credentials |
 | Metrics | Managed Prometheus | scrape `/metrics` on the internal port; rules from `deploy/alerts.yml` |
@@ -152,6 +164,18 @@ the first payment: the client resolves the signing identity during construction.
 
 `cmd/migrate` is a separate binary in the same image. Run it as a Cloud Run job or a
 one-off container before switching traffic; the application never creates schema.
+The application refuses startup unless the applied versions exactly equal those
+embedded in its binary. Rollback therefore means rolling the schema down before
+starting the older image; already-running old instances are not interrupted by
+the migration, but a restarted old instance correctly refuses the newer schema.
+
+The runtime database role needs `SELECT` on `schema_migrations`; table/sequence
+permissions required by the application; and `DELETE` only on
+`email_verification_tokens`, unreferenced
+`wallet_verification_challenges`, revoked `api_keys`, and `merchant_usage`.
+It needs `UPDATE` on payment and transaction rows for state transitions and
+retention tombstones, but no DDL and no ability to disable the append-only
+triggers. The migration role owns schema changes and is not used by the service.
 
 ### Deploys and in-flight settlement
 

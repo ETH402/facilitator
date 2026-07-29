@@ -50,6 +50,7 @@ make dev
 
 See [public integration](docs/INTEGRATION.md),
 [local development](docs/LOCAL_DEVELOPMENT.md),
+[production deployment](docs/DEPLOYMENT.md),
 [architecture](docs/ARCHITECTURE.md), and
 [protocol research](docs/PROTOCOL_RESEARCH.md).
 

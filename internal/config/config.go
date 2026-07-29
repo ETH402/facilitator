@@ -354,17 +354,39 @@ func (c Config) Validate() error {
 		if c.PublicBaseURL != "" && !strings.HasPrefix(c.PublicBaseURL, "https://") {
 			errs = append(errs, errors.New("production public URL must use HTTPS"))
 		}
+		primaryRPC, primaryErr := url.Parse(c.EthereumRPCURL)
+		fallbackRPC, fallbackErr := url.Parse(c.FallbackRPCURL)
+		if primaryErr != nil || primaryRPC.Scheme != "https" {
+			errs = append(errs, errors.New("production primary Ethereum RPC must use HTTPS"))
+		}
+		if c.FallbackRPCURL == "" || fallbackErr != nil || fallbackRPC.Scheme != "https" {
+			errs = append(errs, errors.New("production requires an HTTPS fallback Ethereum RPC"))
+		}
+		if c.FallbackRPCURL != "" && c.FallbackRPCURL == c.EthereumRPCURL {
+			errs = append(errs, errors.New("production Ethereum RPCs must be distinct"))
+		}
+		database, databaseErr := url.Parse(c.DatabaseURL)
+		if databaseErr != nil || (database.Scheme != "postgres" && database.Scheme != "postgresql") ||
+			database.Query().Get("sslmode") != "verify-full" {
+			errs = append(errs, errors.New("production database URL must use sslmode=verify-full"))
+		}
 		if c.EmailBackend != "smtp" {
 			errs = append(errs, errors.New("production requires the SMTP email backend"))
 		}
-		if (c.SignerMode == "development" || c.DevSignerKey != "") && !c.AllowUnsafeSigner {
-			errs = append(errs, errors.New("raw development signer is forbidden in production"))
+		if c.SignerMode != "disabled" && c.SignerMode != "policy" {
+			errs = append(errs, errors.New("production settlement requires the policy signer or disabled mode"))
+		}
+		if c.DevSignerKey != "" || c.AllowUnsafeSigner {
+			errs = append(errs, errors.New("raw signer material and unsafe signer overrides are forbidden in production"))
 		}
 		if c.APIKeyPepper == "eth402-development-pepper-change-me" {
 			errs = append(errs, errors.New("development API key pepper is forbidden in production"))
 		}
 		if c.OperatorToken != "" && len(c.OperatorToken) < 32 {
 			errs = append(errs, errors.New("production operator token must be at least 32 bytes"))
+		}
+		if !c.MetricsEnabled {
+			errs = append(errs, errors.New("production metrics must be enabled"))
 		}
 	}
 	return errors.Join(errs...)

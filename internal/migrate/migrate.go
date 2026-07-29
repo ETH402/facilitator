@@ -12,6 +12,52 @@ import (
 
 const lockID int64 = 402
 
+type VersionQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+// CheckApplied fails when the database and binary do not carry the exact same
+// migration set. Missing migrations mean the application would query a schema
+// that does not exist; unknown newer migrations mean an older binary is being
+// rolled onto a schema it was never tested against.
+func CheckApplied(ctx context.Context, database VersionQueryer, files fs.FS) error {
+	names, err := migrationNames(files, ".up.sql")
+	if err != nil {
+		return err
+	}
+	expected := make([]string, len(names))
+	for i, name := range names {
+		expected[i] = strings.TrimSuffix(name, ".up.sql")
+	}
+	rows, err := database.Query(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return fmt.Errorf("read schema migrations: %w", err)
+	}
+	defer rows.Close()
+	var applied []string
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return err
+		}
+		applied = append(applied, version)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(applied) != len(expected) {
+		return fmt.Errorf("schema migration mismatch: database has %d versions, binary requires %d",
+			len(applied), len(expected))
+	}
+	for i := range expected {
+		if applied[i] != expected[i] {
+			return fmt.Errorf("schema migration mismatch at version %d: database has %q, binary requires %q",
+				i+1, applied[i], expected[i])
+		}
+	}
+	return nil
+}
+
 func Up(ctx context.Context, conn *pgx.Conn, files fs.FS) error {
 	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now()

@@ -7,6 +7,14 @@ versioned where noted.
 
 ### Added
 
+- Fail-closed production startup preflight: the database must have exactly the
+  migrations embedded in the binary; primary and fallback RPCs are checked
+  independently for chain ID 1; SMTP TLS/authentication is probed without
+  sending mail; and production configuration requires distinct HTTPS RPCs,
+  PostgreSQL `sslmode=verify-full`, metrics, and either the policy signer or
+  disabled settlement. Direct KMS mode, raw keys, and unsafe overrides are now
+  rejected in production.
+
 - Configurable privacy retention (migration `000009` and a bounded worker).
   Stale verified payments expire automatically; terminal records older than 30
   days lose merchant linkage, payer/recipient addresses, authorization

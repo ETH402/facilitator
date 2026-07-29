@@ -21,12 +21,14 @@ import (
 	"github.com/ETH402/facilitator/internal/httpapi"
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
+	"github.com/ETH402/facilitator/internal/migrate"
 	"github.com/ETH402/facilitator/internal/retention"
 	"github.com/ETH402/facilitator/internal/settlement"
 	"github.com/ETH402/facilitator/internal/signer"
 	"github.com/ETH402/facilitator/internal/stats"
 	"github.com/ETH402/facilitator/internal/store"
 	"github.com/ETH402/facilitator/internal/verification"
+	"github.com/ETH402/facilitator/migrations"
 	exactfacilitator "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/facilitator"
 )
 
@@ -64,6 +66,8 @@ const workerDrainTimeout = 45 * time.Second
 func main() {
 	probe := flag.Bool("health-check", false,
 		"probe the local readiness endpoint and exit; used by the container healthcheck")
+	checkConfig := flag.Bool("check-config", false,
+		"validate configuration without connecting to external dependencies")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -71,6 +75,10 @@ func main() {
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
+	}
+	if *checkConfig {
+		logger.Info("configuration valid", "config", cfg.RedactedSummary())
+		return
 	}
 	if *probe {
 		// Runs after full configuration validation, so a container with broken
@@ -90,8 +98,17 @@ func main() {
 		os.Exit(1)
 	}
 	defer database.Close()
+	if err := migrate.CheckApplied(root, database.Pool, migrations.Files); err != nil {
+		logger.Error("database schema validation failed", "error", err)
+		os.Exit(1)
+	}
 
 	rpc := ethereum.NewClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL, cfg.RPCTimeout, cfg.RPCReadRetries)
+	if err := ethereum.ValidateProviders(root, cfg.EthereumRPCURL, cfg.FallbackRPCURL,
+		cfg.RPCTimeout, cfg.ChainID); err != nil {
+		logger.Error("Ethereum RPC validation failed", "error", err)
+		os.Exit(1)
+	}
 	registry := metrics.New()
 	rpc.Observe(registry)
 	verificationRPC, err := ethereum.NewVerificationClient(cfg.EthereumRPCURL, cfg.FallbackRPCURL)
@@ -139,6 +156,15 @@ func main() {
 		if err != nil {
 			logger.Error("SMTP sender initialization failed", "error", err)
 			os.Exit(1)
+		}
+		if cfg.Environment == "production" {
+			probeContext, cancel := context.WithTimeout(root, cfg.SMTPTimeout)
+			if err := smtpSender.Probe(probeContext); err != nil {
+				cancel()
+				logger.Error("SMTP production preflight failed", "error", err)
+				os.Exit(1)
+			}
+			cancel()
 		}
 		sender = smtpSender
 	}
