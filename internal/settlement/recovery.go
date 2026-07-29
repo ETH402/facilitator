@@ -404,8 +404,18 @@ func (w *RecoveryWorker) observeGapFillers(ctx context.Context) {
 			continue
 		}
 		if receipt.Status == 1 {
-			w.logger.ErrorContext(ctx, "gap filler succeeded on an expired authorization; investigate",
-				"payment_id", t.PaymentID, "transaction_id", t.TransactionID, "tx_hash", t.TxHash)
+			// The chain accepted an authorization believed expired, so USDC moved
+			// and the record disagrees with the ledger. Escalate once rather than
+			// re-reporting every tick, and leave the reconciliation to a human.
+			w.logger.ErrorContext(ctx, "gap filler succeeded on an expired authorization; escalating to manual review",
+				"payment_id", t.PaymentID, "transaction_id", t.TransactionID,
+				"tx_hash", t.TxHash, "block_number", receipt.BlockNumber)
+			if err := w.service.store.MarkGapFillerSucceeded(ctx, t.PaymentID, t.TransactionID,
+				receipt.BlockNumber, receipt.BlockHash, receipt.GasUsed,
+				receipt.EffectiveGasPrice, "worker"); err != nil {
+				w.logger.WarnContext(ctx, "escalate succeeded gap filler failed",
+					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+			}
 			continue
 		}
 		if err := w.service.store.MarkGapFillerResolved(ctx, t.TransactionID,

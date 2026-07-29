@@ -3,6 +3,8 @@ package settlement
 import (
 	"context"
 	"encoding/hex"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -290,5 +292,33 @@ func TestConfirmationReorgReturnsToBroadcast(t *testing.T) {
 	}
 	if !store.reorgedOut {
 		t.Fatal("reorged transaction was not returned to broadcast")
+	}
+}
+
+// A gap filler the chain accepted must be escalated exactly once. It previously
+// logged the same anomaly on every tick and never left the observation list.
+func TestSucceededGapFillerEscalatesOnceAndStopsBeingObserved(t *testing.T) {
+	store := &fakeStore{gapFillers: []TrackedTransaction{
+		{PaymentID: "payment-1", TransactionID: "tx-1", TxHash: "0xabc"},
+	}}
+	chain := &fakeChain{receipts: map[string]*ethereum.Receipt{
+		"0xabc": {Status: 1, BlockNumber: 99, BlockHash: "0xblock", GasUsed: 51000, EffectiveGasPrice: "30000000000"},
+	}}
+	service := NewService(store, nil, chain, Config{
+		WorkerInterval: time.Hour, LeaseDuration: time.Minute,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker := service.RecoveryWorker()
+
+	worker.observeGapFillers(context.Background())
+	if store.gapFillerEscalated != 1 {
+		t.Fatalf("escalations = %d, want 1", store.gapFillerEscalated)
+	}
+	if store.gapFillerResolved {
+		t.Fatal("a succeeded filler must not be resolved as reverted")
+	}
+	// A second pass must find nothing: the payment left expired.
+	worker.observeGapFillers(context.Background())
+	if store.gapFillerEscalated != 1 {
+		t.Fatalf("escalations after second pass = %d, want 1", store.gapFillerEscalated)
 	}
 }

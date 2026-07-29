@@ -304,3 +304,41 @@ func scanTracked(rows pgx.Rows) ([]settlement.TrackedTransaction, error) {
 	}
 	return tracked, rows.Err()
 }
+
+// MarkGapFillerSucceeded records the anomaly of a nonce-gap filler that the
+// chain accepted.
+//
+// A filler re-broadcasts an authorization the facilitator judged expired, so it
+// is expected to revert and consume the nonce. Success means the judgement was
+// wrong and USDC actually moved: the payment is recorded `expired` while the
+// ledger says it settled. The receipt is persisted and the payment escalated to
+// manual_review — never to confirmed, because recovery does not finalize payments
+// (ADR-0004 decision 4) and only a human can reconcile the divergence.
+//
+// It also ends the observation loop: ListGapFillers selects on the payment being
+// `expired`, so escalating it stops the worker re-reporting the same anomaly on
+// every tick.
+func (s *Store) MarkGapFillerSucceeded(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions
+SET status = 'confirming', block_number = $3, block_hash = $4,
+    gas_used = $5, effective_gas_price = $6, first_seen_at = coalesce(first_seen_at, now()),
+    updated_at = now()
+WHERE id = $2 AND payment_id = $1 AND status = 'broadcast'`,
+		paymentID, transactionID, blockNumber, blockHash, gasUsed, gasPrice)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("record succeeded gap filler %s: %w", transactionID, ErrSettlementRace)
+	}
+	if err := transitionPayment(ctx, tx, paymentID, settlement.StateExpired, settlement.StateManualReview, actor); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}

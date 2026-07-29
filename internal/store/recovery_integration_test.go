@@ -337,3 +337,68 @@ func TestDroppedBlockingGapLifecycle(t *testing.T) {
 		t.Fatalf("fillers after resolve = %+v", fillers)
 	}
 }
+
+// TestGapFillerSucceededEscalatesAndStopsReporting covers the anomaly path: a
+// filler the chain accepted moved USDC on an authorization believed expired.
+// Before this the worker logged the same anomaly on every tick forever and left
+// the payment recorded `expired` while the ledger said it settled.
+func TestGapFillerSucceededEscalatesAndStopsReporting(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	identity := "pay_" + repeat("e", 64)
+	paymentID := seedPayment(t, store, paymentFixture{
+		identity: identity, state: "verified", registered: true,
+	})
+	intent, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drive it to a broadcast gap filler on an expired payment.
+	if err := store.MarkIntentExpired(ctx, paymentID, intent.TransactionID, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkGapFillerBroadcast(ctx, intent.TransactionID,
+		repeat("a", 64), "0x"+repeat("a", 64), 120000, "30000000000", "1000000000"); err != nil {
+		t.Fatal(err)
+	}
+	fillers, err := store.ListGapFillers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fillers) != 1 {
+		t.Fatalf("gap fillers = %d, want 1", len(fillers))
+	}
+
+	if err := store.MarkGapFillerSucceeded(ctx, paymentID, intent.TransactionID,
+		12345, "0x"+repeat("b", 64), 51000, "31000000000", "worker"); err != nil {
+		t.Fatal(err)
+	}
+	var state, txStatus string
+	var blockNumber *int64
+	if err := store.Pool.QueryRow(ctx, `
+SELECT p.state, t.status, t.block_number
+FROM payment_records p JOIN ethereum_transactions t ON t.payment_id = p.id
+WHERE p.id = $1`, paymentID).Scan(&state, &txStatus, &blockNumber); err != nil {
+		t.Fatal(err)
+	}
+	// Escalated, never finalized: recovery does not confirm payments.
+	if state != "manual_review" {
+		t.Fatalf("payment state = %q, want manual_review", state)
+	}
+	if txStatus != "confirming" || blockNumber == nil || *blockNumber != 12345 {
+		t.Fatalf("transaction status = %q block = %v", txStatus, blockNumber)
+	}
+	// The observation loop must end, or the worker re-reports every tick.
+	after, err := store.ListGapFillers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("gap fillers still listed after escalation: %d", len(after))
+	}
+	// Idempotence: a second escalation must not silently re-transition.
+	if err := store.MarkGapFillerSucceeded(ctx, paymentID, intent.TransactionID,
+		12345, "0x"+repeat("b", 64), 51000, "31000000000", "worker"); err == nil {
+		t.Fatal("second escalation succeeded; the transition is not guarded")
+	}
+}

@@ -87,7 +87,10 @@ decision. If the network mines the original instead, recovery records the
 original as the truth and drops the never-minable replacement. A `dropped`
 nonce blocking a later in-flight nonce of the same signer is filled by
 re-broadcasting the original expired intent, whose predictable revert consumes
-the nonce. Recovery never finalizes a payment itself — it re-attaches hashes
+the nonce. A filler the chain *accepts* is an anomaly — USDC moved on an
+authorization judged expired, so the record disagrees with the ledger — and is
+escalated once to `manual_review` with its receipt for a human to reconcile,
+which is the only edge out of `expired`. Recovery never finalizes a payment itself — it re-attaches hashes
 or returns transactions to the broadcast pipeline, and the confirmation worker
 observes them from there.
 

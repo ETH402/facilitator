@@ -247,3 +247,7 @@ func TestSettleRejectsMalformedBody(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func (settleFakeStore) MarkGapFillerSucceeded(context.Context, string, string, uint64, string, uint64, string, string) error {
+	return nil
+}

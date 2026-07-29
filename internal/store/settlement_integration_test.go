@@ -405,11 +405,20 @@ func TestMerchantSettlementQuotaBoundsIntents(t *testing.T) {
 		t.Fatalf("rejected attempts = %d, want 1", got)
 	}
 
-	// A window that has moved past the earlier intents admits again, proving the
-	// quota rolls rather than latching permanently.
-	rolled := request(identities[quota])
-	rolled.QuotaWindow = time.Nanosecond
-	if _, err := store.CreateSettlementIntent(ctx, rolled); err != nil {
+	// Once the window has rolled past the earlier intents the merchant is admitted
+	// again, proving the quota rolls rather than latching permanently.
+	//
+	// The existing rows are aged in the database rather than by advancing this
+	// process's clock. settlement_requested_at is stamped by the database, so
+	// comparing it against a Go timestamp at a hairline threshold would be flaky
+	// under clock skew; and advancing Now far enough to matter would push the
+	// authorization past valid_before, tripping the expiry guard instead.
+	if _, err := store.Pool.Exec(ctx, `
+UPDATE payment_records SET settlement_requested_at = settlement_requested_at - interval '48 hours'
+WHERE merchant_id = $1 AND settlement_requested_at IS NOT NULL`, merchantID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSettlementIntent(ctx, request(identities[quota])); err != nil {
 		t.Fatalf("intent outside the window was refused: %v", err)
 	}
 }

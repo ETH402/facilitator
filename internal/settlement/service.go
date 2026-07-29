@@ -46,6 +46,7 @@ type Store interface {
 	ListGapFillers(ctx context.Context) ([]TrackedTransaction, error)
 	MarkGapFillerBroadcast(ctx context.Context, transactionID, rawHash, txHash string, gasLimit uint64, maxFee, priorityFee string) error
 	MarkGapFillerResolved(ctx context.Context, transactionID string, gasUsed uint64, gasPrice string) error
+	MarkGapFillerSucceeded(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 }
 
 // Chain is the Ethereum surface settlement uses. Broadcasting a transaction

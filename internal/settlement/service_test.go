@@ -30,17 +30,18 @@ type fakeStore struct {
 	reverted        bool
 	released        int
 
-	recoveredTxHash   string
-	replaced          bool
-	replacement       Replacement
-	landed            bool
-	landedSucceeded   bool
-	reorgedOut        bool
-	replacedPending   []TrackedTransaction
-	gapWorks          []Work
-	gapFillers        []TrackedTransaction
-	gapFillerTxHash   string
-	gapFillerResolved bool
+	recoveredTxHash    string
+	replaced           bool
+	replacement        Replacement
+	landed             bool
+	landedSucceeded    bool
+	reorgedOut         bool
+	replacedPending    []TrackedTransaction
+	gapWorks           []Work
+	gapFillers         []TrackedTransaction
+	gapFillerTxHash    string
+	gapFillerResolved  bool
+	gapFillerEscalated int
 }
 
 func (f *fakeStore) CreateSettlementIntent(context.Context, IntentRequest) (Intent, error) {
@@ -143,6 +144,13 @@ func (f *fakeStore) MarkGapFillerBroadcast(_ context.Context, _, _, txHash strin
 
 func (f *fakeStore) MarkGapFillerResolved(context.Context, string, uint64, string) error {
 	f.gapFillerResolved = true
+	return nil
+}
+
+func (f *fakeStore) MarkGapFillerSucceeded(_ context.Context, _, _ string, _ uint64, _ string, _ uint64, _, _ string) error {
+	f.gapFillerEscalated++
+	// Escalation moves the payment out of expired, so the next listing drops it.
+	f.gapFillers = nil
 	return nil
 }
 

@@ -112,6 +112,12 @@ versioned where noted.
 
 ### Changed
 
+- A nonce-gap filler the chain accepts is escalated to `manual_review` once
+  instead of being re-reported on every worker tick forever. Success means USDC
+  moved on an authorization believed expired, so the record disagreed with the
+  ledger and nothing resolved it; the receipt is now persisted and a human
+  reconciles. `expired` gains a single outgoing edge to `manual_review` for this
+  case and no other — recovery still never finalizes a payment.
 - The signer calldata allowlist is now enforced. `signer.Transaction.Validate`
   requires the canonical Ethereum-mainnet USDC recipient and the
   `transferWithAuthorization` selector, alongside the existing mainnet, zero-value
