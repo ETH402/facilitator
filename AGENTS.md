@@ -1,13 +1,8 @@
 # Instructions for coding agents
 
-Claude, ChatGPT, and Kimi all develop this repository and share one checkout.
-Before touching anything, read `docs/COLLABORATION.md` and take the working-tree
-lock — the rules there exist because their absence has already cost real work.
-
 Before changing this repository:
 
-1. Read `VISION.md`, `PLAN.md`, `docs/COLLABORATION.md`, and relevant ADRs in
-   `docs/decisions/`.
+1. Read `VISION.md`, `PLAN.md`, and relevant ADRs in `docs/decisions/`.
 2. Research current official specifications before protocol changes.
 3. Preserve Ethereum-mainnet-only, x402-v2-only, exact-only, native-USDC-only scope.
 4. Prefer official libraries where appropriate and keep dependencies minimal.
@@ -23,6 +18,3 @@ Before changing this repository:
 14. Prefer small, reviewable commits. Never weaken tests to hide bugs.
 15. Keep business-model, authentication, metering, quota, and billing logic separate
     from x402 protocol logic.
-16. Hold the working-tree lock while editing, stage explicit paths (never
-    `git add -A`), claim tasks in `docs/TASKS.md`, and never merge a pull request
-    you authored. See `docs/COLLABORATION.md`.

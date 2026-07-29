@@ -84,6 +84,30 @@ transactions to broadcast. The production signer is GCP Cloud KMS
 (`ETH402_SIGNER_MODE=external`, verified end-to-end against a real key); the
 development key signer remains for local use.
 
+### Residual work
+
+Not blocking the milestone, but each one is a control that is weaker than it looks:
+
+- **The recovery worker's replacement, nonce-gap, and gap-filler passes run without
+  a lease**, which constrains deployment to a single application instance: two
+  would each re-estimate fees and broadcast different transactions for one nonce
+  gap. Recorded as a constraint in `docs/OPERATIONS.md`.
+- **The differing-signature re-broadcast has only fake-signer coverage.** No test
+  has watched a real mempool reject a same-nonce same-fee re-broadcast as
+  underpriced, which is what happens if the original reappears between the
+  on-chain check and the send.
+- **The 12-confirmation finality cut needs an explicit decision** (ADR-0004
+  decision 5). `confirmed` is terminal, so a reorg deeper than 12 blocks leaves a
+  payment marked confirmed that no longer exists on chain. Recorded as accepted
+  residual risk because it matches the default, never actually chosen.
+- **Signer balance and burn-rate alerting does not exist.** ADR-0004 decision 8
+  makes the bounded hot balance *the* operative signer-compromise control, so
+  without the alert that bound is a convention rather than a control.
+- **No human has read the settlement code.** It signs Ethereum transactions and
+  spends ETH. `internal/settlement/recovery.go` is the place to start: the most
+  intricate code in the repository, and its hardest paths need adversarial chain
+  conditions no test reproduces.
+
 ## Milestone 4 — public deployment
 
 Harden Caddy and image, document GCP deployment, integrate Cloud KMS, alerts,

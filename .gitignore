@@ -7,5 +7,3 @@
 email-outbox/
 .idea/
 .vscode/
-# Working-tree lock: live coordination state between agents, never history.
-.agent-lock/
