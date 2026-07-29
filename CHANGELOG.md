@@ -165,6 +165,9 @@ versioned where noted.
 
 ### Security
 
+- `google.golang.org/grpc` bumped to v1.82.1 for GO-2026-6061, which
+  `govulncheck` found reachable from the Cloud KMS signing path through the gRPC
+  HTTP/2 transport.
 - Live settlement is intentionally absent and transaction signing defaults to disabled.
 - `X-Forwarded-For` is honoured only from configured trusted proxies, using the
   rightmost untrusted entry, so a forged header cannot select another client's
