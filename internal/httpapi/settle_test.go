@@ -204,7 +204,7 @@ func settleTestBody(t *testing.T) string {
 func settleHandler(service *settlement.Service, registry *metrics.Registry) http.Handler {
 	return New(Dependencies{
 		Logger: slog.Default(), Database: fakeDB{}, Ethereum: fakeRPC{chain: 1},
-		Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: registry,
+		Stats: stats.NewService(stats.Config{Source: statsSource{}, Started: time.Now()}), Metrics: registry,
 		ExpectedChainID: 1, PublicRatePerMinute: 100, Settlement: service,
 	}).Handler()
 }

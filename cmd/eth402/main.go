@@ -105,7 +105,26 @@ func main() {
 		database,
 		cfg.RPCTimeout,
 	)
-	statsService := stats.NewService(database, time.Now(), cfg.StatsCacheTTL)
+	// The status page derives settlement health from the same worker heartbeats
+	// Prometheus scrapes, rather than a second notion of health that could disagree
+	// with the alerts. Probes run on the cache's schedule, not per request, because
+	// /stats and /status are public and unauthenticated.
+	statsService := stats.NewService(stats.Config{
+		Source:  database,
+		Started: time.Now(),
+		TTL:     cfg.StatsCacheTTL,
+		Health: stats.NewAssessor(stats.AssessorConfig{
+			Database:          database,
+			Chain:             rpc,
+			ExpectedChainID:   cfg.ChainID,
+			Heartbeats:        registry,
+			ExpectedWorkers:   []string{"broadcast", "confirmation", "recovery"},
+			StaleAfter:        cfg.StaleAfter(),
+			SettlementEnabled: cfg.SignerMode != "disabled",
+			ProbeTimeout:      cfg.RPCTimeout,
+		}),
+		PublishVolume: cfg.PublishStatsVolume,
+	})
 	var sender email.Sender = email.LogSender{Logger: logger}
 	if cfg.EmailBackend == "file" {
 		sender = email.FileSender{Directory: cfg.EmailFileDir}

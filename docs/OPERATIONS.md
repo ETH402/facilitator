@@ -260,6 +260,27 @@ must plan capacity and, if pruning becomes necessary, do it as an explicit
 migration that drops and restores the trigger under audit rather than granting
 the runtime role deletion rights.
 
+## Status page
+
+`/status` is a self-contained HTML page and `/stats` is its JSON equivalent. Both
+are public and unauthenticated, and both render the *same cached snapshot* — health
+is probed on the cache's schedule rather than per request, so neither can be used to
+drive database or RPC load from outside.
+
+The reported status is derived from observations, never assumed: a database ping, an
+RPC chain-id check, and settlement-worker heartbeats — the same heartbeats
+Prometheus scrapes, so the page and the alerts cannot disagree. States are
+`operational`, `degraded`, `outage`, and `unknown`, where `unknown` means health
+could not be observed at all and is deliberately not reported as healthy.
+
+A stalled worker is `degraded` rather than an outage: verification keeps working and
+committed intents stay durable, so payments are delayed rather than lost. Settlement
+with no signer configured reports `disabled`, which does not degrade the whole —
+reporting a deliberate configuration as broken trains people to ignore the page.
+
+Volume figures are withheld unless `ETH402_PUBLISH_STATS_VOLUME=true`. See
+[privacy](PRIVACY.md) for why aggregating does not anonymize them.
+
 ## Deploys
 
 Shutdown drains the HTTP server, then waits up to 45 seconds for an in-flight

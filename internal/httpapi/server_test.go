@@ -45,7 +45,17 @@ func testServer(dbErr, rpcErr error, chain uint64) http.Handler {
 	registry := metrics.New()
 	return New(Dependencies{
 		Logger: slog.Default(), Database: fakeDB{dbErr}, Ethereum: fakeRPC{chain, rpcErr},
-		Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: registry,
+		Stats: stats.NewService(stats.Config{
+			Source: statsSource{}, Started: time.Now(),
+			// Wired with the same assessor production uses, so a test asserting the
+			// status page reports an outage exercises the real derivation rather than
+			// a nil health source that would report "unknown" whatever happened.
+			Health: stats.NewAssessor(stats.AssessorConfig{
+				Database: fakeDB{dbErr}, Chain: fakeRPC{chain, rpcErr}, ExpectedChainID: 1,
+				Heartbeats: registry, ExpectedWorkers: []string{"broadcast"},
+				StaleAfter: time.Minute, SettlementEnabled: false,
+			}),
+		}), Metrics: registry,
 		ExpectedChainID: 1, PublicRatePerMinute: 100,
 	}).Handler()
 }
@@ -84,10 +94,37 @@ func TestStatsSchema(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"schema_version", "service", "version", "network", "asset", "total_payment_volume_atomic", "status"} {
+	for _, key := range []string{"schema_version", "service", "version", "network", "asset", "status"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("missing stable field %q", key)
 		}
+	}
+	if got["schema_version"] != stats.SchemaVersion {
+		t.Errorf("schema_version = %v, want %s", got["schema_version"], stats.SchemaVersion)
+	}
+	// Schema 2 withholds the volume figures unless the operator opts in. They are
+	// absent rather than zero, because a published zero would be a false statement
+	// about settled volume rather than a refusal to state it.
+	for _, key := range []string{"total_payment_volume_atomic", "total_payment_volume_usdc", "volume_last_24h_atomic"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("%q must be withheld unless ETH402_PUBLISH_STATS_VOLUME is set", key)
+		}
+	}
+}
+
+// TestStatsPublishesVolumeWhenOptedIn is the other half of the contract: the
+// operator can still publish business figures, and asking for them must work.
+func TestStatsPublishesVolumeWhenOptedIn(t *testing.T) {
+	t.Parallel()
+	service := stats.NewService(stats.Config{
+		Source: statsSource{}, Started: time.Now(), PublishVolume: true,
+	})
+	snapshot, err := service.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.TotalPaymentVolumeAtomic == "" || snapshot.TotalPaymentVolumeUSDC == "" {
+		t.Errorf("opting in must publish volume, got %+v", snapshot)
 	}
 }
 
@@ -213,7 +250,7 @@ func TestMetricsEndpointGatedByConfiguration(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		handler := New(Dependencies{
 			Logger: slog.Default(), Database: fakeDB{}, Ethereum: fakeRPC{chain: 1},
-			Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: metrics.New(),
+			Stats: stats.NewService(stats.Config{Source: statsSource{}, Started: time.Now()}), Metrics: metrics.New(),
 			ExpectedChainID: 1, PublicRatePerMinute: 100, MetricsEnabled: enabled,
 		}).Handler()
 		recorder := httptest.NewRecorder()
@@ -309,7 +346,17 @@ func TestVerifyEndpoint(t *testing.T) {
 	service := verification.New(validScheme{}, validChain{}, discardVerification{}, time.Second)
 	handler := New(Dependencies{
 		Logger: slog.Default(), Database: fakeDB{}, Ethereum: fakeRPC{chain: 1},
-		Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: registry,
+		Stats: stats.NewService(stats.Config{
+			Source: statsSource{}, Started: time.Now(),
+			// Wired with the same assessor production uses, so a test asserting the
+			// status page reports an outage exercises the real derivation rather than
+			// a nil health source that would report "unknown" whatever happened.
+			Health: stats.NewAssessor(stats.AssessorConfig{
+				Database: fakeDB{}, Chain: fakeRPC{chain: 1}, ExpectedChainID: 1,
+				Heartbeats: registry, ExpectedWorkers: []string{"broadcast"},
+				StaleAfter: time.Minute, SettlementEnabled: false,
+			}),
+		}), Metrics: registry,
 		ExpectedChainID: 1, PublicRatePerMinute: 100, Verification: service,
 	}).Handler()
 	requirements := types.PaymentRequirements{
@@ -360,7 +407,17 @@ func TestVerifyRejectsUnknownFields(t *testing.T) {
 	service := verification.New(validScheme{}, validChain{}, discardVerification{}, time.Second)
 	handler := New(Dependencies{
 		Logger: slog.Default(), Database: fakeDB{}, Ethereum: fakeRPC{chain: 1},
-		Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: registry,
+		Stats: stats.NewService(stats.Config{
+			Source: statsSource{}, Started: time.Now(),
+			// Wired with the same assessor production uses, so a test asserting the
+			// status page reports an outage exercises the real derivation rather than
+			// a nil health source that would report "unknown" whatever happened.
+			Health: stats.NewAssessor(stats.AssessorConfig{
+				Database: fakeDB{}, Chain: fakeRPC{chain: 1}, ExpectedChainID: 1,
+				Heartbeats: registry, ExpectedWorkers: []string{"broadcast"},
+				StaleAfter: time.Minute, SettlementEnabled: false,
+			}),
+		}), Metrics: registry,
 		ExpectedChainID: 1, PublicRatePerMinute: 100, Verification: service,
 	}).Handler()
 	recorder := httptest.NewRecorder()

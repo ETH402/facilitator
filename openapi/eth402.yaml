@@ -367,10 +367,16 @@ paths:
     get:
       operationId: publicStats
       summary: Aggregate public facilitator statistics
-      description: Cached aggregate data. Only confirmed settlements contribute volume.
+      description: >-
+        Cached aggregate data. Only confirmed settlements contribute volume.
+        Volume figures are omitted unless the operator sets
+        ETH402_PUBLISH_STATS_VOLUME: a cumulative total polled over time yields its
+        own deltas, and a delta spanning a single settlement is that payment's exact
+        amount. Health is probed on the cache schedule, not per request, so this
+        public endpoint cannot be used to drive database or RPC load.
       responses:
         "200":
-          description: Version 1 statistics.
+          description: Version 2 statistics.
           headers:
             Cache-Control:
               schema:
@@ -378,11 +384,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsV1"
+                $ref: "#/components/schemas/StatsV2"
         "429":
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /status:
+    get:
+      operationId: statusPage
+      summary: Human-readable status page
+      description: >-
+        Renders the same cached snapshot as /stats as a self-contained HTML page —
+        no external stylesheet, script, font, or image, so it keeps working during
+        the network failures it exists to report. It cannot disclose more than
+        /stats does.
+      responses:
+        "200":
+          description: Status page.
+          content:
+            text/html:
+              schema: { type: string }
+        "503":
+          description: Aggregates could not be read; the page reports an outage.
+          content:
+            text/html:
+              schema: { type: string }
   /metrics:
     get:
       operationId: prometheusMetrics
@@ -635,7 +661,10 @@ components:
               enum: [ok, unavailable]
             ethereum_rpc:
               enum: [ok, unavailable]
-    StatsV1:
+    # Schema 2 differs from 1 in two ways: the volume figures became optional
+    # (withheld unless the operator opts in), and status gained real states because
+    # it was previously the constant "operational".
+    StatsV2:
       type: object
       additionalProperties: false
       required:
@@ -653,16 +682,13 @@ components:
         - total_settlement_requests
         - confirmed_settlements
         - failed_settlements
-        - total_payment_volume_atomic
-        - total_payment_volume_usdc
         - settlements_last_24h
-        - volume_last_24h_atomic
         - last_confirmed_block
         - latest_indexed_block
         - confirmation_lag_blocks
         - status
       properties:
-        schema_version: { const: "1" }
+        schema_version: { const: "2" }
         service: { const: ETH402 }
         version: { type: string }
         network: { const: "eip155:1" }
@@ -690,7 +716,26 @@ components:
         latest_indexed_block: { type: integer, minimum: 0 }
         confirmation_lag_blocks: { type: integer, minimum: 0 }
         status:
-          enum: [operational, degraded, maintenance]
+          description: >-
+            Derived from components, never assumed. "unknown" means health could
+            not be observed at all, which is deliberately not reported as
+            "operational".
+          enum: [operational, degraded, outage, unknown]
+        components:
+          type: array
+          description: >-
+            Per-dependency observations backing status. Details are deliberately
+            coarse ("unreachable"): this endpoint is public, and the underlying
+            error can carry hostnames and usernames.
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, state]
+            properties:
+              name: { type: string }
+              state:
+                enum: [operational, degraded, outage, disabled]
+              detail: { type: string }
     ErrorEnvelope:
       type: object
       additionalProperties: false

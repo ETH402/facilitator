@@ -122,17 +122,25 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
       balance that bounds a compromise
 - [x] runbooks for the states settlement actually produces
 - [x] GCP deployment documentation
-- [ ] public status page
-- [ ] privacy-preserving analytics
+- [x] public status page — self-contained, served from the same cached snapshot as
+      `/stats`, with a status derived from real observations rather than the
+      constant it used to be
+- [x] privacy-preserving analytics — posture documented in `docs/PRIVACY.md`;
+      settled volume withheld by default because polling a cumulative total
+      recovers individual payment amounts
 - [x] KMS-fronted policy signer, moving the zero-value/USDC-selector allowlist out
       of the ETH402 process and into the signing boundary — the boundary receives
       authorization fields rather than a transaction, so it builds what it signs
       and the restriction is structural rather than a check
 
-The remaining two need decisions from the operator — a status-page provider and an
-analytics posture — rather than more code here.
+Milestone 4 is complete.
 
 ## Milestone 5 — public beta
+
+- [ ] data retention: nothing is currently deleted, so payer addresses and
+      authorizations persist indefinitely and the privacy exposure grows without
+      bound. Needs an operator decision on retention periods before implementation
+      (see `docs/PRIVACY.md`).
 
 Independent security review, load/abuse tests, limited mainnet dry runs,
 incident simulations, public documentation, fair-use enforcement, and

@@ -81,7 +81,7 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	registry := metrics.New()
 	handler := New(Dependencies{
 		Logger: slog.Default(), Database: pool, Ethereum: fakeRPC{chain: 1},
-		Stats: stats.NewService(statsSource{}, time.Now(), 0), Metrics: registry,
+		Stats: stats.NewService(stats.Config{Source: statsSource{}, Started: time.Now()}), Metrics: registry,
 		ExpectedChainID: 1, PublicRatePerMinute: 100, RegistrationRate: 10,
 		Merchant: merchantService, AllowedOrigin: "https://eth402.org",
 	}).Handler()

@@ -60,6 +60,7 @@ func New(dep Dependencies) *Server {
 	})
 	mux.HandleFunc("GET /health/ready", dep.ready)
 	mux.HandleFunc("GET /stats", dep.stats)
+	mux.HandleFunc("GET /status", dep.status)
 	if dep.MetricsEnabled {
 		mux.Handle("GET /metrics", dep.Metrics)
 	}

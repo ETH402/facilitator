@@ -97,6 +97,22 @@ func (r *Registry) Heartbeat(worker string, at time.Time) {
 	r.heartbeats.Store(worker, at.Unix())
 }
 
+// WorkerHeartbeats returns the last tick time per worker, so the public status
+// page can derive settlement health from the same observations Prometheus scrapes
+// rather than from a second, separately-maintained notion of health.
+func (r *Registry) WorkerHeartbeats() map[string]time.Time {
+	out := make(map[string]time.Time)
+	r.heartbeats.Range(func(key, value any) bool {
+		name, nameOK := key.(string)
+		at, atOK := value.(int64)
+		if nameOK && atOK {
+			out[name] = time.Unix(at, 0)
+		}
+		return true
+	})
+	return out
+}
+
 func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = io.WriteString(w, "# HELP eth402_http_requests_total Total HTTP requests.\n# TYPE eth402_http_requests_total counter\n")

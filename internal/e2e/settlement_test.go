@@ -257,7 +257,14 @@ func TestFacilitatorMovesRealUSDC(t *testing.T) {
 	}, logger)
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: client,
-		Stats: stats.NewService(database, time.Now(), 0), Metrics: metrics.New(),
+		Stats: stats.NewService(stats.Config{
+			Source: database, Started: time.Now(),
+			Health: stats.NewAssessor(stats.AssessorConfig{
+				Database: database, Chain: client, ExpectedChainID: 1,
+				ExpectedWorkers: []string{"broadcast", "confirmation", "recovery"},
+				StaleAfter:      time.Minute, SettlementEnabled: true,
+			}),
+		}), Metrics: metrics.New(),
 		ExpectedChainID: 1, PublicRatePerMinute: 1000, RegistrationRate: 100,
 		MetricsEnabled: true,
 		Verification: verification.New(

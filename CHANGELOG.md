@@ -7,6 +7,15 @@ versioned where noted.
 
 ### Added
 
+- A public status page at `/status`, self-contained HTML with no external
+  stylesheet, script, font, or image — it keeps working during the network failures
+  it exists to report, and discloses nothing to a third party about who is reading
+  it. It renders the same cached snapshot as `/stats`, so a public endpoint cannot
+  drive database or RPC load, and it cannot disclose more than the JSON does.
+
+- An explicit privacy posture in `docs/PRIVACY.md`, including the retention gap it
+  does *not* close.
+
 - The KMS-fronted policy signer, closing the Milestone 4 item ADR-0004 decision 8
   deferred. `ETH402_SIGNER_MODE=policy` signs through `cmd/policysigner`, a
   separate workload holding the only grant on the KMS key, so the calldata
@@ -206,6 +215,20 @@ versioned where noted.
   a real `transferWithAuthorization`.
 
 ### Fixed
+
+- `/stats` reported `"status": "operational"` unconditionally — a hardcoded
+  constant, so the field reported health during an outage, which is the one moment
+  anybody reads it. Status is now derived from a database ping, an RPC chain-id
+  check, and settlement-worker heartbeats, published alongside the per-component
+  observations backing it. An unobservable status reports `unknown` rather than
+  defaulting to healthy, which would have restated the same bug.
+
+- Settled-volume figures were published unauthenticated, which is not the anonymous
+  disclosure it appears to be: polling a cumulative total yields its own deltas, and
+  a delta spanning one settlement is that payment's exact amount, correlatable with
+  on-chain `Transfer` events to identify payer and merchant. Volume now requires
+  `ETH402_PUBLISH_STATS_VOLUME=true`. This changes the public response shape, so
+  `schema_version` is `2` and the OpenAPI schema is `StatsV2`.
 
 - A deploy could strand a payment in `manual_review`. Shutdown cancels the worker
   context, and a cancellation landing between sending a transaction and recording its

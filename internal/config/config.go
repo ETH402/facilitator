@@ -59,7 +59,16 @@ type Config struct {
 	EmailAllowlist     []string
 	EmailDenylist      []string
 	StatsCacheTTL      time.Duration
-	WorkerInterval     time.Duration
+	// PublishStatsVolume opts into publishing settled-volume figures on the public
+	// /stats endpoint. Off by default: a cumulative total polled over time yields
+	// its own deltas, and a delta spanning one settlement is that payment's exact
+	// amount, available to anyone without authentication.
+	PublishStatsVolume bool
+	// WorkerStaleAfter is how long a settlement worker may go without completing a
+	// tick before the status page calls settlement degraded. Zero derives it from
+	// WorkerInterval via StaleAfter.
+	WorkerStaleAfter time.Duration
+	WorkerInterval   time.Duration
 	// SettlementExpiryMargin is the minimum lifetime an authorization must
 	// have left before ETH402 will broadcast it (ADR-0004 decision 11).
 	SettlementExpiryMargin time.Duration
@@ -94,42 +103,45 @@ type Config struct {
 func Load() (Config, error) {
 	var l loader
 	cfg := Config{
-		Environment:                l.str("ETH402_ENV", "development"),
-		HTTPAddr:                   l.str("ETH402_HTTP_ADDR", ":8080"),
-		PublicBaseURL:              l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
-		DatabaseURL:                os.Getenv("ETH402_DATABASE_URL"),
-		DatabaseMaxConns:           l.int32("ETH402_DATABASE_MAX_CONNS", 10),
-		EthereumRPCURL:             os.Getenv("ETH402_ETHEREUM_RPC_URL"),
-		FallbackRPCURL:             os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
-		ChainID:                    l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
-		Network:                    l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
-		USDCContract:               l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
-		RPCTimeout:                 l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
-		RPCReadRetries:             l.int("ETH402_RPC_READ_RETRIES", 2),
-		Confirmations:              l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
-		MaxFeePerGasWei:            l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
-		MaxPriorityFeeWei:          l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
-		MaxGasLimit:                l.uint64("ETH402_MAX_GAS_LIMIT", 0),
-		SignerMode:                 l.str("ETH402_SIGNER_MODE", "disabled"),
-		PolicySignerURL:            l.str("ETH402_POLICY_SIGNER_URL", ""),
-		PolicySignerToken:          l.str("ETH402_POLICY_SIGNER_TOKEN", ""),
-		DevSignerKey:               os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
-		KMSKeyName:                 l.str("ETH402_KMS_KEY_NAME", ""),
-		AllowUnsafeSigner:          l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
-		EmailBackend:               l.str("ETH402_EMAIL_BACKEND", "log"),
-		EmailFileDir:               l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
-		EmailTokenTTL:              l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
-		EmailResend:                l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
-		WalletChallengeTTL:         l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
-		RecipientCooldown:          l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
-		TermsVersion:               l.str("ETH402_TERMS_VERSION", "2026-07-27"),
-		APIKeyPepper:               l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
-		OperatorToken:              os.Getenv("ETH402_OPERATOR_TOKEN"),
-		BlockDisposable:            l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
-		RestrictFreeEmail:          l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
-		EmailAllowlist:             l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
-		EmailDenylist:              l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
-		StatsCacheTTL:              l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
+		Environment:        l.str("ETH402_ENV", "development"),
+		HTTPAddr:           l.str("ETH402_HTTP_ADDR", ":8080"),
+		PublicBaseURL:      l.str("ETH402_PUBLIC_BASE_URL", "http://localhost:8080"),
+		DatabaseURL:        os.Getenv("ETH402_DATABASE_URL"),
+		DatabaseMaxConns:   l.int32("ETH402_DATABASE_MAX_CONNS", 10),
+		EthereumRPCURL:     os.Getenv("ETH402_ETHEREUM_RPC_URL"),
+		FallbackRPCURL:     os.Getenv("ETH402_ETHEREUM_FALLBACK_RPC_URL"),
+		ChainID:            l.uint64("ETH402_ETHEREUM_CHAIN_ID", 1),
+		Network:            l.str("ETH402_ETHEREUM_NETWORK", MainnetNetwork),
+		USDCContract:       l.str("ETH402_USDC_CONTRACT", MainnetUSDC),
+		RPCTimeout:         l.duration("ETH402_RPC_TIMEOUT", 5*time.Second),
+		RPCReadRetries:     l.int("ETH402_RPC_READ_RETRIES", 2),
+		Confirmations:      l.uint64("ETH402_REQUIRED_CONFIRMATIONS", 12),
+		MaxFeePerGasWei:    l.str("ETH402_MAX_FEE_PER_GAS_WEI", "0"),
+		MaxPriorityFeeWei:  l.str("ETH402_MAX_PRIORITY_FEE_PER_GAS_WEI", "0"),
+		MaxGasLimit:        l.uint64("ETH402_MAX_GAS_LIMIT", 0),
+		SignerMode:         l.str("ETH402_SIGNER_MODE", "disabled"),
+		PolicySignerURL:    l.str("ETH402_POLICY_SIGNER_URL", ""),
+		PolicySignerToken:  l.str("ETH402_POLICY_SIGNER_TOKEN", ""),
+		DevSignerKey:       os.Getenv("ETH402_DEV_SIGNER_PRIVATE_KEY"),
+		KMSKeyName:         l.str("ETH402_KMS_KEY_NAME", ""),
+		AllowUnsafeSigner:  l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
+		EmailBackend:       l.str("ETH402_EMAIL_BACKEND", "log"),
+		EmailFileDir:       l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
+		EmailTokenTTL:      l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
+		EmailResend:        l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
+		WalletChallengeTTL: l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
+		RecipientCooldown:  l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
+		TermsVersion:       l.str("ETH402_TERMS_VERSION", "2026-07-27"),
+		APIKeyPepper:       l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
+		OperatorToken:      os.Getenv("ETH402_OPERATOR_TOKEN"),
+		BlockDisposable:    l.boolean("ETH402_DISPOSABLE_EMAIL_BLOCK", true),
+		RestrictFreeEmail:  l.boolean("ETH402_FREE_EMAIL_RESTRICTION", false),
+		EmailAllowlist:     l.csv("ETH402_EMAIL_DOMAIN_ALLOWLIST"),
+		EmailDenylist:      l.csv("ETH402_EMAIL_DOMAIN_DENYLIST"),
+		StatsCacheTTL:      l.duration("ETH402_STATS_CACHE_TTL", 10*time.Second),
+		PublishStatsVolume: l.boolean("ETH402_PUBLISH_STATS_VOLUME", false),
+		// Zero means "derive from the worker interval"; see StaleAfter below.
+		WorkerStaleAfter:           l.duration("ETH402_WORKER_STALE_AFTER", 0),
 		WorkerInterval:             l.duration("ETH402_WORKER_INTERVAL", 15*time.Second),
 		SettlementExpiryMargin:     l.duration("ETH402_SETTLEMENT_EXPIRY_MARGIN", time.Minute),
 		SigningTimeout:             l.duration("ETH402_SIGNING_TIMEOUT", 10*time.Second),
@@ -396,6 +408,21 @@ func (l *loader) prefixes(key string) []netip.Prefix {
 		result = append(result, netip.PrefixFrom(address, address.BitLen()))
 	}
 	return result
+}
+
+// StaleAfter is the worker-heartbeat deadline the status page uses. Derived from
+// the worker interval by default, because a fixed default would be either
+// trigger-happy or blind depending on how the interval is tuned. Four intervals
+// tolerates one slow tick and a retry without reporting an outage for a service
+// that is merely busy.
+func (c Config) StaleAfter() time.Duration {
+	if c.WorkerStaleAfter > 0 {
+		return c.WorkerStaleAfter
+	}
+	if c.WorkerInterval > 0 {
+		return 4 * c.WorkerInterval
+	}
+	return time.Minute
 }
 
 func (c Config) RedactedSummary() map[string]any {
