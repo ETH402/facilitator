@@ -37,6 +37,9 @@ flowchart LR
   send is ambiguous, so it never rotates providers).
 - `internal/signer`: transaction-signing boundary. Raw keys are development-only.
 - `internal/email`, `walletproof`, `auth`, `merchant`: onboarding boundary.
+  Production email delivery is provider-neutral SMTP with mandatory
+  certificate-verified TLS; development logging/file delivery cannot be
+  selected in production.
 - workers: database-leased/idempotent confirmation and recovery loops.
 
 RPC data is untrusted until cross-checked and confirmed. Email proves mailbox

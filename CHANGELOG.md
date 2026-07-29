@@ -7,12 +7,18 @@ versioned where noted.
 
 ### Added
 
+- Provider-neutral production SMTP delivery with mandatory certificate-verified
+  STARTTLS or implicit TLS, bounded connection/session deadlines, optional
+  paired authentication for private relays, RFC-compatible text messages,
+  header-injection rejection, and delivery errors that do not echo merchant
+  addresses into logs. Production configuration now requires this backend;
+  development log/file delivery remains forbidden.
+
 - An operator-controlled first-mainnet-transaction procedure with a one-intent
   global quota, explicit gas budget, two-RPC preflight, policy-signer/IAM
   checks, idempotency proof, abort rules, chain/database reconciliation, and a
-  redacted evidence checklist. Execution remains blocked on the production
-  email adapter, independent review, funded infrastructure, and operator
-  approval.
+  redacted evidence checklist. Execution remains blocked on independent review,
+  funded infrastructure, and operator approval.
 
 - Public integration and self-hosting documentation covering merchant
   activation, strict x402 request handling, verification and settlement

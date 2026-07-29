@@ -15,9 +15,10 @@ Do not begin while any item is false:
 - The exact commit and immutable image digest are recorded and have passed
   formatting, build, tests, race tests, vet, static analysis, vulnerability
   scanning, integration tests, incident simulations, and image scanning.
-- A production `email.Sender` adapter has been implemented and reviewed. The
-  current build has only development email adapters and therefore refuses
-  `ETH402_ENV=production`; this is presently a hard blocker.
+- The provider-neutral SMTP sender is configured against the selected relay,
+  mandatory TLS and certificate verification have been exercised in staging,
+  and a real verification email has been received without leaking its token
+  into production logs.
 - All migrations, including `000008_merchant_fair_use`, have been applied by
   the migration role and verified before the application starts.
 - Two independently operated, authenticated mainnet RPCs agree on chain ID,

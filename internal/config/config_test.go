@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -110,9 +111,55 @@ func TestPriorityFeeCannotExceedMaxFee(t *testing.T) {
 func TestUnknownEmailBackendRejected(t *testing.T) {
 	t.Parallel()
 	cfg := validConfig()
-	cfg.EmailBackend = "smtp"
+	cfg.EmailBackend = "carrier-pigeon"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("unimplemented email backend accepted")
+	}
+}
+
+func TestSMTPEmailBackend(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.EmailBackend = "smtp"
+	cfg.SMTPAddress = "smtp.example.com:587"
+	cfg.SMTPUsername = "merchant-mail"
+	cfg.SMTPPassword = "secret"
+	cfg.SMTPFrom = "ETH402 <verify@example.com>"
+	cfg.SMTPTLSMode = "starttls"
+	cfg.SMTPTimeout = 10 * time.Second
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid SMTP configuration rejected: %v", err)
+	}
+	cfg.SMTPPassword = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unpaired SMTP credential accepted")
+	}
+	cfg.SMTPPassword = "secret"
+	cfg.SMTPTLSMode = "optional"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("optional SMTP TLS accepted")
+	}
+}
+
+func TestProductionAcceptsSMTP(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Environment = "production"
+	cfg.PublicBaseURL = "https://eth402.example"
+	cfg.EmailBackend = "smtp"
+	cfg.SMTPAddress = "smtp.example.com:465"
+	cfg.SMTPUsername = "production-smtp-user"
+	cfg.SMTPPassword = "production-smtp-password"
+	cfg.SMTPFrom = "verify@example.com"
+	cfg.SMTPTLSMode = "tls"
+	cfg.SMTPTimeout = 10 * time.Second
+	cfg.APIKeyPepper = "independent-production-pepper-value"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("safe production SMTP configuration rejected: %v", err)
+	}
+	summary := fmt.Sprint(cfg.RedactedSummary())
+	if strings.Contains(summary, cfg.SMTPPassword) || strings.Contains(summary, cfg.SMTPUsername) {
+		t.Fatal("SMTP credentials exposed in redacted configuration summary")
 	}
 }
 

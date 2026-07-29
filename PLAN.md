@@ -159,7 +159,7 @@ Milestone 4 is complete.
       the implementation status and exact public contract
 - [ ] limited mainnet dry runs — the bounded procedure, abort conditions, and
       evidence checklist are complete in `docs/MAINNET_DRY_RUN.md`; execution
-      remains blocked on a production email adapter, independent review, funded
-      keys, live infrastructure, and an operator decision, and cannot be delegated
+      remains blocked on independent review, funded keys, live infrastructure,
+      and an operator decision, and cannot be delegated
 - [ ] independent security review — cannot be self-performed; needs a third party.
       `SECURITY.md` now scopes it

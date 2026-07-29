@@ -22,8 +22,8 @@ EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant
 USDC. The facilitator operator pays Ethereum gas, as required by the official
 exact-EVM scheme.
 
-The current build is not approved for mainnet payment processing and refuses
-production startup until a real email adapter is added. See the
+The current build is not yet approved for public mainnet payment processing;
+independent review and the controlled funded dry run remain open. See the
 [public integration guide](docs/INTEGRATION.md) and
 [deployment status](docs/DEPLOYMENT.md).
 

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
+	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
@@ -47,6 +49,12 @@ type Config struct {
 	AllowUnsafeSigner  bool
 	EmailBackend       string
 	EmailFileDir       string
+	SMTPAddress        string
+	SMTPUsername       string
+	SMTPPassword       string
+	SMTPFrom           string
+	SMTPTLSMode        string
+	SMTPTimeout        time.Duration
 	EmailTokenTTL      time.Duration
 	EmailResend        time.Duration
 	WalletChallengeTTL time.Duration
@@ -138,6 +146,12 @@ func Load() (Config, error) {
 		AllowUnsafeSigner:  l.boolean("ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER", false),
 		EmailBackend:       l.str("ETH402_EMAIL_BACKEND", "log"),
 		EmailFileDir:       l.str("ETH402_EMAIL_FILE_DIR", "./email-outbox"),
+		SMTPAddress:        l.str("ETH402_SMTP_ADDRESS", ""),
+		SMTPUsername:       l.str("ETH402_SMTP_USERNAME", ""),
+		SMTPPassword:       os.Getenv("ETH402_SMTP_PASSWORD"),
+		SMTPFrom:           l.str("ETH402_SMTP_FROM", ""),
+		SMTPTLSMode:        l.str("ETH402_SMTP_TLS_MODE", "starttls"),
+		SMTPTimeout:        l.duration("ETH402_SMTP_TIMEOUT", 10*time.Second),
 		EmailTokenTTL:      l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
 		EmailResend:        l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
 		WalletChallengeTTL: l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
@@ -239,8 +253,27 @@ func (c Config) Validate() error {
 	if c.TermsVersion == "" {
 		errs = append(errs, errors.New("terms version is required"))
 	}
-	if c.EmailBackend != "log" && c.EmailBackend != "file" {
-		errs = append(errs, errors.New("email backend must be log or file in this build"))
+	if c.EmailBackend != "log" && c.EmailBackend != "file" && c.EmailBackend != "smtp" {
+		errs = append(errs, errors.New("email backend must be log, file, or smtp"))
+	}
+	if c.EmailBackend == "smtp" {
+		host, _, addressErr := net.SplitHostPort(c.SMTPAddress)
+		if addressErr != nil || host == "" {
+			errs = append(errs, errors.New("SMTP address must be host:port"))
+		}
+		if (c.SMTPUsername == "") != (c.SMTPPassword == "") {
+			errs = append(errs, errors.New("SMTP username and password must be configured together"))
+		}
+		if from, fromErr := mail.ParseAddress(c.SMTPFrom); fromErr != nil || from.Address == "" ||
+			strings.ContainsAny(c.SMTPFrom, "\r\n") {
+			errs = append(errs, errors.New("SMTP from address is invalid"))
+		}
+		if c.SMTPTLSMode != "starttls" && c.SMTPTLSMode != "tls" {
+			errs = append(errs, errors.New("SMTP TLS mode must be starttls or tls"))
+		}
+		if c.SMTPTimeout <= 0 {
+			errs = append(errs, errors.New("SMTP timeout must be positive"))
+		}
 	}
 	maxFee, maxFeeOK := new(big.Int).SetString(c.MaxFeePerGasWei, 10)
 	priorityFee, priorityFeeOK := new(big.Int).SetString(c.MaxPriorityFeeWei, 10)
@@ -299,8 +332,8 @@ func (c Config) Validate() error {
 		if c.PublicBaseURL != "" && !strings.HasPrefix(c.PublicBaseURL, "https://") {
 			errs = append(errs, errors.New("production public URL must use HTTPS"))
 		}
-		if c.EmailBackend == "log" || c.EmailBackend == "file" {
-			errs = append(errs, errors.New("development email backend is forbidden in production"))
+		if c.EmailBackend != "smtp" {
+			errs = append(errs, errors.New("production requires the SMTP email backend"))
 		}
 		if (c.SignerMode == "development" || c.DevSignerKey != "") && !c.AllowUnsafeSigner {
 			errs = append(errs, errors.New("raw development signer is forbidden in production"))
@@ -458,7 +491,8 @@ func (c Config) RedactedSummary() map[string]any {
 		"environment": c.Environment, "http_addr": c.HTTPAddr, "network": c.Network,
 		"chain_id": c.ChainID, "usdc_contract": c.USDCContract, "signer_mode": c.SignerMode,
 		"database_configured": c.DatabaseURL != "", "rpc_configured": c.EthereumRPCURL != "",
-		"metrics_enabled": c.MetricsEnabled, "trusted_proxies": len(c.TrustedProxies),
+		"email_backend": c.EmailBackend, "metrics_enabled": c.MetricsEnabled,
+		"trusted_proxies": len(c.TrustedProxies),
 	}
 }
 

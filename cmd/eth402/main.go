@@ -126,8 +126,20 @@ func main() {
 		PublishVolume: cfg.PublishStatsVolume,
 	})
 	var sender email.Sender = email.LogSender{Logger: logger}
-	if cfg.EmailBackend == "file" {
+	switch cfg.EmailBackend {
+	case "file":
 		sender = email.FileSender{Directory: cfg.EmailFileDir}
+	case "smtp":
+		smtpSender, err := email.NewSMTPSender(email.SMTPConfig{
+			Address: cfg.SMTPAddress, Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+			TLSMode: cfg.SMTPTLSMode, Timeout: cfg.SMTPTimeout,
+		})
+		if err != nil {
+			logger.Error("SMTP sender initialization failed", "error", err)
+			os.Exit(1)
+		}
+		sender = smtpSender
 	}
 	merchantService := merchant.New(database.Pool, sender, merchant.Config{
 		BaseURL: cfg.PublicBaseURL, TermsVersion: cfg.TermsVersion,

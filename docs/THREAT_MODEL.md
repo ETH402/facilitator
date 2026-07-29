@@ -13,6 +13,7 @@ provide honest chain data; external signer policy works. Residual risk remains.
 | Malicious buyer | merchant/gas; malformed or expiring signatures | DoS/gas loss | strict parse, expiry margin, simulation, limits | failure metrics | adaptive abuse |
 | Sybil registration | service capacity; determined actor | quota evasion | domain controls, throttles, review | linked-abuse analysis | no global Sybil proof |
 | API-key theft | merchant account | recipient/key abuse | keyed hashes, one-time display, scoped auth, rotation | last-use/audit alerts | endpoint compromise |
+| Email transport compromise | verification token; merchant identity | account activation interception or disclosure | mandatory certificate-verified STARTTLS/implicit TLS, no plaintext fallback, short-lived one-time hashed tokens, sanitized delivery errors | delivery failures and provider audit logs | SMTP is hop-to-hop; downstream mail transport and the merchant mailbox remain outside ETH402 |
 | Email takeover | onboarding/recovery | account takeover | wallet proof, cooldown, no email-only recipient change | audit review | both factors compromised |
 | Recipient takeover | merchant revenue | redirected payments | fresh SIWE proof, history, cooldown | append-only history/audit | compromised wallet |
 | RPC manipulation | payment truth; RPC provider | false verify/receipt/head | fallback providers, chain check, confirmations | cross-provider mismatch | correlated providers |

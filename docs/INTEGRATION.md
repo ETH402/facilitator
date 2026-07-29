@@ -7,9 +7,9 @@ facilitator never takes custody of it; the facilitator operator pays the
 Ethereum gas.
 
 The current build is suitable for local and controlled test environments. It
-is **not approved for mainnet payment processing** and intentionally refuses
-production startup because no production email adapter has been implemented.
-See [Deployment](DEPLOYMENT.md) before self-hosting.
+is **not yet approved for public mainnet payment processing** because the
+independent review and controlled funded dry run remain open. See
+[Deployment](DEPLOYMENT.md) before self-hosting.
 
 The versioned wire contract is
 [`openapi/eth402.yaml`](../openapi/eth402.yaml). Treat it, rather than examples
@@ -242,9 +242,10 @@ response `X-Request-ID` in support and incident reports.
    `ETH402_GLOBAL_SETTLEMENT_QUOTA` greater than or equal to it. These bound
    settlement intent admission; signer fee and gas ceilings bound the ETH
    exposure per intent.
-5. Implement and independently review a real `email.Sender` adapter before
-   selecting `ETH402_ENV=production`. The bundled `log` and `file` adapters are
-   development-only, and configuration validation rejects them in production.
+5. Configure the provider-neutral SMTP sender with mandatory STARTTLS or
+   implicit TLS before selecting `ETH402_ENV=production`. The bundled `log`
+   and `file` adapters remain development-only, and configuration validation
+   rejects them in production.
 6. Keep settlement disabled until the signer boundary, gas ceilings, alert
    delivery, incident drills, limited funded mainnet dry runs, and an
    independent security review are complete.
