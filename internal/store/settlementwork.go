@@ -51,14 +51,14 @@ RETURNING id, payment_identity, state, claimed_until`,
 func (s *Store) LoadSettlementWork(ctx context.Context, paymentID string) (settlement.Work, error) {
 	var work settlement.Work
 	var state, signature, nonce string
-	var rawHash, maxFee, priorityFee, gasLimitText *string
+	var rawHash, sighash, maxFee, priorityFee, gasLimitText *string
 	var broadcastAttemptedAt *time.Time
 	err := s.Pool.QueryRow(ctx, `
 SELECT p.id, p.payment_identity, p.state,
        p.payer_address, p.recipient_address, p.amount_atomic::text,
        p.authorization_nonce, p.valid_after, p.valid_before, p.payer_signature,
        t.id, t.status, t.transaction_nonce::text, coalesce(t.tx_hash, ''),
-       t.signer_address, t.raw_transaction_hash,
+       t.signer_address, t.raw_transaction_hash, t.sighash,
        t.gas_limit::text, t.max_fee_per_gas::text, t.max_priority_fee_per_gas::text,
        t.broadcast_attempted_at, t.updated_at
 FROM payment_records p
@@ -68,7 +68,7 @@ WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
 		&work.Authorization.From, &work.Authorization.To, &work.Authorization.Value,
 		&work.Authorization.Nonce, &work.Authorization.ValidAfter, &work.Authorization.ValidBefore,
 		&signature, &work.TransactionID, &work.TransactionStatus, &nonce, &work.TxHash,
-		&work.SignerAddress, &rawHash,
+		&work.SignerAddress, &rawHash, &sighash,
 		&gasLimitText, &maxFee, &priorityFee,
 		&broadcastAttemptedAt, &work.TransactionUpdatedAt)
 	if err != nil {
@@ -83,6 +83,9 @@ WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
 	work.Nonce = parsed
 	if rawHash != nil {
 		work.RawHash = *rawHash
+	}
+	if sighash != nil {
+		work.Sighash = *sighash
 	}
 	if maxFee != nil {
 		work.MaxFeePerGas = *maxFee
@@ -106,16 +109,19 @@ WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
 // MarkTxSigned records that the intent's transaction was signed: the raw
 // transaction hash is the recovery handle for the ambiguous-broadcast case
 // (ADR-0004 decision 4), so it is persisted before any broadcast attempt. The
-// gas and fee values are stored with it because recovery may only ever
-// re-sign the *identical* transaction — never a fresh nonce, never different
-// terms.
-func (s *Store) MarkTxSigned(ctx context.Context, transactionID, rawHash string, gasLimit uint64, maxFee, priorityFee string) error {
+// sighash — the deterministic digest the signature commits to — is stored with
+// it because a randomized-nonce signer (Cloud KMS) never reproduces the raw
+// hash, while the sighash is identical for every signature of the same
+// transaction. The gas and fee values complete the reconstruction inputs:
+// recovery may only ever re-sign the *identical* transaction — never a fresh
+// nonce, never different terms.
+func (s *Store) MarkTxSigned(ctx context.Context, transactionID, rawHash, sighash string, gasLimit uint64, maxFee, priorityFee string) error {
 	tag, err := s.Pool.Exec(ctx, `
 UPDATE ethereum_transactions
-SET status = 'broadcasting', raw_transaction_hash = $2,
-    gas_limit = $3, max_fee_per_gas = $4, max_priority_fee_per_gas = $5,
+SET status = 'broadcasting', raw_transaction_hash = $2, sighash = $3,
+    gas_limit = $4, max_fee_per_gas = $5, max_priority_fee_per_gas = $6,
     updated_at = now()
-WHERE id = $1 AND status = 'intent'`, transactionID, rawHash, gasLimit, maxFee, priorityFee)
+WHERE id = $1 AND status = 'intent'`, transactionID, rawHash, sighash, gasLimit, maxFee, priorityFee)
 	if err != nil {
 		return err
 	}
@@ -329,11 +335,6 @@ VALUES ($1,$2,$3,$4,'{}'::jsonb)`, paymentID, string(from), string(to), actor)
 	return err
 }
 
-// MarkIntentExpired retires a settlement intent whose authorization expired
-// before broadcast. The transaction was never sent, so it is 'dropped' rather
-// than reverted: no gas was spent and the nonce it owned is never reused
-// (ADR-0004 decision 1 forbids reallocating it; the gap is reconciled during
-// recovery, never by handing the nonce to another payment).
 // MarkIntentUnsettleable retires an intent that simulation proved cannot succeed.
 //
 // The payment becomes `failed` and the transaction `dropped`, mirroring expiry:
@@ -362,6 +363,11 @@ WHERE id = $2 AND payment_id = $1 AND status = 'intent'`, paymentID, transaction
 	return tx.Commit(ctx)
 }
 
+// MarkIntentExpired retires a settlement intent whose authorization expired
+// before broadcast. The transaction was never sent, so it is 'dropped' rather
+// than reverted: no gas was spent and the nonce it owned is never reused
+// (ADR-0004 decision 1 forbids reallocating it; the gap is reconciled during
+// recovery, never by handing the nonce to another payment).
 func (s *Store) MarkIntentExpired(ctx context.Context, paymentID, transactionID, actor string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {

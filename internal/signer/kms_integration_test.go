@@ -142,21 +142,19 @@ func awaitReceipt(t *testing.T, rpc *ethereum.Client, txHash string) *ethereum.R
 	return nil
 }
 
-// TestCloudKMSSigningIsDeterministic decides whether ADR-0004's ambiguous
-// broadcast recovery actually works with the production signer.
+// TestCloudKMSSigHashStableAcrossSignatures proves the foundation of
+// ambiguous-broadcast recovery against the real production key: the sighash is
+// identical for every signature of the same transaction, while the signed
+// bytes differ because Cloud KMS randomizes the ECDSA nonce.
 //
-// settlement.signIdentical re-signs a stored transaction after an ambiguous
-// broadcast and refuses to send unless the re-signed bytes hash to the value
-// already recorded. That is only possible if signing is reproducible. The
-// development signer is deterministic (RFC 6979 via go-ethereum), but Cloud KMS
-// makes no such promise and HSM-backed ECDSA commonly uses a random k.
-//
-// If this fails, no funds are at risk — signIdentical refuses rather than
-// broadcasting a different transaction — but ambiguous broadcasts can then only
-// ever be resolved by on-chain lookup, and after the grace window they stay in
-// manual_review until an operator intervenes. Document it and drop the
-// re-broadcast claim rather than leaving the capability advertised.
-func TestCloudKMSSigningIsDeterministic(t *testing.T) {
+// Recovery relies on exactly this split. settlement.signIdentical re-signs a
+// stored transaction after an ambiguous broadcast and proves identity by the
+// stored sighash; the fresh signature's different hash is then recorded
+// replacement-shaped (ADR-0004 decision 4). If KMS ever produced a stable raw
+// hash that would also be fine — recovery takes the identical-bytes path — but
+// a sighash that varied for identical inputs would break recovery and fails
+// here. Set ETH402_TEST_KMS_KEY_NAME to the full key version resource to run.
+func TestCloudKMSSigHashStableAcrossSignatures(t *testing.T) {
 	keyName := os.Getenv("ETH402_TEST_KMS_KEY_NAME")
 	if keyName == "" {
 		t.Skip("ETH402_TEST_KMS_KEY_NAME is not set")
@@ -178,24 +176,29 @@ func TestCloudKMSSigningIsDeterministic(t *testing.T) {
 		Value: "0", GasLimit: 120000,
 		MaxFeePerGas: "30000000000", MaxPriorityFeePerGas: "2000000000",
 	}
-	hashes := make([]string, 0, 3)
-	for range 3 {
+	rawHashes := make([]string, 0, 3)
+	var sighash [32]byte
+	for i := range 3 {
 		signed, err := backend.SignTransaction(ctx, tx)
 		if err != nil {
 			t.Fatalf("sign: %v", err)
 		}
+		if i == 0 {
+			sighash = signed.SigHash
+		} else if signed.SigHash != sighash {
+			t.Fatalf("sighash is not stable across signatures: attempt %d gave %x, first %x",
+				i, signed.SigHash, sighash)
+		}
 		keccak := sha3.NewLegacyKeccak256()
 		keccak.Write(signed.Raw)
-		hashes = append(hashes, hex.EncodeToString(keccak.Sum(nil)))
+		rawHashes = append(rawHashes, hex.EncodeToString(keccak.Sum(nil)))
 	}
-	t.Logf("Cloud KMS signed-transaction hashes: %v", hashes)
-	for i, hash := range hashes {
-		if hash != hashes[0] {
-			t.Fatalf("Cloud KMS signing is NOT deterministic (attempt %d hashed %s, first %s).\n"+
-				"settlement.signIdentical can therefore never reproduce a stored transaction, so the "+
-				"ambiguous re-broadcast path in ADR-0004 decision 4 is unreachable with this backend. "+
-				"Recovery degrades to on-chain lookup only; update the ADR, SETTLEMENT_FLOW.md, and "+
-				"OPERATIONS.md rather than leaving the capability documented.", i, hash, hashes[0])
+	t.Logf("Cloud KMS sighash %x stable; raw hashes: %v", sighash, rawHashes)
+	for i, hash := range rawHashes {
+		if hash == rawHashes[0] && i > 0 {
+			t.Fatalf("raw hashes are unexpectedly identical (%s); "+
+				"Cloud KMS signing appears deterministic, so the randomized-nonce recovery "+
+				"path is no longer exercised — re-run or investigate the backend change", hash)
 		}
 	}
 }

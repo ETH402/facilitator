@@ -44,7 +44,7 @@ func (f settleFakeStore) LoadSettlementWork(context.Context, string) (settlement
 	return f.work, nil
 }
 
-func (f settleFakeStore) MarkTxSigned(context.Context, string, string, uint64, string, string) error {
+func (f settleFakeStore) MarkTxSigned(context.Context, string, string, string, uint64, string, string) error {
 	return nil
 }
 
@@ -69,6 +69,10 @@ func (f settleFakeStore) MarkTxReverted(context.Context, string, string, uint64,
 }
 
 func (f settleFakeStore) MarkTxRecoveredBroadcast(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkTxAmbiguousReplaced(context.Context, string, string, settlement.Replacement, string) error {
 	return nil
 }
 

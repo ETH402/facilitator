@@ -110,7 +110,7 @@ func (s *CloudKMS) SignTransaction(ctx context.Context, tx Transaction) (SignedT
 	if err != nil {
 		return SignedTransaction{}, fmt.Errorf("encode signed transaction: %w", err)
 	}
-	return SignedTransaction{Raw: raw}, nil
+	return SignedTransaction{Raw: raw, SigHash: sighash}, nil
 }
 
 // ethereumSignature converts a DER ECDSA signature from KMS into the 65-byte

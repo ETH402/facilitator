@@ -129,9 +129,11 @@ func (s *Service) recoverPayment(ctx context.Context, paymentID, actor string) e
 // is the lookup key: a receipt or a mempool sighting re-attaches the hash and
 // returns the payment to the broadcast pipeline. Only after the grace window
 // — and only when the exact signing inputs were persisted — may the identical
-// transaction be re-signed and re-broadcast; the recomputed hash must match
-// the stored one, otherwise the record is corrupt and broadcasting anything
-// would risk a double spend.
+// transaction be re-signed and re-broadcast. Identity is proven by the
+// sighash, which is deterministic across signers; the re-signed bytes may
+// still differ (Cloud KMS randomizes the ECDSA nonce), and a differing hash
+// is then recorded replacement-shaped, so the network mining either signature
+// resolves the payment instead of wedging it.
 func (s *Service) resolveAmbiguous(ctx context.Context, work Work, actor string) error {
 	if work.RawHash == "" {
 		return errors.New("ambiguous transaction has no raw hash; manual reconciliation required")
@@ -157,25 +159,55 @@ func (s *Service) resolveAmbiguous(ctx context.Context, work Work, actor string)
 	if work.MaxFeePerGas == "" || work.MaxPriorityFeePerGas == "" || work.GasLimit == 0 {
 		return errors.New("ambiguous transaction predates stored fee fields; manual reconciliation required")
 	}
-	raw, err := s.signIdentical(ctx, work)
+	raw, rawHash, err := s.signIdentical(ctx, work)
 	if err != nil {
 		return err
 	}
+	if rawHash != work.RawHash {
+		// The sighash matched, so this is the identical transaction signed
+		// with fresh ECDSA randomness: same nonce, gas, fees, and calldata,
+		// different hash. Record it as the replacement of the original before
+		// sending — a send failure then leaves a durable row the stuck
+		// pipeline re-bumps from, and observeReplacements resolves the
+		// payment if the network mines the original signature instead.
+		replacement := Replacement{
+			Nonce:         work.Nonce,
+			TxHash:        "0x" + rawHash,
+			RawHash:       rawHash,
+			GasLimit:      work.GasLimit,
+			MaxFee:        work.MaxFeePerGas,
+			PriorityFee:   work.MaxPriorityFeePerGas,
+			SignerAddress: work.SignerAddress,
+		}
+		if err := s.store.MarkTxAmbiguousReplaced(ctx, work.PaymentID, work.TransactionID, replacement, actor); err != nil {
+			return fmt.Errorf("record re-signed transaction: %w", err)
+		}
+		if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw)); err != nil {
+			return fmt.Errorf("broadcast re-signed transaction: %w", err)
+		}
+		return nil
+	}
 	if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw)); err != nil {
 		// Unknown outcome again: stay ambiguous. The next tick's on-chain
-		// lookup finds the transaction if this attempt reached the network.
+		// lookup finds the transaction if this attempt reached the network —
+		// the bytes are identical, so the lookup key is unchanged.
 		return fmt.Errorf("re-broadcast ambiguous transaction: %w", err)
 	}
 	return s.store.MarkTxRecoveredBroadcast(ctx, work.PaymentID, work.TransactionID, txHash, actor)
 }
 
 // signIdentical reproduces the exact transaction a row records — same nonce,
-// gas, fees, and calldata — and proves identity by hash before returning the
-// raw bytes.
-func (s *Service) signIdentical(ctx context.Context, work Work) ([]byte, error) {
+// gas, fees, and calldata — and proves identity before returning the raw
+// bytes and their hash. The proof is the sighash: the digest the signature
+// commits to, fully determined by the transaction fields, so every backend
+// reproduces it. Rows written before migration 000006 have no stored sighash
+// and fall back to comparing the raw transaction hash, which only a
+// deterministic signer can satisfy — with Cloud KMS that comparison refuses,
+// which is the safe outcome for a record that cannot be verified.
+func (s *Service) signIdentical(ctx context.Context, work Work) (raw []byte, rawHash string, err error) {
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
-		return nil, fmt.Errorf("build calldata: %w", err)
+		return nil, "", fmt.Errorf("build calldata: %w", err)
 	}
 	signCtx, cancel := context.WithTimeout(ctx, s.cfg.SigningTimeout)
 	signed, err := s.signer.SignTransaction(signCtx, signer.Transaction{
@@ -190,14 +222,20 @@ func (s *Service) signIdentical(ctx context.Context, work Work) ([]byte, error) 
 	})
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("re-sign transaction: %w", err)
+		return nil, "", fmt.Errorf("re-sign transaction: %w", err)
+	}
+	if work.Sighash != "" {
+		if recomputed := hex.EncodeToString(signed.SigHash[:]); recomputed != work.Sighash {
+			return nil, "", fmt.Errorf("re-signed sighash %s does not match stored %s; refusing to broadcast", recomputed, work.Sighash)
+		}
 	}
 	keccak := sha3.NewLegacyKeccak256()
 	keccak.Write(signed.Raw)
-	if recomputed := hex.EncodeToString(keccak.Sum(nil)); recomputed != work.RawHash {
-		return nil, fmt.Errorf("re-signed hash %s does not match stored %s; refusing to broadcast", recomputed, work.RawHash)
+	rawHash = hex.EncodeToString(keccak.Sum(nil))
+	if work.Sighash == "" && rawHash != work.RawHash {
+		return nil, "", fmt.Errorf("re-signed hash %s does not match stored %s; refusing to broadcast", rawHash, work.RawHash)
 	}
-	return signed.Raw, nil
+	return signed.Raw, rawHash, nil
 }
 
 // replaceStuck supersedes a pending transaction with a fee-bumped replacement

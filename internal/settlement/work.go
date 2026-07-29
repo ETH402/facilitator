@@ -28,11 +28,18 @@ type Work struct {
 	TxHash string
 
 	// Recovery fields. RawHash identifies the signed transaction on chain.
+	// Sighash is the deterministic digest the signature commits to: re-signing
+	// the identical transaction reproduces it under every backend, whereas
+	// RawHash changes when the signer randomizes the ECDSA nonce (Cloud KMS
+	// does), so recovery proves identity by Sighash (ADR-0004 decision 4).
 	// The fee and timing fields reconstruct the identical transaction (for
 	// ambiguous resolution) or its replacement (for stuck pending); they are
 	// empty for rows written before migration 000004, which recovery resolves
-	// by on-chain lookup only.
+	// by on-chain lookup only. Sighash is empty for rows before 000006; those
+	// fall back to the raw-hash comparison, which only a deterministic signer
+	// can satisfy.
 	RawHash              string
+	Sighash              string
 	SignerAddress        string
 	GasLimit             uint64
 	MaxFeePerGas         string

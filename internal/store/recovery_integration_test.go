@@ -42,7 +42,7 @@ func seedReplaced(t *testing.T, store *Store, identity string) (string, settleme
 	t.Helper()
 	ctx := context.Background()
 	paymentID, work := seedBroadcastingPayment(t, store, identity)
-	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), 120000, "30000000000", "2000000000"); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), strings.Repeat("a", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
 	if err := store.MarkTxBroadcast(ctx, paymentID, work.TransactionID, "0x"+strings.Repeat("f", 64), "worker"); err != nil {
@@ -66,7 +66,7 @@ func TestRecoveredBroadcastReturnsToPipeline(t *testing.T) {
 	store := settlementTestStore(t)
 	ctx := context.Background()
 	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("1a", 34))
-	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), 120000, "30000000000", "2000000000"); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), strings.Repeat("a", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
 	if err := store.MarkTxAmbiguous(ctx, paymentID, work.TransactionID, "worker"); err != nil {
@@ -95,6 +95,90 @@ WHERE payment_id = $1 AND from_state = 'manual_review' AND to_state = 'broadcast
 	}
 	if err := store.MarkTxRecoveredBroadcast(ctx, paymentID, work.TransactionID, txHash, "worker"); !errors.Is(err, ErrSettlementRace) {
 		t.Fatalf("second recovery = %v, want ErrSettlementRace", err)
+	}
+}
+
+// TestAmbiguousReplacedRecordsReSignedTransaction covers the Cloud KMS shape
+// of ambiguous recovery: the sighash proved the re-signed transaction
+// identical, but its bytes — and hash — differ from the original signature.
+// The original leaves the active set carrying its derived hash so
+// observeReplacements keeps watching it, the re-signed row lands broadcast
+// under the same nonce and inherits the sighash, and the payment leaves
+// manual review for replaced (ADR-0004 decision 4).
+func TestAmbiguousReplacedRecordsReSignedTransaction(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("3c", 34))
+	rawHash := strings.Repeat("e", 64)
+	sighash := strings.Repeat("a", 64)
+	if err := store.MarkTxSigned(ctx, work.TransactionID, rawHash, sighash, 120000, "30000000000", "2000000000"); err != nil {
+		t.Fatalf("mark signed: %v", err)
+	}
+	if err := store.MarkTxAmbiguous(ctx, paymentID, work.TransactionID, "worker"); err != nil {
+		t.Fatalf("mark ambiguous: %v", err)
+	}
+	replacement := settlement.Replacement{
+		Nonce: work.Nonce, TxHash: "0x" + strings.Repeat("b", 64), RawHash: strings.Repeat("b", 64),
+		GasLimit: 120000, MaxFee: "30000000000", PriorityFee: "2000000000", SignerAddress: intentSigner,
+	}
+	if err := store.MarkTxAmbiguousReplaced(ctx, paymentID, work.TransactionID, replacement, "worker"); err != nil {
+		t.Fatalf("mark ambiguous replaced: %v", err)
+	}
+
+	if state := paymentState(t, store, paymentID); state != "replaced" {
+		t.Fatalf("state = %s, want replaced", state)
+	}
+	status, hash := txRow(t, store, work.TransactionID)
+	if status != "replaced" || hash != "0x"+rawHash {
+		// The original's hash was never recorded while ambiguous; the derived
+		// hash is what observeReplacements can watch for a late landing.
+		t.Fatalf("original status=%s hash=%s, want replaced / %s", status, hash, "0x"+rawHash)
+	}
+	active, err := store.LoadSettlementWork(ctx, paymentID)
+	if err != nil {
+		t.Fatalf("load re-signed work: %v", err)
+	}
+	if active.TransactionID == work.TransactionID {
+		t.Fatal("re-signed row must be a new transaction, not the ambiguous one")
+	}
+	if active.TxHash != replacement.TxHash || active.RawHash != replacement.RawHash {
+		t.Fatalf("re-signed hashes = %q / %q, want %q / %q",
+			active.TxHash, active.RawHash, replacement.TxHash, replacement.RawHash)
+	}
+	if active.Sighash != sighash {
+		t.Fatalf("re-signed sighash = %q, want inherited %q", active.Sighash, sighash)
+	}
+	if active.Nonce != work.Nonce {
+		t.Fatalf("re-signed nonce = %d, want %d", active.Nonce, work.Nonce)
+	}
+	var replacedBy string
+	if err := store.Pool.QueryRow(ctx,
+		`SELECT replaced_by_id FROM ethereum_transactions WHERE id = $1`, work.TransactionID).
+		Scan(&replacedBy); err != nil {
+		t.Fatal(err)
+	}
+	if replacedBy != active.TransactionID {
+		t.Fatalf("replaced_by_id = %s, want %s", replacedBy, active.TransactionID)
+	}
+	var transitions int
+	if err := store.Pool.QueryRow(ctx, `
+SELECT count(*) FROM payment_transitions
+WHERE payment_id = $1 AND from_state = 'manual_review' AND to_state = 'replaced'`, paymentID).
+		Scan(&transitions); err != nil {
+		t.Fatal(err)
+	}
+	if transitions != 1 {
+		t.Fatalf("recovery transitions = %d, want 1", transitions)
+	}
+	pending, err := store.ListReplacedPending(ctx)
+	if err != nil {
+		t.Fatalf("list replaced pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].TxHash != "0x"+rawHash {
+		t.Fatalf("replaced pending = %+v, want the original's derived hash", pending)
+	}
+	if err := store.MarkTxAmbiguousReplaced(ctx, paymentID, work.TransactionID, replacement, "worker"); !errors.Is(err, ErrSettlementRace) {
+		t.Fatalf("second ambiguous replacement = %v, want ErrSettlementRace", err)
 	}
 }
 
@@ -240,7 +324,7 @@ func TestReorgedOutReturnsToBroadcast(t *testing.T) {
 	store := settlementTestStore(t)
 	ctx := context.Background()
 	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("6f", 34))
-	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), 120000, "30000000000", "2000000000"); err != nil {
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), strings.Repeat("a", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark signed: %v", err)
 	}
 	if err := store.MarkTxBroadcast(ctx, paymentID, work.TransactionID, "0x"+strings.Repeat("f", 64), "worker"); err != nil {
@@ -293,7 +377,7 @@ func TestDroppedBlockingGapLifecycle(t *testing.T) {
 	if later.Nonce != work.Nonce+1 {
 		t.Fatalf("later nonce = %d, want %d", later.Nonce, work.Nonce+1)
 	}
-	if err := store.MarkTxSigned(ctx, later.TransactionID, strings.Repeat("9", 64), 120000, "30000000000", "2000000000"); err != nil {
+	if err := store.MarkTxSigned(ctx, later.TransactionID, strings.Repeat("9", 64), strings.Repeat("a", 64), 120000, "30000000000", "2000000000"); err != nil {
 		t.Fatalf("mark later signed: %v", err)
 	}
 	if err := store.MarkTxBroadcast(ctx, later.PaymentID, later.TransactionID, "0x"+strings.Repeat("9", 64), "worker"); err != nil {

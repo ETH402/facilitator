@@ -30,7 +30,7 @@ type Store interface {
 	ClaimPayments(context.Context, ClaimRequest) ([]Lease, error)
 	ReleaseLease(ctx context.Context, paymentID, worker string) error
 	LoadSettlementWork(ctx context.Context, paymentID string) (Work, error)
-	MarkTxSigned(ctx context.Context, transactionID, rawHash string, gasLimit uint64, maxFee, priorityFee string) error
+	MarkTxSigned(ctx context.Context, transactionID, rawHash, sighash string, gasLimit uint64, maxFee, priorityFee string) error
 	MarkTxBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error
 	MarkTxAmbiguous(ctx context.Context, paymentID, transactionID, actor string) error
 	MarkIntentExpired(ctx context.Context, paymentID, transactionID, actor string) error
@@ -39,6 +39,7 @@ type Store interface {
 	MarkTxConfirmed(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxReverted(ctx context.Context, paymentID, transactionID string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxRecoveredBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error
+	MarkTxAmbiguousReplaced(ctx context.Context, paymentID, oldTxID string, replacement Replacement, actor string) error
 	MarkTxReplaced(ctx context.Context, paymentID, oldTxID string, replacement Replacement, actor string) error
 	MarkReplacementLanded(ctx context.Context, paymentID, minedTxID string, succeeded bool, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxReorgedOut(ctx context.Context, paymentID, transactionID, actor string) error
@@ -299,7 +300,7 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 	keccak.Write(signed.Raw)
 	rawSum := keccak.Sum(nil)
 	if err := s.store.MarkTxSigned(ctx, work.TransactionID, hex.EncodeToString(rawSum),
-		s.cfg.GasLimit, maxFee.String(), priorityFee.String()); err != nil {
+		hex.EncodeToString(signed.SigHash[:]), s.cfg.GasLimit, maxFee.String(), priorityFee.String()); err != nil {
 		return "", fmt.Errorf("record signed transaction: %w", err)
 	}
 	txHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw))

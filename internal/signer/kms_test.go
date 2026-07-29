@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
@@ -142,6 +143,46 @@ func TestCloudKMSSignsRecoverableTransaction(t *testing.T) {
 		if s.Cmp(halfOrder) > 0 {
 			t.Fatalf("highS=%v s exceeds half-order", highS)
 		}
+	}
+}
+
+// TestBackendsAgreeOnSigHash pins the property settlement recovery relies on:
+// the sighash is fully determined by the transaction fields, so every backend
+// reports the identical digest for the identical transaction — even though the
+// signed bytes differ, because a KMS-style signer randomizes the ECDSA nonce
+// (fakeKMS signs with a random k, like Cloud KMS) while Development is
+// deterministic (RFC 6979).
+func TestBackendsAgreeOnSigHash(t *testing.T) {
+	dev, err := NewDevelopment("0x" + strings.Repeat("00", 31) + "01")
+	if err != nil {
+		t.Fatalf("development signer: %v", err)
+	}
+	backend, err := NewCloudKMS(context.Background(), newFakeKMS(t), testKeyName)
+	if err != nil {
+		t.Fatalf("NewCloudKMS: %v", err)
+	}
+	tx := kmsTransaction()
+	devSigned, err := dev.SignTransaction(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("development sign: %v", err)
+	}
+	kmsSigned1, err := backend.SignTransaction(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("KMS sign 1: %v", err)
+	}
+	kmsSigned2, err := backend.SignTransaction(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("KMS sign 2: %v", err)
+	}
+	if devSigned.SigHash == ([32]byte{}) {
+		t.Fatal("development signer returned a zero sighash")
+	}
+	if devSigned.SigHash != kmsSigned1.SigHash || kmsSigned1.SigHash != kmsSigned2.SigHash {
+		t.Fatalf("sighash differs across backends/signings: dev %x, kms %x / %x",
+			devSigned.SigHash, kmsSigned1.SigHash, kmsSigned2.SigHash)
+	}
+	if bytes.Equal(kmsSigned1.Raw, kmsSigned2.Raw) {
+		t.Fatal("expected randomized-k signatures to differ; the test no longer models Cloud KMS")
 	}
 }
 

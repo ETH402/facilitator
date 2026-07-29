@@ -36,6 +36,63 @@ WHERE id = $2 AND payment_id = $1 AND status = 'ambiguous'`, paymentID, transact
 	return tx.Commit(ctx)
 }
 
+// MarkTxAmbiguousReplaced records the re-signed form of an ambiguous
+// transaction as the replacement of its original. The sighash already proved
+// the transaction identical — same nonce, gas, fees, and calldata — but a
+// randomized-nonce signer (Cloud KMS) produces different bytes, hence a
+// different hash. Recording it replacement-shaped keeps both signatures
+// watched: the confirmation worker follows the fresh hash while
+// observeReplacements resolves the payment if the network mines the original
+// instead. One transaction: the ambiguous row leaves the active set as
+// 'replaced', the re-signed row lands already broadcast with the linkage
+// recorded, and the payment leaves manual review for 'replaced'.
+func (s *Store) MarkTxAmbiguousReplaced(ctx context.Context, paymentID, oldTxID string, replacement settlement.Replacement, actor string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The ambiguous row must leave the active set before the re-signed row
+	// inserts: the partial unique index allows one active transaction per
+	// payment. Its hash was never recorded, so it is derived from the raw
+	// transaction hash — observeReplacements watches tx_hash, and the original
+	// signature is exactly what must stay watched.
+	tag, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions
+SET status = 'replaced', tx_hash = '0x' || raw_transaction_hash, updated_at = now()
+WHERE id = $2 AND payment_id = $1 AND status = 'ambiguous'`, paymentID, oldTxID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("replace ambiguous transaction %s: %w", oldTxID, ErrSettlementRace)
+	}
+	var replacementID string
+	err = tx.QueryRow(ctx, `
+INSERT INTO ethereum_transactions(
+  payment_id, tx_hash, signer_address, transaction_nonce, status,
+  raw_transaction_hash, sighash, gas_limit, max_fee_per_gas, max_priority_fee_per_gas,
+  broadcast_attempted_at)
+SELECT payment_id, $3, signer_address, transaction_nonce, 'broadcast',
+       $4, sighash, $5, $6, $7, now()
+FROM ethereum_transactions WHERE id = $2 AND payment_id = $1
+RETURNING id`,
+		paymentID, oldTxID, replacement.TxHash, replacement.RawHash,
+		replacement.GasLimit, replacement.MaxFee, replacement.PriorityFee).Scan(&replacementID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions SET replaced_by_id = $3 WHERE id = $2 AND payment_id = $1`,
+		paymentID, oldTxID, replacementID); err != nil {
+		return err
+	}
+	if err := transitionPayment(ctx, tx, paymentID, settlement.StateManualReview, settlement.StateReplaced, actor); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // MarkTxReplaced supersedes a stuck transaction with a fee-bumped replacement
 // sharing its nonce. One transaction: the old row becomes 'replaced', the
 // replacement lands already broadcast with the linkage recorded, and the

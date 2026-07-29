@@ -88,8 +88,17 @@ func (t Transaction) Validate() error {
 	return errors.Join(errs...)
 }
 
+// SignedTransaction is the signed payload plus the digest that was signed.
+//
+// SigHash is the keccak hash of the unsigned EIP-1559 transaction — the exact
+// digest the signature commits to. It is deterministic: fully derived from the
+// transaction fields, unlike Raw, whose encoding embeds the signature and
+// therefore differs whenever the backend randomizes the ECDSA nonce (Cloud KMS
+// does). Settlement recovery persists it to prove a re-signed transaction is
+// the recorded one (ADR-0004 decision 4).
 type SignedTransaction struct {
-	Raw []byte
+	Raw     []byte
+	SigHash [32]byte
 }
 
 type Signer interface {

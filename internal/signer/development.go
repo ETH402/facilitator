@@ -54,7 +54,9 @@ func (s *Development) SignTransaction(_ context.Context, tx Transaction) (Signed
 		GasTipCap: priorityFee,
 		Data:      tx.Data,
 	})
-	signed, err := types.SignTx(unsigned, types.LatestSignerForChainID(new(big.Int).SetUint64(tx.ChainID)), s.key)
+	chainSigner := types.LatestSignerForChainID(new(big.Int).SetUint64(tx.ChainID))
+	sighash := chainSigner.Hash(unsigned)
+	signed, err := types.SignTx(unsigned, chainSigner, s.key)
 	if err != nil {
 		return SignedTransaction{}, fmt.Errorf("sign transaction: %w", err)
 	}
@@ -62,7 +64,7 @@ func (s *Development) SignTransaction(_ context.Context, tx Transaction) (Signed
 	if err != nil {
 		return SignedTransaction{}, fmt.Errorf("encode signed transaction: %w", err)
 	}
-	return SignedTransaction{Raw: raw}, nil
+	return SignedTransaction{Raw: raw, SigHash: sighash}, nil
 }
 
 func trimPrefix(value string) string {

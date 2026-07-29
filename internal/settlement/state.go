@@ -33,7 +33,7 @@ var transitions = map[State]map[State]bool{
 	// That needs a human, and recovery never finalizes a payment itself
 	// (ADR-0004 decision 4), so manual_review is the only edge out.
 	StateExpired:      {StateManualReview: true},
-	StateManualReview: {StateVerified: true, StateBroadcast: true, StateConfirming: true, StateFailed: true, StateExpired: true},
+	StateManualReview: {StateVerified: true, StateBroadcast: true, StateConfirming: true, StateReplaced: true, StateFailed: true, StateExpired: true},
 }
 
 func CanTransition(from, to State) bool { return transitions[from][to] }

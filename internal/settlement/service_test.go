@@ -23,6 +23,7 @@ type fakeStore struct {
 	leases     []Lease
 
 	signedRawHash   string
+	signedSighash   string
 	broadcastTxHash string
 	ambiguous       bool
 	expired         bool
@@ -34,6 +35,8 @@ type fakeStore struct {
 	recoveredTxHash    string
 	replaced           bool
 	replacement        Replacement
+	ambiguousReplaced  bool
+	ambReplacement     Replacement
 	landed             bool
 	landedSucceeded    bool
 	reorgedOut         bool
@@ -70,8 +73,9 @@ func (f *fakeStore) LoadSettlementWork(context.Context, string) (Work, error) {
 	return f.work, nil
 }
 
-func (f *fakeStore) MarkTxSigned(_ context.Context, _, rawHash string, _ uint64, _, _ string) error {
+func (f *fakeStore) MarkTxSigned(_ context.Context, _, rawHash, sighash string, _ uint64, _, _ string) error {
 	f.signedRawHash = rawHash
+	f.signedSighash = sighash
 	return nil
 }
 
@@ -113,6 +117,12 @@ func (f *fakeStore) MarkTxRecoveredBroadcast(_ context.Context, _, _, txHash, _ 
 func (f *fakeStore) MarkTxReplaced(_ context.Context, _, _ string, replacement Replacement, _ string) error {
 	f.replaced = true
 	f.replacement = replacement
+	return nil
+}
+
+func (f *fakeStore) MarkTxAmbiguousReplaced(_ context.Context, _, _ string, replacement Replacement, _ string) error {
+	f.ambiguousReplaced = true
+	f.ambReplacement = replacement
 	return nil
 }
 
@@ -162,8 +172,9 @@ func (f *fakeStore) MarkGapFillerSucceeded(_ context.Context, _, _ string, _ uin
 }
 
 type fakeSigner struct {
-	raw []byte
-	err error
+	raw     []byte
+	sigHash [32]byte
+	err     error
 }
 
 func (f fakeSigner) Address(context.Context) (string, error) {
@@ -171,7 +182,7 @@ func (f fakeSigner) Address(context.Context) (string, error) {
 }
 
 func (f fakeSigner) SignTransaction(context.Context, signer.Transaction) (signer.SignedTransaction, error) {
-	return signer.SignedTransaction{Raw: f.raw}, f.err
+	return signer.SignedTransaction{Raw: f.raw, SigHash: f.sigHash}, f.err
 }
 
 type fakeChain struct {
@@ -267,6 +278,9 @@ func TestBroadcastHappyPath(t *testing.T) {
 	}
 	if len(store.signedRawHash) != 64 {
 		t.Fatalf("raw hash = %q", store.signedRawHash)
+	}
+	if len(store.signedSighash) != 64 {
+		t.Fatalf("sighash = %q", store.signedSighash)
 	}
 	if store.broadcastTxHash != chain.txHash {
 		t.Fatalf("recorded hash = %q", store.broadcastTxHash)
