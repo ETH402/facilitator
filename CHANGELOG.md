@@ -7,6 +7,17 @@ versioned where noted.
 
 ### Added
 
+- Configurable privacy retention (migration `000009` and a bounded worker).
+  Stale verified payments expire automatically; terminal records older than 30
+  days lose merchant linkage, payer/recipient addresses, authorization
+  nonce/times/hash/signature, and stored raw transaction bytes. Irreversible
+  identity, integer amount, state, and public transaction hash remain so
+  lifetime statistics and duplicate `/settle` responses stay correct.
+  Failed/expired authorizations that may still repair a signer nonce gap are
+  excluded until their transactions are resolved. Expired email tokens,
+  unreferenced wallet challenges, and revoked API keys are pruned on their own
+  configurable schedules.
+
 - Provider-neutral production SMTP delivery with mandatory certificate-verified
   STARTTLS or implicit TLS, bounded connection/session deadlines, optional
   paired authentication for private relays, RFC-compatible text messages,

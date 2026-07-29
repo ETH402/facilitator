@@ -73,15 +73,48 @@ needs them, and are the reason [operations](OPERATIONS.md) requires that logs ne
 contain full authorizations, signed transactions, or unredacted email addresses.
 Treat log storage as holding pseudonymous personal data.
 
-## Known gap: retention
+## Retention
 
-**Nothing is deleted.** Payment records, authorizations, and merchant details
-persist indefinitely, so the privacy exposure grows without bound and a database
-compromise years from now still discloses every payer address the facilitator ever
-saw.
+The privacy-first defaults are:
 
-This is a real gap and is not addressed by the analytics posture above. Deciding it
-needs an operator's answer on how long records must be kept for dispute resolution
-and any applicable obligation, which is a policy question rather than a code one —
-so it is tracked in `PLAN.md` for Milestone 5 rather than assumed here. Until then,
-`docs/OPERATIONS.md` backup guidance applies to data that is never pruned.
+| Data | Default | Action |
+|---|---:|---|
+| terminal payment authorization | 30 days | remove merchant linkage, payer/recipient addresses, authorization nonce and times, payload hash, payer signature, leases, and stored raw transaction bytes |
+| expired email tokens | 24 hours after expiry | delete |
+| unreferenced expired wallet challenges | 24 hours after expiry | delete |
+| revoked API keys | 30 days after revocation | delete |
+| fair-use counters | two completed windows | delete |
+
+`ETH402_PAYMENT_RETENTION`, `ETH402_EPHEMERAL_RETENTION`,
+`ETH402_REVOKED_KEY_RETENTION`, `ETH402_RETENTION_INTERVAL`, and
+`ETH402_RETENTION_BATCH_SIZE` configure the lifecycle. Payment retention cannot
+be shorter than the settlement quota window, because clearing `merchant_id`
+sooner would undercount that merchant's admitted gas exposure.
+
+Payment rows become tombstones rather than disappearing. They retain the
+irreversible `payment_identity`, exact integer amount, state, timestamps, and
+public transaction hash. This preserves lifetime `/stats` and allows a caller
+retrying an old `/settle` request to recover the original hash. A transaction
+hash is already public and can be used to recover transfer details from
+Ethereum; retention removes ETH402's private merchant association and any
+unbroadcast authorization material, not public-chain history.
+
+The worker never redacts `manual_review` or an in-flight payment. A
+failed/expired payment with a dropped signer nonce also keeps its authorization
+until the gap filler is resolved: deleting it earlier would strand every later
+transaction from that signer. Stale `verified` payments are first moved to
+`expired`; they wait a full payment-retention period before becoming eligible.
+Each pass uses `FOR UPDATE SKIP LOCKED` and a bounded batch, so it coordinates
+across instances without blocking settlement.
+
+Verification and settlement attempt rows, transition history, and
+security-audit events remain append-only. They retain reason codes and
+irreversible payment identities, not raw authorizations or payer addresses.
+Used wallet challenges referenced by recipient-address history also remain as
+hashes because that append-only proof history protects merchant funds.
+
+Active merchant identity data is retained for the account's lifetime; ETH402
+does not yet expose self-service account erasure. Backups and replicas retain
+data according to the operator's independent backup lifecycle, so production
+operators must choose values compatible with applicable obligations and
+document deletion from backups as well as the primary database.

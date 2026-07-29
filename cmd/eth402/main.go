@@ -21,6 +21,7 @@ import (
 	"github.com/ETH402/facilitator/internal/httpapi"
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
+	"github.com/ETH402/facilitator/internal/retention"
 	"github.com/ETH402/facilitator/internal/settlement"
 	"github.com/ETH402/facilitator/internal/signer"
 	"github.com/ETH402/facilitator/internal/stats"
@@ -246,6 +247,17 @@ func main() {
 			pruneFairUse(root, database, cfg.FairUseWindow, logger)
 		}()
 	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		retention.New(retention.Config{
+			Store: database, PaymentAfter: cfg.PaymentRetention,
+			EphemeralAfter:  cfg.EphemeralRetention,
+			RevokedKeyAfter: cfg.RevokedKeyRetention,
+			Interval:        cfg.RetentionInterval, BatchSize: cfg.RetentionBatchSize,
+			Logger: logger, Observer: registry,
+		}).Run(root)
+	}()
 	api := httpapi.New(httpapi.Dependencies{
 		Logger: logger, Database: database, Ethereum: rpc, Stats: statsService,
 		Metrics: registry, ExpectedChainID: cfg.ChainID, PublicRatePerMinute: cfg.PublicRatePerMin,

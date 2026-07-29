@@ -19,7 +19,7 @@ Do not begin while any item is false:
   mandatory TLS and certificate verification have been exercised in staging,
   and a real verification email has been received without leaking its token
   into production logs.
-- All migrations, including `000008_merchant_fair_use`, have been applied by
+- All migrations, including `000009_payment_retention`, have been applied by
   the migration role and verified before the application starts.
 - Two independently operated, authenticated mainnet RPCs agree on chain ID,
   head, USDC code, payer balance, and authorization nonce state.
@@ -37,8 +37,8 @@ Do not begin while any item is false:
   amount. The payer does not need ETH.
 - The operator has approved the exact USDC amount, maximum gas exposure,
   addresses, time window, observers, rollback owner, and evidence location.
-  Because payment data is not yet pruned, the approval also acknowledges that
-  the test authorization and addresses persist indefinitely.
+  The approval records the configured primary-database and backup retention
+  periods for the test authorization and addresses.
 - An independent security review is complete. If it is not, the dry run
   remains blocked; this checklist is not a substitute for that review.
 

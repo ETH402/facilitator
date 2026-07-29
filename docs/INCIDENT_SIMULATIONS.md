@@ -15,7 +15,7 @@ make incident-simulations
 
 The runner refuses any database URL that does not name `eth402_test`. The store
 suite truncates test data and applies all migrations, including
-`000008_merchant_fair_use`.
+`000009_payment_retention`.
 
 ## Acceptance criteria
 

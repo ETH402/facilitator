@@ -76,13 +76,28 @@ Migration `000007_gap_filler_raw_transaction` adds:
   send and reuses them byte-for-byte when the send outcome is ambiguous, so
   randomized Cloud KMS signatures cannot turn one filler into multiple hashes.
 
+Migration `000008_merchant_fair_use` adds:
+
+- `merchant_usage`: bounded tumbling-window counters for authenticated merchant
+  requests. Old windows are pruned by the application worker.
+
+Migration `000009_payment_retention` adds:
+
+- `payment_records.redacted_at` and nullable authorization fields. Terminal
+  payment tombstones retain identity, amount, state, and public transaction
+  history for statistics and idempotency while removing addresses, nonce,
+  validity, payload hash, signature, merchant linkage, and raw signed bytes.
+- `payment_records_retention_idx`, limiting each retention scan to old
+  unredacted terminal rows.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,
 authorization replay uniqueness, one active transaction per payment, and one
 active suspension.
 
-Deletion is restrictive for security history. Retention/anonymization must be
-implemented explicitly with legal review; audit metadata must never contain
-raw secrets. Payment signatures live only in `payment_records.payer_signature`,
-never in audit metadata.
+Deletion remains restrictive for append-only security history. The retention
+worker mutates only payment records/transaction bytes and deletes explicitly
+ephemeral credential rows; audit metadata must never contain raw secrets.
+Payment signatures live only in `payment_records.payer_signature`, never in
+audit metadata, and are cleared when the payment becomes a retention tombstone.

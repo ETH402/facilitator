@@ -111,3 +111,32 @@ groups:
             Each retry is counted, so a read succeeding only on its fallback still
             registers the failing provider. Verification and settlement both depend
             on these reads; sustained failures stall broadcasts and confirmations.
+
+      - alert: RetentionWorkerStalled
+        # Default retention interval is one hour. Tune this threshold when changing
+        # ETH402_RETENTION_INTERVAL.
+        expr: time() - eth402_retention_last_tick_timestamp_seconds > 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Privacy retention worker has stopped"
+          description: >-
+            Terminal authorization data and expired onboarding credentials are
+            no longer being removed. Check process logs and database health.
+
+      - alert: RetentionWorkerAbsent
+        expr: absent(eth402_retention_last_tick_timestamp_seconds)
+        for: 75m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Privacy retention worker has never reported a pass"
+
+      - alert: RetentionPassFailing
+        expr: increase(eth402_retention_errors_total[2h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Privacy retention pass failed"

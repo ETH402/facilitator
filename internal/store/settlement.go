@@ -47,7 +47,7 @@ func (s *Store) CreateSettlementIntent(ctx context.Context, request settlement.I
 	// rejected request cannot consume a nonce and gap the sequence.
 	var paymentID, state string
 	var merchantID, storedSignature *string
-	var validBefore time.Time
+	var validBefore *time.Time
 	err = tx.QueryRow(ctx, `
 SELECT id, state, merchant_id, valid_before, payer_signature
 FROM payment_records
@@ -158,7 +158,7 @@ FOR UPDATE`, *merchantID).Scan(&activeMerchantID)
 	if err != nil {
 		return settlement.Intent{}, fmt.Errorf("lock active merchant: %w", err)
 	}
-	if !validBefore.After(request.Now.Add(request.ExpiryMargin)) {
+	if validBefore == nil || !validBefore.After(request.Now.Add(request.ExpiryMargin)) {
 		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
 			settlement.ReasonAuthorizationExpiring, settlement.ErrAuthorizationExpiring)
 	}

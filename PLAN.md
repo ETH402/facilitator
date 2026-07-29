@@ -137,10 +137,13 @@ Milestone 4 is complete.
 
 ## Milestone 5 — public beta
 
-- [ ] data retention: nothing is currently deleted, so payer addresses and
-      authorizations persist indefinitely and the privacy exposure grows without
-      bound. Needs an operator decision on retention periods before implementation
-      (see `docs/PRIVACY.md`).
+- [x] data retention — migration `000009` plus the bounded retention worker
+      expire stale un-settled verifications and tombstone terminal payer
+      authorizations after 30 days by default, without changing lifetime
+      statistics or `/settle` idempotency. Authorizations still needed for nonce
+      recovery are retained until safe. Ephemeral tokens/challenges and revoked
+      keys have separate configurable lifetimes; assumptions and residual hashes
+      are documented in `docs/PRIVACY.md`
 
 - [x] load/abuse tests — `-tags=abuse` plus fuzz targets on the payment-critical
       parsers; found and fixed a rate-limiter denial of service

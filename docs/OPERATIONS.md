@@ -20,6 +20,7 @@ What `/metrics` actually publishes, and therefore what can be alerted on today:
 | `eth402_signer_balance_wei` and its freshness | the bound on a signer compromise |
 | `eth402_verification_total`, `eth402_settlement_requests_total`, and their failure counters | request volume and failure rate |
 | `eth402_panics_total` | recovered HTTP panics |
+| `eth402_retention_last_tick_timestamp_seconds`, `eth402_retention_errors_total`, `eth402_retention_redacted_payments_total` | privacy-worker liveness, failures, and completed tombstones |
 
 Example rules are in `deploy/alerts.yml`.
 
@@ -273,14 +274,26 @@ Caveat before scaling out: no test runs two full application processes. What is
 covered is the invariant they depend on — concurrent claimants of one payment,
 exactly one of which wins.
 
-## Verification attempt retention
+## Retention
 
-Every `/verify` call appends a `verification_attempts` row, including malformed
-requests, and the table is protected by an append-only trigger. The endpoint is
-unauthenticated, so growth is bounded only by the rate limit above. Operators
-must plan capacity and, if pruning becomes necessary, do it as an explicit
-migration that drops and restores the trigger under audit rather than granting
-the runtime role deletion rights.
+The retention worker runs immediately at startup and on
+`ETH402_RETENTION_INTERVAL`, processing at most
+`ETH402_RETENTION_BATCH_SIZE` rows per category. Defaults and the exact
+tombstone fields are in [Privacy](PRIVACY.md). Monitor the oldest unredacted
+eligible row and table sizes; a growing backlog means the batch/interval is too
+small or the worker is failing.
+
+Every `/verify` call still appends a `verification_attempts` row, including
+malformed requests, and the table is protected by an append-only trigger.
+These rows contain reason codes and optional irreversible payment identities,
+not payer addresses or raw authorizations. The endpoint is unauthenticated, so
+operators must still plan capacity and monitor attempt growth rather than
+granting the runtime role arbitrary deletion rights.
+
+Retention deliberately skips any authorization that recovery may need for a
+dropped signer nonce. If old unredacted rows remain, inspect their state and
+transaction status before changing policy; never manually clear one whose
+transaction is `dropped`, `broadcast`, or otherwise unresolved.
 
 ## Rate limiting under flood
 

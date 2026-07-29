@@ -233,8 +233,9 @@ response `X-Request-ID` in support and incident reports.
    environment and [Deployment](DEPLOYMENT.md) for the production design.
 2. Apply every SQL migration before the application rollout:
    `migrate up` for the built migration binary, `go run ./cmd/migrate up` from
-   source, or `make migrate-up` in Compose. Migration
-   `000008_merchant_fair_use` is required by this build.
+   source, or `make migrate-up` in Compose. Migrations
+   `000008_merchant_fair_use` and
+   `000009_payment_retention` are required by this build.
 3. Configure two authenticated Ethereum RPCs, managed PostgreSQL with TLS and
    recovery, secrets, monitoring, and the policy signer. Never use a funded raw
    private key in configuration, tests, fixtures, documentation, or logs.

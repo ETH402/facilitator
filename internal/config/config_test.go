@@ -20,7 +20,10 @@ func validConfig() Config {
 		SettlementRecoveryGrace: 1, SettlementReplacementAfter: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
 		MerchantSettlementQuota: 10, GlobalSettlementQuota: 100, MerchantQuotaWindow: time.Hour,
-		TermsVersion: "test", APIKeyPepper: "01234567890123456789012345678901",
+		PaymentRetention: 30 * 24 * time.Hour, EphemeralRetention: 24 * time.Hour,
+		RevokedKeyRetention: 30 * 24 * time.Hour, RetentionInterval: time.Hour,
+		RetentionBatchSize: 500,
+		TermsVersion:       "test", APIKeyPepper: "01234567890123456789012345678901",
 	}
 }
 
@@ -105,6 +108,19 @@ func TestPriorityFeeCannotExceedMaxFee(t *testing.T) {
 	cfg.MaxPriorityFeeWei = "1000"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("priority fee equal to max fee rejected: %v", err)
+	}
+}
+
+func TestPaymentRetentionCoversQuotaWindow(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.PaymentRetention = 30 * time.Minute
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("payment retention shorter than the settlement quota window accepted")
+	}
+	cfg.PaymentRetention = cfg.MerchantQuotaWindow
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("retention equal to quota window rejected: %v", err)
 	}
 }
 

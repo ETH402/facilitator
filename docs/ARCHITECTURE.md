@@ -40,6 +40,10 @@ flowchart LR
   Production email delivery is provider-neutral SMTP with mandatory
   certificate-verified TLS; development logging/file delivery cannot be
   selected in production.
+- `internal/retention`: privacy lifecycle, separate from x402 verification and
+  settlement. It expires stale verifications, tombstones only safely terminal
+  authorizations, and prunes ephemeral onboarding credentials in bounded
+  batches.
 - workers: database-leased/idempotent confirmation and recovery loops.
 
 RPC data is untrusted until cross-checked and confirmed. Email proves mailbox

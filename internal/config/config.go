@@ -113,6 +113,13 @@ type Config struct {
 	// disables the control.
 	MerchantRequestsPerWindow int64
 	FairUseWindow             time.Duration
+	// Retention clears high-sensitivity terminal payment fields while preserving
+	// tombstones for lifetime statistics and settlement idempotency.
+	PaymentRetention    time.Duration
+	EphemeralRetention  time.Duration
+	RevokedKeyRetention time.Duration
+	RetentionInterval   time.Duration
+	RetentionBatchSize  int
 	// TrustedProxies lists the reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is always
 	// the client, which is correct only when the service is exposed directly.
@@ -182,6 +189,11 @@ func Load() (Config, error) {
 		RegistrationRate:           l.int("ETH402_REGISTRATION_RATE_PER_MINUTE", 5),
 		MerchantRequestsPerWindow:  int64(l.int("ETH402_MERCHANT_REQUESTS_PER_WINDOW", 5_000)),
 		FairUseWindow:              l.duration("ETH402_FAIR_USE_WINDOW", time.Hour),
+		PaymentRetention:           l.duration("ETH402_PAYMENT_RETENTION", 30*24*time.Hour),
+		EphemeralRetention:         l.duration("ETH402_EPHEMERAL_RETENTION", 24*time.Hour),
+		RevokedKeyRetention:        l.duration("ETH402_REVOKED_KEY_RETENTION", 30*24*time.Hour),
+		RetentionInterval:          l.duration("ETH402_RETENTION_INTERVAL", time.Hour),
+		RetentionBatchSize:         l.int("ETH402_RETENTION_BATCH_SIZE", 500),
 		TrustedProxies:             l.prefixes("ETH402_TRUSTED_PROXIES"),
 	}
 	return cfg, errors.Join(cfg.Validate(), errors.Join(l.errs...))
@@ -231,6 +243,16 @@ func (c Config) Validate() error {
 	}
 	if c.MerchantRequestsPerWindow > 0 && c.FairUseWindow <= 0 {
 		errs = append(errs, errors.New("a merchant fair-use limit requires a positive window"))
+	}
+	if c.PaymentRetention <= 0 || c.EphemeralRetention <= 0 ||
+		c.RevokedKeyRetention <= 0 || c.RetentionInterval <= 0 {
+		errs = append(errs, errors.New("retention periods and interval must be positive"))
+	}
+	if c.PaymentRetention < c.MerchantQuotaWindow {
+		errs = append(errs, errors.New("payment retention must not be shorter than the merchant quota window"))
+	}
+	if c.RetentionBatchSize < 1 || c.RetentionBatchSize > 10_000 {
+		errs = append(errs, errors.New("retention batch size must be between 1 and 10000"))
 	}
 	if c.GlobalSettlementQuota < 1 {
 		errs = append(errs, errors.New("global settlement quota must be positive"))

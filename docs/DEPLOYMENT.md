@@ -27,6 +27,14 @@ canonical chain/asset constants, and managed secrets. The process rejects raw
 private keys unless a conspicuous dangerous override is set; production policy
 should prohibit that override.
 
+Choose and record the retention values before rollout. The defaults tombstone
+terminal payment authorization data after 30 days, prune expired onboarding
+credentials after 24 hours, and prune revoked API keys after 30 days.
+`ETH402_PAYMENT_RETENTION` must cover
+`ETH402_MERCHANT_QUOTA_WINDOW`; startup rejects a shorter value because it
+would erase merchant attribution while that payment still counts toward the
+gas quota. See [Privacy](PRIVACY.md).
+
 Do not expose PostgreSQL, signer, or RPC management endpoints publicly.
 Restrict `/metrics`, use least-privilege service identities, scan images, sign
 releases, and deploy migrations before application rollout. Kubernetes and Helm are

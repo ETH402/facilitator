@@ -129,3 +129,22 @@ func TestNoPlaceholderMetricsRemain(t *testing.T) {
 		}
 	}
 }
+
+func TestRetentionMetricsExposeLivenessAndOutcome(t *testing.T) {
+	r := New()
+	if strings.Contains(scrape(t, r), "eth402_retention_last_tick") {
+		t.Fatal("retention tick exposed before the worker ran")
+	}
+	r.ObserveRetention(3, false, time.Unix(1_800_000_000, 0))
+	r.ObserveRetention(0, true, time.Unix(1_800_000_060, 0))
+	body := scrape(t, r)
+	for _, want := range []string{
+		"eth402_retention_last_tick_timestamp_seconds 1800000060",
+		"eth402_retention_errors_total 1",
+		"eth402_retention_redacted_payments_total 3",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+}

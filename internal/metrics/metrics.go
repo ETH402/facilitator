@@ -28,12 +28,15 @@ type Registry struct {
 	// Signer balance is stored as a string so an arbitrarily large wei value
 	// survives; it is converted only at exposition, where Prometheus requires a
 	// float anyway.
-	signerBalanceWei atomic.Value
-	signerBalanceAt  atomic.Int64
-	signerBalanceErr atomic.Uint64
-	rpcRequests      atomic.Uint64
-	rpcErrors        atomic.Uint64
-	fairUseRefusals  atomic.Uint64
+	signerBalanceWei  atomic.Value
+	signerBalanceAt   atomic.Int64
+	signerBalanceErr  atomic.Uint64
+	rpcRequests       atomic.Uint64
+	rpcErrors         atomic.Uint64
+	fairUseRefusals   atomic.Uint64
+	retentionLastTick atomic.Int64
+	retentionErrors   atomic.Uint64
+	retentionRedacted atomic.Uint64
 	// Worker heartbeats, keyed by worker name. A worker is healthy when it has
 	// ticked recently; absence is as meaningful as staleness, so a worker that
 	// never started is never reported healthy.
@@ -103,6 +106,19 @@ func (r *Registry) Heartbeat(worker string, at time.Time) {
 // responses, and a single counter would hide which one is firing.
 func (r *Registry) IncFairUseRefusal() { r.fairUseRefusals.Add(1) }
 
+// ObserveRetention records both liveness and outcomes for the privacy worker.
+// A failed pass still advances the timestamp and increments the error counter,
+// distinguishing a live-but-failing worker from one that stopped.
+func (r *Registry) ObserveRetention(redacted int64, failed bool, at time.Time) {
+	r.retentionLastTick.Store(at.Unix())
+	if failed {
+		r.retentionErrors.Add(1)
+	}
+	if redacted > 0 {
+		r.retentionRedacted.Add(uint64(redacted))
+	}
+}
+
 // WorkerHeartbeats returns the last tick time per worker, so the public status
 // page can derive settlement health from the same observations Prometheus scrapes
 // rather than from a second, separately-maintained notion of health.
@@ -158,6 +174,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		"# TYPE eth402_rpc_errors_total counter\neth402_rpc_errors_total %d\n", r.rpcErrors.Load())
 	r.writeWorkerHealth(w)
 	r.writeSignerBalance(w)
+	r.writeRetention(w)
 }
 
 // writeWorkerHealth publishes each worker's last tick. The timestamp rather than a
@@ -216,4 +233,17 @@ func (r *Registry) writeSignerBalance(w io.Writer) {
 		"# TYPE eth402_signer_balance_updated_timestamp_seconds gauge\neth402_signer_balance_updated_timestamp_seconds %d\n", r.signerBalanceAt.Load())
 	_, _ = fmt.Fprintf(w, "# HELP eth402_signer_balance_read_errors_total Failed signer balance reads.\n"+
 		"# TYPE eth402_signer_balance_read_errors_total counter\neth402_signer_balance_read_errors_total %d\n", r.signerBalanceErr.Load())
+}
+
+func (r *Registry) writeRetention(w io.Writer) {
+	lastTick := r.retentionLastTick.Load()
+	if lastTick == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "# HELP eth402_retention_last_tick_timestamp_seconds When the privacy retention worker last completed a pass.\n"+
+		"# TYPE eth402_retention_last_tick_timestamp_seconds gauge\neth402_retention_last_tick_timestamp_seconds %d\n", lastTick)
+	_, _ = fmt.Fprintf(w, "# HELP eth402_retention_errors_total Failed privacy retention passes.\n"+
+		"# TYPE eth402_retention_errors_total counter\neth402_retention_errors_total %d\n", r.retentionErrors.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_retention_redacted_payments_total Terminal payments tombstoned by privacy retention.\n"+
+		"# TYPE eth402_retention_redacted_payments_total counter\neth402_retention_redacted_payments_total %d\n", r.retentionRedacted.Load())
 }
