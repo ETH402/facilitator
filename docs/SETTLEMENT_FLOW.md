@@ -68,8 +68,9 @@ against the primary RPC, record the transaction hash — and returns the officia
 payment returns the recorded hash. If the inline attempt cannot finish (signer
 or RPC failure), the durable intent remains and the broadcast worker retries it
 on `ETH402_WORKER_INTERVAL`; a send whose outcome is unknown becomes
-`ambiguous` and moves the payment to `manual_review` for recovery, never a
-re-sign or a fresh nonce (ADR-0004 decision 4). An intent whose authorization
+`ambiguous` and moves the payment to `manual_review` for recovery — never a
+fresh nonce, and any re-sign is of the identical transaction only (ADR-0004
+decision 4). An intent whose authorization
 expires before broadcast is retired as `expired` with its transaction `dropped`
 rather than buying a predictable revert (decision 11).
 
@@ -92,10 +93,19 @@ on chain — the signed transaction's keccak is its transaction hash, so a
 receipt or mempool sighting re-attaches the hash and returns the payment to
 the broadcast pipeline. Only after `ETH402_SETTLEMENT_RECOVERY_GRACE` (default
 2m) without a sighting may the identical transaction be re-signed from the
-stored nonce, gas, and fee fields and re-broadcast; the recomputed hash must
-equal the stored one, otherwise the record is treated as corrupt and left in
-`manual_review`. Rows written before migration `000004` lack the stored fee
-fields and are resolved by on-chain lookup only. A broadcast still pending
+stored nonce, gas, and fee fields and re-broadcast. Identity is proven by the
+stored **sighash** — the deterministic digest every signature of the same
+transaction commits to — because Cloud KMS randomizes the ECDSA nonce and
+never reproduces the raw bytes. When the re-signed hash differs, the fresh
+signature is recorded replacement-shaped: the ambiguous row becomes `replaced`
+under its derived hash, the re-signed row becomes the active broadcast, the
+payment moves `manual_review → replaced`, and the network mining either
+signature resolves the payment through the ordinary replacement machinery. A
+sighash mismatch means the record is corrupt and the payment stays in
+`manual_review`. Rows written before migration `000006` have no stored sighash
+and fall back to the raw-hash comparison, which only a deterministic signer
+satisfies; rows before `000004` lack the stored fee fields and are resolved by
+on-chain lookup only. A broadcast still pending
 after `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced by a
 fee-bumped transaction on the same nonce (tip ×1.125, ceiling-capped); when
 the ceiling leaves no headroom the transaction is left pending for an operator

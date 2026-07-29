@@ -91,8 +91,12 @@ Recovery handles four cases automatically:
   signed-transaction hash; a sighting re-attaches the hash and returns the
   payment to the pipeline. After `ETH402_SETTLEMENT_RECOVERY_GRACE` (default
   2m) without a sighting, the identical transaction — same nonce, gas, and
-  fees, never a fresh nonce — is re-signed and re-broadcast, and only if the
-  recomputed hash equals the stored one.
+  fees, never a fresh nonce — is re-signed and re-broadcast, proven by the
+  stored deterministic sighash. Cloud KMS randomizes the ECDSA nonce, so the
+  re-signed hash legitimately differs from the stored one: the fresh signature
+  is then recorded as the replacement of the ambiguous original (payment moves
+  `manual_review → replaced`), and whichever signature the network mines
+  resolves the payment.
 - **Stuck pendings.** A broadcast pending beyond
   `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced with a
   fee-bumped transaction on the same nonce (tip ×1.125, capped by
@@ -106,8 +110,11 @@ Recovery handles four cases automatically:
 Keep alerting on payments entering `manual_review`: most leave on their own
 once recovery reconciles them, but three cases stay and need an operator —
 ambiguous rows written before migration `000004` (no stored fee fields to
-re-sign from), a recomputed hash that does not match the stored one (treat the
-record as corrupt; reconcile the nonce on chain by hand), and a stuck
+re-sign from), a recomputed sighash that does not match the stored one (treat
+the record as corrupt; reconcile the nonce on chain by hand — rows predating
+migration `000006` compare raw hashes instead, which a randomized-nonce signer
+like Cloud KMS can never satisfy, so those rows resolve by on-chain lookup
+only), and a stuck
 transaction already at the fee ceiling (raising `ETH402_MAX_FEE_PER_GAS_WEI`
 is a spend decision, not the worker's). A gap filler that *succeeds* on an
 expired authorization is logged as an error and left for investigation.

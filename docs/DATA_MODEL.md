@@ -57,6 +57,18 @@ Migration `000005_merchant_settlement_quota` adds:
   `merchants` row before using this index, so concurrent payments for one
   merchant cannot all observe the same pre-limit count.
 
+Migration `000006_recovery_sighash` adds:
+
+- `ethereum_transactions.sighash`: the deterministic digest a settlement
+  signature commits to (keccak of the unsigned EIP-1559 transaction),
+  persisted at signing time alongside `raw_transaction_hash`. Cloud KMS
+  randomizes the ECDSA nonce, so re-signing the identical transaction never
+  reproduces the raw hash — but always reproduces the sighash, which is what
+  ambiguous-broadcast recovery compares (ADR-0004 decision 4). Nullable with a
+  shape constraint (64 lowercase hex); rows written before this migration fall
+  back to the raw-hash comparison, which only a deterministic signer
+  satisfies.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

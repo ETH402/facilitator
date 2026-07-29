@@ -28,23 +28,23 @@ larger than any individual open item below.
 
 ## Blocked on the human — do not attempt these
 
-1. **Cloud KMS signing determinism.** `TestCloudKMSSigningIsDeterministic` exists
-   and skips without `ETH402_TEST_KMS_KEY_NAME`. It decides whether ADR-0004
-   decision 4's ambiguous re-broadcast works at all: `signIdentical` refuses
-   unless re-signing reproduces the stored bytes. The development signer is
-   deterministic (RFC 6979, verified); Cloud KMS makes no such promise and
-   HSM-backed ECDSA commonly uses a random k. If it fails, ambiguous recovery is
-   on-chain lookup only and the claim must be withdrawn from ADR-0004,
-   `SETTLEMENT_FLOW.md`, and `OPERATIONS.md`. It fails safe either way.
-2. **The 12-confirmation finality cut** (ADR-0004 decision 5). `confirmed` is
+1. **The 12-confirmation finality cut** (ADR-0004 decision 5). `confirmed` is
    terminal, so a reorg deeper than 12 blocks silently leaves a payment marked
    confirmed that no longer exists on chain. Recorded as accepted residual risk
    because it matches the existing default, but never explicitly agreed to.
-3. **Signer balance and burn-rate alerting.** Decision 8 makes the bounded hot
+2. **Signer balance and burn-rate alerting.** Decision 8 makes the bounded hot
    balance *the* operative signer-compromise control, so until the alert exists
    the bound is a convention. Infrastructure, not code.
-4. **Whether to lease the three unleased recovery passes.** Currently documented
+3. **Whether to lease the three unleased recovery passes.** Currently documented
    as a single-instance constraint in `OPERATIONS.md` instead.
+
+Resolved since this handoff was written: Cloud KMS signing determinism. It is
+**not** deterministic (verified live: three signatures of one transaction, three
+raw hashes), which made decision 4's raw-hash identity check unreachable in
+production. Recovery now persists the deterministic sighash at signing time
+(migration `000006`) and proves identity by it; a legitimately differing
+re-signature is recorded replacement-shaped (`manual_review → replaced`).
+`TestCloudKMSSigHashStableAcrossSignatures` pins the property live.
 
 ## How to verify
 

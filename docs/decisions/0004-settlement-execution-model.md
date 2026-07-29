@@ -74,7 +74,8 @@ pinned; a mid-flight change would corrupt the nonce sequence.
 
 The order is: verify → allocate nonce and insert intent (`state = broadcasting`,
 `ethereum_transactions.status = intent`) → commit → sign → record
-`raw_transaction_hash` → broadcast once → record `tx_hash`.
+`raw_transaction_hash` and the deterministic `sighash` → broadcast once →
+record `tx_hash`.
 
 A crash after commit but before broadcast leaves a durable `intent` row that
 recovery can resolve. A crash after broadcast but before recording the hash is
@@ -90,8 +91,23 @@ An RPC error that leaves broadcast outcome unknown sets
 `payment_records.state` deliberately gets **no** `ambiguous` value. Ambiguity is
 a property of a transaction, not of a payment, and `broadcasting → manual_review`
 already exists in the state machine. Recovery resolves ambiguity by looking up
-`raw_transaction_hash` on chain; it never re-signs and never re-broadcasts with
-a fresh nonce.
+`raw_transaction_hash` on chain; it never re-signs with different terms and
+never allocates a fresh nonce.
+
+After the grace window it may re-sign the **identical** transaction — same
+nonce, gas, fees, and calldata — and re-broadcast it. Identity is proven by the
+**sighash** (keccak of the unsigned transaction, persisted at signing time),
+not by the raw transaction hash: Cloud KMS randomizes the ECDSA nonce, so the
+re-signed bytes legitimately differ from the recorded ones. When the hash
+differs, the fresh signature is recorded *replacement-shaped* — the ambiguous
+row becomes `replaced` under its derived hash, the re-signed row becomes the
+active broadcast, and the payment moves `manual_review → replaced` — so the
+network mining either signature resolves the payment through the ordinary
+replacement machinery instead of wedging it in manual review. Rows written
+before migration `000006` have no stored sighash and keep the old raw-hash
+comparison, which only a deterministic signer can satisfy; with KMS that
+comparison refuses, which is the safe outcome for a record that cannot be
+verified.
 
 ### 5. Finality and reorgs
 
@@ -246,6 +262,26 @@ A payment that expires before broadcast becomes `expired`. One already
 broadcast is left to its receipt, which yields `reverted` — the chain decides,
 not the application.
 
+### 12. Pre-broadcast simulation retires proven-unsettleable intents
+
+Before signing, the exact `transferWithAuthorization` calldata is simulated
+(`eth_call`) from the signer address. A proven revert retires the intent
+unsigned and unbroadcast: the payment becomes `failed`, the transaction
+`dropped`, and the caller gets `simulation_reverted` instead of a hash for a
+doomed transaction. A simulation that cannot be completed (provider error,
+timeout) is transient and leaves the committed intent for the next tick —
+only an explicit on-chain revert retires.
+
+The trade-off is accepted deliberately: one revert retires the payment
+**permanently**, with no retry. For a consumed EIP-3009 nonce — the
+conflicting-facilitators race, the case simulation exists for — that is
+precisely correct, because the authorization can never settle again. For an
+underfunded payer it is harsh: the payer might top up a minute later, but the
+record stands and the payment must be re-created through a new `/verify`. The
+alternative — retrying simulated reverts — reintroduces the gas-burning
+broadcast loop simulation was added to prevent, and distinguishes revert
+reasons the `eth_call` error does not reliably carry.
+
 ## Consequences
 
 Settlement becomes the first component that can lose money through a bug rather
@@ -256,7 +292,8 @@ discipline for that reason.
 New surface this implies. Delivered:
 
 - migrations `000002`–`000004`: `signer_accounts`, worker lease columns, the
-  payer signature, and the persisted signing gas and fee pair
+  payer signature, and the persisted signing gas and fee pair; migration
+  `000006`: the deterministic `sighash` recovery compares signatures by
 - the signer address resolved from the backend at startup and the nonce sequence
   seeded from the chain's transaction count
 - `ETH402_SETTLEMENT_EXPIRY_MARGIN`, `ETH402_SIGNING_TIMEOUT`,
@@ -276,10 +313,15 @@ Outstanding, and each one weakens a control this ADR claims:
 - **a minimum-balance threshold and burn-rate alert** for the signer address.
   Decision 8 makes the bounded hot balance the operative signer-compromise
   control, so without the alert the bound is a convention rather than a control.
-- **confirmation that Cloud KMS signing is reproducible.** Decision 4's
-  identical re-broadcast depends on it; `TestCloudKMSSigningIsDeterministic`
-  answers it against a real key. If KMS is non-deterministic, ambiguous recovery
-  is on-chain lookup only and that claim must be withdrawn.
+
+Resolved since:
+
+- **Cloud KMS signing is not reproducible** — confirmed against the production
+  key (three signatures of one transaction, three distinct raw hashes). This
+  invalidated decision 4's original raw-hash identity check; recovery now
+  proves identity by the persisted deterministic sighash and records a
+  differing re-signature replacement-shaped (decision 4, migration `000006`).
+  `TestCloudKMSSigHashStableAcrossSignatures` pins the property live.
 
 These configuration keys are deliberately **not** added ahead of the code that
 reads them, so that no documented option silently does nothing.

@@ -96,9 +96,9 @@ versioned where noted.
   transaction was broadcast and mined on the local Anvil chain.
 - Real `eth402_settlement_requests_total` and `eth402_settlement_failures_total`
   metrics replacing the zero placeholders.
-
-### Added
-
+- `ethereum_transactions.sighash` (migration `000006`): the deterministic digest
+  a settlement signature commits to, persisted at signing time so recovery can
+  prove a re-signed transaction identical under any signer backend.
 - Per-merchant settlement quota, version 0.5 OpenAPI contract adding the
   `merchant_quota_exceeded` settle `errorReason`
   (`ETH402_MERCHANT_SETTLEMENT_QUOTA`, default 1000,
@@ -111,9 +111,6 @@ versioned where noted.
   order and cannot collectively slip beneath the limit; suspension also revokes
   settlement of previously verified payments. A refusal consumes no nonce. Zero
   is rejected rather than treated as unlimited.
-
-### Added
-
 - Pre-broadcast simulation, version 0.6 OpenAPI contract adding the
   `simulation_reverted` settle `errorReason`. Settlement runs the exact calldata
   it would send through `eth_call` from the signer address before signing.
@@ -170,6 +167,16 @@ versioned where noted.
 
 ### Fixed
 
+- Ambiguous-broadcast recovery no longer depends on reproducible signatures.
+  Cloud KMS randomizes the ECDSA nonce, so a re-signed transaction never hashed
+  to the stored raw hash and the re-broadcast path of ADR-0004 decision 4 was
+  unreachable with the production signer — verified live against the real key.
+  Recovery now proves identity by the persisted deterministic sighash; a
+  re-signed transaction whose hash legitimately differs is recorded as the
+  replacement of the ambiguous original (new `manual_review → replaced` edge),
+  so the network mining either signature resolves the payment instead of it
+  sitting in `manual_review` forever. Rows predating migration `000006` keep
+  the raw-hash comparison, which deterministic signers still satisfy.
 - Per-merchant settlement quota admission now locks the merchant row before
   counting. Locking only the individual payment allowed simultaneous settlements
   for different payments to observe the same pre-limit count and exceed the gas
