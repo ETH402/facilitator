@@ -13,11 +13,10 @@ that already cost time.
 - **PR #2** (`milestone-3-settlement` → `main`) carries all of Milestone 3:
   `/settle`, durable nonce allocation, broadcast/confirmation/recovery workers,
   the Cloud KMS signer, migrations `000002`–`000005`. All four CI jobs green.
-- Post-review maintenance on the milestone branch fixes merchant-wide quota
-  serialization, re-checks active merchant status at settlement time, aligns
-  the local integration target with CI, and removes stale simulation/quota
-  documentation. Inspect `git status` to determine whether those follow-ups
-  have been committed and pushed.
+- Post-review maintenance is committed and pushed: merchant-wide quota
+  serialization (the payment-row lock did not serialise different payments for
+  one merchant), an active-status re-check at settlement time so suspension binds
+  after verification, and the KMS sighash resolution below.
 - Milestone branches are kept, not deleted. History is linear per milestone; PR #1
   was merged with a merge commit specifically so `milestone-3-settlement` stayed a
   clean descendant of m2's exact SHAs.
@@ -127,7 +126,12 @@ In rough order of intricacy against test coverage:
    most subtle code in the repo, and the hardest to exercise: both need
    adversarial chain conditions (a stuck mempool, a mined original beating its
    replacement, a nonce gap with traffic queued behind it). Unit tests use fakes.
-2. `signIdentical` — correct only if signing is reproducible. See blocked item 1.
+2. `signIdentical` and `resolveAmbiguous` — identity is proven by the stored
+   sighash, and a legitimately differing re-signature is recorded
+   replacement-shaped. Correct, but the differing-signature branch has only
+   fake-signer coverage: no test has watched a real mempool reject a same-nonce
+   same-fee re-broadcast as underpriced, which is what happens if the original
+   reappears between the on-chain check and the send.
 3. `internal/signer/kms.go` — `ethereumSignature` calls `big.Int.FillBytes`, which
    panics on a negative value, and `asn1` parses INTEGER as signed with no range
    check on r or s. Workers are now panic-guarded, so this degrades rather than
