@@ -154,7 +154,13 @@ with the `workflow_dispatch` input. The turn instructions live in
 reviewable.
 
 Each turn reviews a pull request it did not author *before* doing its own work,
-which is what makes rule 5 self-sustaining rather than aspirational.
+which is what makes rule 5 self-sustaining rather than aspirational. Turns branch
+from `main` and open pull requests against `main`; there is no staging branch, so a
+merged review lands on `main` directly.
+
+GitHub runs `schedule:` workflows **only from the default branch**, so the workflow
+file must exist on `main` before the rotation can fire at all. Until then nothing
+happens at the hour, silently.
 
 Setup it needs, one-time:
 

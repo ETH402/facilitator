@@ -75,8 +75,10 @@ is flaky, and two tests here were written wrong that way.
   and stop if the signer is not you.
 - Write commit messages that explain *why*, what you rejected, and what a test
   would have missed. Match the existing messages.
-- Push a branch named `<agent>/<short-task-slug>` and open a PR against the branch
-  you started from.
+- Push a branch named `<agent>/<short-task-slug>` and open a PR **against `main`**.
+  Scheduled runs check out `main`, so that is also the branch you started from;
+  saying it explicitly removes the ambiguity if someone dispatches the workflow
+  from elsewhere.
 - **Never merge your own pull request.** The next agent in the rotation reviews it.
 - **Never force-push a shared branch.** Another agent may hold work on it.
 - Update any doc your change makes wrong — ADRs, `THREAT_MODEL.md`,
