@@ -43,6 +43,19 @@ allocates the nonce, moves the payment to `broadcasting`, and writes the
 request cannot consume a nonce and gap the sequence. Refusals are committed as
 `settlement_attempts` rows with a stable reason code.
 
+Every broadcast is simulated first. The exact calldata that would be sent is run
+through `eth_call` from the signer address, so what is checked is literally what
+would be broadcast. `/verify` already read `authorizationState`, but a nonce
+consumed between `/verify` and `/settle` — the conflicting-facilitators race —
+would otherwise be discovered by spending gas on a certain revert and by handing
+the caller a transaction hash for a doomed transfer. A revert retires the intent
+as `failed` with its transaction `dropped`, unbroadcast and unsigned; the
+allocated nonce becomes a gap the recovery worker fills only if a later nonce is
+actually blocked, so the revert is paid for once if ever rather than always. A
+simulation that cannot *run* is transient and leaves the committed intent for the
+next tick, because abandoning a payment over a rate-limited RPC would lose one
+that could have settled.
+
 Broadcast is synchronous-attempt, asynchronous-fallback. `/settle` claims the
 payment lease and runs the pipeline inline — build the
 `transferWithAuthorization` calldata from the durable record, sign under

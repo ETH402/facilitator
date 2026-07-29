@@ -3,6 +3,7 @@ package ethereum
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,6 +77,28 @@ type rpcRequest struct {
 	Method  string `json:"method"`
 	Params  []any  `json:"params"`
 	ID      uint64 `json:"id"`
+}
+
+// RPCError is a JSON-RPC error object. It is typed rather than flattened into a
+// string because the distinction between "the node executed this and it
+// reverted" and "the request never got an answer" decides whether a payment is
+// unsettleable or merely needs retrying.
+type RPCError struct {
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string { return fmt.Sprintf("RPC error %d: %s", e.Code, e.Message) }
+
+// Reverted reports whether the node executed the call and the EVM reverted.
+//
+// Deliberately conservative: only an explicit revert counts. Misreading a
+// transport hiccup as a revert would abandon a payment that could have settled,
+// whereas misreading a revert as transient only costs a retry that never
+// broadcasts. Geth and Anvil use code 3; the message is checked too because
+// providers vary.
+func (e *RPCError) Reverted() bool {
+	return e.Code == 3 || strings.Contains(strings.ToLower(e.Message), "execution reverted")
 }
 
 type rpcResponse struct {
@@ -152,7 +175,7 @@ func (c *Client) call(ctx context.Context, target, method string, params []any) 
 		return nil, err
 	}
 	if decoded.Error != nil {
-		return nil, fmt.Errorf("RPC error %d: %s", decoded.Error.Code, decoded.Error.Message)
+		return nil, &RPCError{Code: decoded.Error.Code, Message: decoded.Error.Message}
 	}
 	if len(decoded.Result) == 0 {
 		return nil, errors.New("RPC result is missing")
@@ -327,4 +350,29 @@ func (c *Client) BlockByNumber(ctx context.Context, number *uint64) (*Block, err
 		baseFee = parsed.String()
 	}
 	return &Block{Hash: strings.ToLower(raw.Hash), Number: blockNumber, BaseFee: baseFee}, nil
+}
+
+// ErrSimulationReverted means the EVM executed the call and reverted, so
+// broadcasting the same transaction would burn gas to reach the same outcome.
+var ErrSimulationReverted = errors.New("transaction simulation reverted")
+
+// Call simulates a transaction with eth_call against the latest block.
+//
+// It simulates the exact calldata that would be broadcast rather than
+// reconstructing it, so what is checked is literally what would be sent. A
+// revert is reported as ErrSimulationReverted; anything else is transient and the
+// caller should retry rather than abandon the payment.
+func (c *Client) Call(ctx context.Context, from, to string, data []byte) error {
+	params := []any{
+		map[string]string{"from": from, "to": to, "data": "0x" + hex.EncodeToString(data)},
+		"latest",
+	}
+	if _, err := c.readRaw(ctx, "eth_call", params); err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Reverted() {
+			return fmt.Errorf("%w: %s", ErrSimulationReverted, rpcErr.Message)
+		}
+		return err
+	}
+	return nil
 }

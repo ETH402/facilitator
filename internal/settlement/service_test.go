@@ -3,6 +3,7 @@ package settlement
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ type fakeStore struct {
 	gapFillers         []TrackedTransaction
 	gapFillerTxHash    string
 	gapFillerResolved  bool
+	unsettleable       int
 	gapFillerEscalated int
 }
 
@@ -147,6 +149,11 @@ func (f *fakeStore) MarkGapFillerResolved(context.Context, string, uint64, strin
 	return nil
 }
 
+func (f *fakeStore) MarkIntentUnsettleable(context.Context, string, string, string) error {
+	f.unsettleable++
+	return nil
+}
+
 func (f *fakeStore) MarkGapFillerSucceeded(_ context.Context, _, _ string, _ uint64, _ string, _ uint64, _, _ string) error {
 	f.gapFillerEscalated++
 	// Escalation moves the payment out of expired, so the next listing drops it.
@@ -175,6 +182,7 @@ type fakeChain struct {
 	transactions map[string]*ethereum.ChainTransaction
 	block        uint64
 	baseFee      string
+	callErr      error
 }
 
 func (f fakeChain) SendRawTransaction(context.Context, string) (string, error) {
@@ -514,5 +522,53 @@ func settleRequest() SettleRequest {
 				},
 			},
 		},
+	}
+}
+
+func (f fakeChain) Call(context.Context, string, string, []byte) error {
+	return f.callErr
+}
+
+// A simulation revert retires the intent without broadcasting. Verification
+// checked authorizationState, but a nonce consumed between /verify and /settle
+// would otherwise be discovered by spending gas on a certain revert — and the
+// caller would receive a hash for a doomed transaction.
+func TestBroadcastSimulationRevertRetiresIntent(t *testing.T) {
+	store := &fakeStore{work: pendingWork()}
+	chain := fakeChain{callErr: fmt.Errorf("%w: nonce already used", ethereum.ErrSimulationReverted)}
+	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+	if _, err := service.Broadcast(context.Background(), "payment-1", "test"); !errors.Is(err, ErrPaymentUnsettleable) {
+		t.Fatalf("err = %v, want ErrPaymentUnsettleable", err)
+	}
+	if store.unsettleable != 1 {
+		t.Fatalf("unsettleable markings = %d, want 1", store.unsettleable)
+	}
+	// Nothing signed, nothing sent, no ambiguity to reconcile.
+	if store.signedRawHash != "" {
+		t.Fatal("a payment that cannot settle was signed")
+	}
+	if store.broadcastTxHash != "" || store.ambiguous {
+		t.Fatalf("store = %+v", store)
+	}
+}
+
+// A simulation that could not run is transient: the committed intent must be left
+// for the next tick rather than abandoning a payment that may be perfectly fine.
+func TestBroadcastSimulationFailureKeepsIntent(t *testing.T) {
+	store := &fakeStore{work: pendingWork()}
+	chain := fakeChain{callErr: errors.New("limit exceeded")}
+	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+	_, err := service.Broadcast(context.Background(), "payment-1", "test")
+	if err == nil {
+		t.Fatal("transient simulation failure was ignored")
+	}
+	if errors.Is(err, ErrPaymentUnsettleable) {
+		t.Fatal("a transient simulation failure must not retire the payment")
+	}
+	if store.unsettleable != 0 {
+		t.Fatalf("unsettleable markings = %d, want 0", store.unsettleable)
+	}
+	if store.signedRawHash != "" || store.broadcastTxHash != "" {
+		t.Fatalf("store = %+v", store)
 	}
 }

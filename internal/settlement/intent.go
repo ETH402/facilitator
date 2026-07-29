@@ -14,6 +14,7 @@ const (
 	ReasonRecipientNotMerchant  = "recipient_not_registered"
 	ReasonAuthorizationExpiring = "authorization_expiring"
 	ReasonMerchantQuotaExceeded = "merchant_quota_exceeded"
+	ReasonSimulationReverted    = "simulation_reverted"
 )
 
 var (
@@ -46,6 +47,12 @@ var (
 	// max fee per gas is the operator's worst-case exposure per merchant per
 	// window.
 	ErrMerchantQuotaExceeded = errors.New("merchant settlement quota exceeded for the current window")
+
+	// ErrPaymentUnsettleable means simulation proved the transfer cannot succeed,
+	// so the intent was retired without broadcasting. The usual cause is the
+	// authorization nonce having been consumed elsewhere between /verify and
+	// /settle; broadcasting would buy a certain revert with operator gas.
+	ErrPaymentUnsettleable = errors.New("payment cannot settle; simulation reverted")
 )
 
 // IntentRequest asks for a durable settlement intent. The margin and clock are

@@ -334,6 +334,34 @@ VALUES ($1,$2,$3,$4,'{}'::jsonb)`, paymentID, string(from), string(to), actor)
 // than reverted: no gas was spent and the nonce it owned is never reused
 // (ADR-0004 decision 1 forbids reallocating it; the gap is reconciled during
 // recovery, never by handing the nonce to another payment).
+// MarkIntentUnsettleable retires an intent that simulation proved cannot succeed.
+//
+// The payment becomes `failed` and the transaction `dropped`, mirroring expiry:
+// no gas was spent and none will be. The nonce stays allocated and unused, which
+// is a gap the recovery worker fills only if a later nonce is actually blocked —
+// so the revert is paid for once, if ever, instead of always.
+func (s *Store) MarkIntentUnsettleable(ctx context.Context, paymentID, transactionID, actor string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions
+SET status = 'dropped', updated_at = now()
+WHERE id = $2 AND payment_id = $1 AND status = 'intent'`, paymentID, transactionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("drop unsettleable transaction %s: %w", transactionID, ErrSettlementRace)
+	}
+	if err := transitionPayment(ctx, tx, paymentID, settlement.StateBroadcasting, settlement.StateFailed, actor); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) MarkIntentExpired(ctx context.Context, paymentID, transactionID, actor string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {

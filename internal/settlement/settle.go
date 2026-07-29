@@ -18,6 +18,7 @@ const (
 	WireReasonRecipientNotMerchant  = ReasonRecipientNotMerchant
 	WireReasonAuthorizationExpiring = ReasonAuthorizationExpiring
 	WireReasonMerchantQuotaExceeded = ReasonMerchantQuotaExceeded
+	WireReasonSimulationReverted    = ReasonSimulationReverted
 
 	// WireReasonSettlementUnavailable means the facilitator could not complete
 	// the request itself (database, signer, or RPC unavailable). Retrying is

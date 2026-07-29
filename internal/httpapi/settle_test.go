@@ -248,6 +248,12 @@ func TestSettleRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+func (settleFakeChain) Call(context.Context, string, string, []byte) error { return nil }
+
+func (settleFakeStore) MarkIntentUnsettleable(context.Context, string, string, string) error {
+	return nil
+}
+
 func (settleFakeStore) MarkGapFillerSucceeded(context.Context, string, string, uint64, string, uint64, string, string) error {
 	return nil
 }

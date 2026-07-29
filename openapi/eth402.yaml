@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.5.0
+  version: 0.6.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -534,6 +534,7 @@ components:
             - recipient_not_registered
             - authorization_expiring
             - merchant_quota_exceeded
+            - simulation_reverted
             - broadcast_failed
             - settlement_unavailable
         errorMessage: { type: string }

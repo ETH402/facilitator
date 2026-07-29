@@ -34,6 +34,7 @@ type Store interface {
 	MarkTxBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error
 	MarkTxAmbiguous(ctx context.Context, paymentID, transactionID, actor string) error
 	MarkIntentExpired(ctx context.Context, paymentID, transactionID, actor string) error
+	MarkIntentUnsettleable(ctx context.Context, paymentID, transactionID, actor string) error
 	MarkTxConfirming(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash, actor string) error
 	MarkTxConfirmed(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxReverted(ctx context.Context, paymentID, transactionID string, gasUsed uint64, gasPrice, actor string) error
@@ -57,6 +58,9 @@ type Chain interface {
 	BlockNumber(context.Context) (uint64, error)
 	BlockByNumber(ctx context.Context, number *uint64) (*ethereum.Block, error)
 	TransactionByHash(ctx context.Context, txHash string) (*ethereum.ChainTransaction, error)
+	// Call simulates the literal calldata that would be broadcast. A revert is
+	// reported as ethereum.ErrSimulationReverted.
+	Call(ctx context.Context, from, to string, data []byte) error
 }
 
 // Config pins every value the settlement path is allowed to spend or wait.
@@ -144,6 +148,11 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 	}
 	if errors.Is(err, ErrAuthorizationExpiring) {
 		return rejected(WireReasonAuthorizationExpiring, payment), nil
+	}
+	if errors.Is(err, ErrPaymentUnsettleable) {
+		// Simulation proved the transfer cannot succeed, so the caller learns now
+		// rather than receiving a hash for a transaction certain to revert.
+		return rejected(WireReasonSimulationReverted, payment), nil
 	}
 	// The broadcast may still have been recorded by a concurrent actor (a
 	// worker holding the lease, or a race resolved after our send error).
@@ -244,6 +253,24 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
 		return "", fmt.Errorf("build calldata: %w", err)
+	}
+	// Simulate before signing. Verification checked authorizationState, but a
+	// nonce consumed between /verify and /settle — the conflicting-facilitators
+	// race — would otherwise be discovered by spending gas on a certain revert,
+	// and the caller would be handed a hash for a doomed transaction. Simulating
+	// first also avoids a signer round trip on a payment that cannot settle.
+	if err := s.chain.Call(ctx, work.SignerAddress, config.MainnetUSDC, calldata); err != nil {
+		if !errors.Is(err, ethereum.ErrSimulationReverted) {
+			// Could not simulate: transient, so leave the committed intent for the
+			// next tick rather than abandoning a payment that may be fine.
+			return "", fmt.Errorf("simulate transfer: %w", err)
+		}
+		s.logger.WarnContext(ctx, "settlement simulation reverted; retiring intent unbroadcast",
+			"payment_id", work.PaymentID, "transaction_id", work.TransactionID, "error", err)
+		if markErr := s.store.MarkIntentUnsettleable(ctx, work.PaymentID, work.TransactionID, actor); markErr != nil {
+			return "", fmt.Errorf("retire unsettleable intent: %w", markErr)
+		}
+		return "", ErrPaymentUnsettleable
 	}
 	maxFee, priorityFee, err := s.estimateFees(ctx)
 	if err != nil {

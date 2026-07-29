@@ -110,6 +110,18 @@ versioned where noted.
   settlements cannot both slip beneath the limit; a refusal consumes no nonce.
   Zero is rejected rather than treated as unlimited.
 
+### Added
+
+- Pre-broadcast simulation, version 0.6 OpenAPI contract adding the
+  `simulation_reverted` settle `errorReason`. Settlement runs the exact calldata
+  it would send through `eth_call` from the signer address before signing.
+  `/verify` already read `authorizationState`, but a nonce consumed between
+  `/verify` and `/settle` was previously discovered by spending gas on a certain
+  revert while the caller received a hash for a doomed transfer. A revert retires
+  the intent as `failed`, unsigned and unbroadcast; a simulation that cannot run
+  is transient and leaves the intent for the next tick, so a rate-limited RPC
+  never abandons a payment that could have settled.
+
 ### Changed
 
 - A nonce-gap filler the chain accepts is escalated to `manual_review` once

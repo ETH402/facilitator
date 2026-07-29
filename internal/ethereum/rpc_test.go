@@ -3,6 +3,7 @@ package ethereum
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -177,5 +178,53 @@ func TestBlockByNumber(t *testing.T) {
 	}
 	if block.Hash != "0x"+strings.Repeat("cd", 32) || block.Number != 16 || block.BaseFee != "1000000000" {
 		t.Fatalf("block = %+v", block)
+	}
+}
+
+// The revert-versus-transient distinction decides whether a payment is abandoned
+// or retried, so it is deliberately conservative: only an explicit revert counts.
+func TestCallClassifiesRevertsAndTransientFailures(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		status   int
+		reverted bool
+		wantErr  bool
+	}{
+		{name: "success", body: `{"jsonrpc":"2.0","id":1,"result":"0x"}`, status: 200},
+		{
+			name: "geth revert code", status: 200, reverted: true, wantErr: true,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}`,
+		},
+		{
+			// Provider that reports a revert without the conventional code.
+			name: "revert by message", status: 200, reverted: true, wantErr: true,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"VM Exception: execution reverted"}}`,
+		},
+		{
+			// Must NOT be treated as a revert: abandoning a payment over a rate
+			// limit or a node bug would lose money that could have settled.
+			name: "rate limited", status: 200, wantErr: true,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"limit exceeded"}}`,
+		},
+		{name: "transport failure", body: "", status: 503, wantErr: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			defer server.Close()
+			client := NewClient(server.URL, "", 2*time.Second, 0)
+			err := client.Call(context.Background(), "0x1111111111111111111111111111111111111111",
+				"0x2222222222222222222222222222222222222222", []byte{0xde, 0xad, 0xbe, 0xef})
+			if testCase.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr = %v", err, testCase.wantErr)
+			}
+			if got := errors.Is(err, ErrSimulationReverted); got != testCase.reverted {
+				t.Fatalf("reverted = %v, want %v (err %v)", got, testCase.reverted, err)
+			}
+		})
 	}
 }

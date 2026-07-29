@@ -173,9 +173,6 @@ Still outstanding:
 - **A signer balance and burn-rate alert.** The bounded hot balance is the
   operative signer-compromise control, so alert on both the absolute balance and
   the rate of change; without that the bound is a convention.
-- **`/settle` does not re-simulate or re-read `authorizationState`.** A buyer who
-  submits the same authorization to another facilitator between `/verify` and
-  `/settle` causes a revert paid for with operator gas. Alert on the revert rate.
 
 ## Run one application instance
 
