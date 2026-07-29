@@ -37,11 +37,14 @@ reads the durable payment record, which is what binds the recipient to an
 active registered merchant (ADR-0004 decision 9). This is a deliberate
 divergence from the reference facilitator, which verifies and settles in one
 call. The intent step commits first: one transaction locks the payment row,
-applies admission, persists the payer signature the payment identity binds,
-allocates the nonce, moves the payment to `broadcasting`, and writes the
-`intent` transaction row; nonce allocation deliberately comes last so a refused
-request cannot consume a nonce and gap the sequence. Refusals are committed as
-`settlement_attempts` rows with a stable reason code.
+then locks and re-checks the active merchant row before applying the
+merchant-scoped quota. The merchant lock makes concurrent payments decide in
+commit order and makes suspension effective even for payments attributed during
+an earlier `/verify`. The transaction then persists the payer signature the
+payment identity binds, allocates the nonce, moves the payment to `broadcasting`,
+and writes the `intent` transaction row; nonce allocation deliberately comes
+last so a refused request cannot consume a nonce and gap the sequence. Refusals
+are committed as `settlement_attempts` rows with a stable reason code.
 
 Every broadcast is simulated first. The exact calldata that would be sent is run
 through `eth_call` from the signer address, so what is checked is literally what

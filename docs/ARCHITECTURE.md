@@ -58,6 +58,9 @@ malformed signature cannot reserve/poison a buyer nonce in PostgreSQL.
 Verification attempts remain append-only, including malformed outer requests.
 Settlement intent is committed before signing/broadcast. Workers claim durable
 rows with transactional locking; repeated execution checks current state.
+Admission first locks the payment, then the currently active merchant row.
+The second lock serialises the per-merchant settlement quota across different
+payments and makes a completed suspension revoke later settlement requests.
 
 An ambiguous broadcast records signed-transaction identity and is reconciled
 by the recovery worker: on-chain lookup first, then — after a grace window and

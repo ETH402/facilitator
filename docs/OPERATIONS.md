@@ -164,8 +164,11 @@ not Sybil-resistant, the recipient gate alone says nothing about volume: this
 quota is what makes an admitted merchant's spend finite. Worst-case exposure per
 merchant per window is quota × `ETH402_MAX_GAS_LIMIT` ×
 `ETH402_MAX_FEE_PER_GAS_WEI`; compute it before raising either. Zero is rejected
-rather than treated as unlimited. The count is taken inside the transaction that
-commits the intent, so concurrent settlements cannot both slip beneath the limit.
+rather than treated as unlimited. Admission locks the current active merchant
+row before counting and keeps that lock through the intent commit. Different
+payments for one merchant therefore decide in commit order instead of observing
+the same pre-limit count. The same check makes a completed suspension revoke
+later settlement even when `/verify` attributed the payment beforehand.
 Replacements and gap fillers reuse existing rows and do not count.
 
 Still outstanding:

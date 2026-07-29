@@ -50,6 +50,13 @@ Migration `000004_settlement_recovery` changes:
   `ethereum_transactions_active_payment_unique` partial index already bounds
   to one row per payment.
 
+Migration `000005_merchant_settlement_quota` adds:
+
+- `payment_records_merchant_settlement_idx` over merchant and descending
+  `settlement_requested_at` for committed intents. Admission locks the active
+  `merchants` row before using this index, so concurrent payments for one
+  merchant cannot all observe the same pre-limit count.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

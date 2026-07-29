@@ -13,7 +13,11 @@ that already cost time.
 - **PR #2** (`milestone-3-settlement` → `main`) carries all of Milestone 3:
   `/settle`, durable nonce allocation, broadcast/confirmation/recovery workers,
   the Cloud KMS signer, migrations `000002`–`000005`. All four CI jobs green.
-- Nothing is uncommitted or unpushed.
+- Post-review maintenance on the milestone branch fixes merchant-wide quota
+  serialization, re-checks active merchant status at settlement time, aligns
+  the local integration target with CI, and removes stale simulation/quota
+  documentation. Inspect `git status` to determine whether those follow-ups
+  have been committed and pushed.
 - Milestone branches are kept, not deleted. History is linear per milestone; PR #1
   was merged with a merge commit specifically so `milestone-3-settlement` stayed a
   clean descendant of m2's exact SHAs.
@@ -107,6 +111,13 @@ lock keyed on payer+nonce in `RecordVerification`; retrying alone "fixes" the te
 while leaving a real deadlock on every concurrent duplicate, paying PostgreSQL's
 1s `deadlock_timeout` each time. Settlement inherits the lock because it reaches
 those rows through the same function.
+
+**6. A transaction-local quota count is not automatically serialized.**
+Locking one `payment_records` row protects duplicate settlement of that payment,
+not different payments attributed to the same merchant. Quota admission must
+lock the active `merchants` row before counting and hold it through commit. The
+regression test deliberately holds that row so a broken implementation completes
+both requests while the correct one queues both at the merchant boundary.
 
 ## Highest-risk code
 

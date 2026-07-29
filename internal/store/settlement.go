@@ -100,16 +100,38 @@ VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
 		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
 			settlement.ReasonRecipientNotMerchant, settlement.ErrRecipientNotMerchant)
 	}
+	// Lock the merchant row before evaluating merchant-scoped policy. The
+	// payment lock above serialises duplicate settlement of one authorization;
+	// it cannot serialise different payments attributed to the same merchant.
+	// Without this second lock, concurrent requests can all count the same
+	// pre-limit snapshot and collectively exceed the gas quota.
+	//
+	// Requiring status='active' here also makes suspension effective at
+	// settlement time. Verification records the merchant attribution, but that
+	// durable association must not let a payment verified before suspension
+	// bypass the current admission policy.
+	var activeMerchantID string
+	err = tx.QueryRow(ctx, `
+SELECT id FROM merchants
+WHERE id = $1 AND status = 'active'
+FOR UPDATE`, *merchantID).Scan(&activeMerchantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
+			settlement.ReasonRecipientNotMerchant, settlement.ErrRecipientNotMerchant)
+	}
+	if err != nil {
+		return settlement.Intent{}, fmt.Errorf("lock active merchant: %w", err)
+	}
 	if !validBefore.After(request.Now.Add(request.ExpiryMargin)) {
 		return settlement.Intent{}, rejectSettlement(ctx, tx, &paymentID, request.PaymentIdentity,
 			settlement.ReasonAuthorizationExpiring, settlement.ErrAuthorizationExpiring)
 	}
-	// The quota is counted inside this transaction, after the payment row is
-	// locked, so concurrent settlements for one merchant cannot both observe a
-	// count beneath the limit and both commit. settlement_requested_at is stamped
-	// only here, which makes this exactly the number of broadcasts attempted on
-	// the merchant's behalf; replacements and gap fillers reuse existing rows and
-	// correctly do not count against it.
+	// The quota is counted while the merchant row lock is held, so every
+	// settlement for this merchant observes the preceding request's committed
+	// result before deciding. settlement_requested_at is stamped only here, which
+	// makes this exactly the number of broadcasts attempted on the merchant's
+	// behalf; replacements and gap fillers reuse existing rows and correctly do
+	// not count against it.
 	var settled int
 	if err := tx.QueryRow(ctx, `
 SELECT count(*) FROM payment_records

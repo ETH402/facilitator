@@ -235,6 +235,29 @@ func TestCreateSettlementIntentRejectsUnregisteredRecipient(t *testing.T) {
 	}
 }
 
+func TestCreateSettlementIntentRejectsSuspendedMerchant(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	identity := "pay_" + repeat("a", 64)
+	paymentID := seedPayment(t, store, paymentFixture{identity: identity, state: "verified", registered: true})
+	if _, err := store.Pool.Exec(ctx, `
+UPDATE merchants SET status = 'suspended'
+WHERE id = (SELECT merchant_id FROM payment_records WHERE id = $1)`, paymentID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merchant attribution is durable, but admission must use current status:
+	// suspending a merchant after /verify must revoke later /settle requests.
+	_, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
+	if !errors.Is(err, settlement.ErrRecipientNotMerchant) {
+		t.Fatalf("error = %v, want ErrRecipientNotMerchant", err)
+	}
+	assertNoNonceSpent(t, store, identity)
+	if got := attemptRows(t, store, identity, "rejected"); got != 1 {
+		t.Fatalf("rejected attempts = %d, want 1", got)
+	}
+}
+
 func TestCreateSettlementIntentRejectsExpiringAuthorization(t *testing.T) {
 	ctx := context.Background()
 	store := settlementTestStore(t)
@@ -420,6 +443,126 @@ WHERE merchant_id = $1 AND settlement_requested_at IS NOT NULL`, merchantID); er
 	}
 	if _, err := store.CreateSettlementIntent(ctx, request(identities[quota])); err != nil {
 		t.Fatalf("intent outside the window was refused: %v", err)
+	}
+}
+
+// TestMerchantSettlementQuotaSerializesConcurrentPayments forces two requests
+// for different payments to reach the merchant admission boundary together.
+//
+// The blocker holds the merchant row before the requests start. With the
+// merchant-scoped lock both callers wait there, then run one at a time after the
+// blocker commits. A broken implementation that locks only each payment ignores
+// the blocker and admits both against the same pre-limit count. This
+// orchestration is intentional: a start channel alone often lets one request
+// finish before the other counts and therefore passes against the race.
+func TestMerchantSettlementQuotaSerializesConcurrentPayments(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	const quota = 1
+
+	identities := []string{
+		"pay_" + repeat("b", 64),
+		"pay_" + repeat("c", 64),
+	}
+	firstPaymentID := seedPayment(t, store, paymentFixture{
+		identity: identities[0], state: "verified", registered: true,
+	})
+	var merchantID string
+	if err := store.Pool.QueryRow(ctx,
+		`SELECT merchant_id FROM payment_records WHERE id = $1`, firstPaymentID).Scan(&merchantID); err != nil {
+		t.Fatal(err)
+	}
+	secondPaymentID := seedPayment(t, store, paymentFixture{
+		identity: identities[1], state: "verified", registered: false,
+	})
+	if _, err := store.Pool.Exec(ctx,
+		`UPDATE payment_records SET merchant_id = $2 WHERE id = $1`, secondPaymentID, merchantID); err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(ctx) }()
+	if _, err := blocker.Exec(ctx, `SELECT id FROM merchants WHERE id = $1 FOR UPDATE`, merchantID); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct{ err error }
+	results := make(chan result, len(identities))
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for _, identity := range identities {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			request := intentRequest(identity)
+			request.Quota = quota
+			results <- result{err: func() error {
+				_, err := store.CreateSettlementIntent(ctx, request)
+				return err
+			}()}
+		}()
+	}
+	close(start)
+
+	// Both correct callers block on the merchant row. A broken implementation
+	// completes both without touching it. Poll PostgreSQL lock state rather than
+	// relying on a sleep that might pass merely because one goroutine ran first.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if len(results) == len(identities) {
+			break
+		}
+		var blocked int
+		if err := store.Pool.QueryRow(ctx, `
+SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database()
+  AND wait_event_type = 'Lock'
+  AND query LIKE '%SELECT id FROM merchants%'`).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked >= len(identities) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("settlement callers neither completed nor reached the merchant lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wait.Wait()
+	close(results)
+
+	var accepted, rejected int
+	for result := range results {
+		switch {
+		case result.err == nil:
+			accepted++
+		case errors.Is(result.err, settlement.ErrMerchantQuotaExceeded):
+			rejected++
+		default:
+			t.Fatalf("concurrent settlement returned unexpected error: %v", result.err)
+		}
+	}
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("accepted=%d rejected=%d, want one of each", accepted, rejected)
+	}
+	var committed int
+	if err := store.Pool.QueryRow(ctx, `
+SELECT count(*) FROM payment_records
+WHERE merchant_id = $1 AND settlement_requested_at IS NOT NULL`, merchantID).Scan(&committed); err != nil {
+		t.Fatal(err)
+	}
+	if committed != quota {
+		t.Fatalf("committed intents = %d, want quota %d", committed, quota)
+	}
+	if next := nextNonce(t, store); next != "1" {
+		t.Fatalf("next_nonce = %s, want 1; quota rejection consumed a nonce", next)
 	}
 }
 

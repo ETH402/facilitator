@@ -106,9 +106,11 @@ versioned where noted.
   the bound ADR-0004 decision 9 rests on: the recipient gate ensures gas is only
   spent for a party that accepted terms and can be suspended, but registration is
   not Sybil-resistant, so without a quota one registration bought unbounded gas.
-  Counted inside the transaction that commits the intent, so concurrent
-  settlements cannot both slip beneath the limit; a refusal consumes no nonce.
-  Zero is rejected rather than treated as unlimited.
+  Counted while holding the active merchant row lock inside the transaction that
+  commits the intent, so different payments for one merchant decide in commit
+  order and cannot collectively slip beneath the limit; suspension also revokes
+  settlement of previously verified payments. A refusal consumes no nonce. Zero
+  is rejected rather than treated as unlimited.
 
 ### Added
 
@@ -168,6 +170,14 @@ versioned where noted.
 
 ### Fixed
 
+- Per-merchant settlement quota admission now locks the merchant row before
+  counting. Locking only the individual payment allowed simultaneous settlements
+  for different payments to observe the same pre-limit count and exceed the gas
+  bound. A forced-contention integration test distinguishes the fixed
+  implementation from the broken read-count-write race.
+- The local `make integration` target now serializes internal packages with
+  `-p 1`, matching CI and preventing packages that share and truncate one test
+  database from corrupting each other's fixtures.
 - Worker-driven payment transitions no longer fail the
   `payment_transitions.actor_type` check: workers audited transitions with
   their full lease identity (for example `confirmation/host/pid`), which the

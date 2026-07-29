@@ -265,17 +265,17 @@ New surface this implies. Delivered:
 - `signer.Transaction` per decision 7, with the in-process allowlist of decision 8
 - the per-merchant settlement quota decision 9 rests on
   (`ETH402_MERCHANT_SETTLEMENT_QUOTA` per `ETH402_MERCHANT_QUOTA_WINDOW`), counted
-  inside the transaction that commits the intent and required to be positive
+  while holding a merchant-scoped row lock inside the transaction that commits
+  the intent, and required to be positive
+- pre-broadcast simulation of the exact `transferWithAuthorization` calldata
+  from the signer address; a proven revert retires the intent unsigned and
+  unbroadcast
 
 Outstanding, and each one weakens a control this ADR claims:
 
 - **a minimum-balance threshold and burn-rate alert** for the signer address.
   Decision 8 makes the bounded hot balance the operative signer-compromise
   control, so without the alert the bound is a convention rather than a control.
-- **pre-broadcast simulation or an `authorizationState` re-read in `/settle`.**
-  Verification checks the nonce on chain, but a nonce consumed between `/verify`
-  and `/settle` — the threat model's conflicting-facilitators race — currently
-  buys a revert with the operator's gas.
 - **confirmation that Cloud KMS signing is reproducible.** Decision 4's
   identical re-broadcast depends on it; `TestCloudKMSSigningIsDeterministic`
   answers it against a real key. If KMS is non-deterministic, ambiguous recovery
