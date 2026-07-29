@@ -149,6 +149,8 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 			return rejected(WireReasonAuthorizationExpiring, payment), nil
 		case errors.Is(err, ErrMerchantQuotaExceeded):
 			return rejected(WireReasonMerchantQuotaExceeded, payment), nil
+		case errors.Is(err, ErrGlobalQuotaExceeded):
+			return rejected(WireReasonGlobalQuotaExceeded, payment), nil
 		}
 		return nil, fmt.Errorf("create settlement intent: %w", err)
 	}

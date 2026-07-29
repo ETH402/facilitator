@@ -4,22 +4,28 @@ ETH402 is an open, self-hostable x402 v2 facilitator for exact payments in
 native USDC on Ethereum mainnet. It is a modular Go service designed for
 machine clients, APIs, merchants, and autonomous agents.
 
-Milestones 0–2 provide the validated architecture, merchant onboarding,
-operational APIs, and x402 v2 verification. ETH402 exposes `/supported`,
+Milestones 0–4 provide the validated architecture, merchant onboarding,
+operational APIs, x402 v2 verification, durable settlement, a policy-enforcing
+signing boundary, and deployment operations. ETH402 exposes `/supported`,
 `/verify`, and — with a settlement signer enabled — `/settle` for exact
 EIP-3009 payments in native Ethereum-mainnet USDC. `/settle` requires a prior
 successful `/verify` for the same payment and broadcasts
 `transferWithAuthorization` once, returning the transaction hash; confirmation
 completes asynchronously at 12 confirmations by default, with a recovery worker
-reconciling ambiguous broadcasts, stuck pendings, nonce gaps, and reorgs. The
-production signer backend is GCP Cloud KMS (`ETH402_SIGNER_MODE=external`);
-the disabled default and the development key signer for local use complete the
-available backends.
+reconciling ambiguous broadcasts, stuck pendings, nonce gaps, and reorgs.
+Production is designed to use the KMS-fronted policy signer
+(`ETH402_SIGNER_MODE=policy`); direct GCP Cloud KMS access is also implemented,
+while disabled and raw-key modes cover safe defaults and local development.
 
-Buyer USDC is designed to move directly from buyer to merchant through USDC's
+Buyer USDC moves directly from buyer to merchant through USDC's
 EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant
-USDC. Future settlement requires the facilitator operator to pay Ethereum gas,
-as required by the official exact-EVM scheme.
+USDC. The facilitator operator pays Ethereum gas, as required by the official
+exact-EVM scheme.
+
+The current build is not approved for mainnet payment processing and refuses
+production startup until a real email adapter is added. See the
+[public integration guide](docs/INTEGRATION.md) and
+[deployment status](docs/DEPLOYMENT.md).
 
 ## Scope
 
@@ -42,8 +48,10 @@ make test
 make dev
 ```
 
-See [Local development](docs/LOCAL_DEVELOPMENT.md), [architecture](docs/ARCHITECTURE.md),
-and [protocol research](docs/PROTOCOL_RESEARCH.md).
+See [public integration](docs/INTEGRATION.md),
+[local development](docs/LOCAL_DEVELOPMENT.md),
+[architecture](docs/ARCHITECTURE.md), and
+[protocol research](docs/PROTOCOL_RESEARCH.md).
 
 ## Implemented endpoints
 
@@ -59,12 +67,12 @@ and [protocol research](docs/PROTOCOL_RESEARCH.md).
 - operator suspension and reinstatement under `/v1/admin/*`
 
 The OpenAPI contract is in [openapi/eth402.yaml](openapi/eth402.yaml).
-Wallet proof currently supports EOA/EIP-191 signatures. ERC-1271 contract
-wallet proof and x402 payer signatures are explicit future security review
-items. `/verify` performs no settlement and requires no facilitator API key.
-`/settle` is likewise unauthenticated (the x402 facilitator shape); admission
-is gated on the payment's recipient being an active registered merchant, per
-ADR-0004.
+Merchant wallet proof supports EOA/EIP-191 signatures, and x402 payer
+authorization supports EOA/EIP-712 signatures. ERC-1271 and ERC-6492 contract
+wallet signatures remain deliberately unsupported. `/verify` performs no
+settlement and requires no facilitator API key. `/settle` is likewise
+unauthenticated (the x402 facilitator shape); admission is gated on the
+payment's recipient being an active registered merchant, per ADR-0004.
 
 ## Independence notice
 

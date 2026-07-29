@@ -7,6 +7,18 @@ versioned where noted.
 
 ### Added
 
+- Public integration and self-hosting documentation covering merchant
+  activation, strict x402 request handling, verification and settlement
+  outcomes, retry/idempotency rules, and the controls that must remain closed
+  before mainnet use. The README now reflects implemented settlement and the
+  KMS-fronted policy signer instead of describing them as future work. OpenAPI
+  version 0.6.1 now marks the USDC EIP-712 `extra` object as required, matching
+  the verifier's existing behavior.
+
+- Facilitator-wide quota refusals now return the documented
+  `facilitator_quota_exceeded` settlement result instead of surfacing as an
+  internal dependency failure.
+
 - Repeatable incident simulations for RPC and signer outages, ambiguous
   broadcasts, reorgs, worker crashes, lease loss, and nonce-gap recovery, with a
   destructive-test-database guard and documented evidence/response criteria.

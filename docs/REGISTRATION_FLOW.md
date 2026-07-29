@@ -28,3 +28,6 @@ new address, policy cooldown, append-only history, and an audit event. The
 cooldown is measured from the most recent verified recipient proof in
 `recipient_address_history`, so unrelated merchant writes such as operator
 suspension and reinstatement neither extend nor reset it.
+
+See the [public integration guide](INTEGRATION.md) for request examples and the
+versioned [OpenAPI contract](../openapi/eth402.yaml) for exact schemas.

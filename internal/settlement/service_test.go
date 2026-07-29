@@ -531,6 +531,14 @@ func TestSettleMapsAdmissionRejections(t *testing.T) {
 		"not verified": {ErrPaymentNotVerified, WireReasonPaymentNotVerified},
 		"not merchant": {ErrRecipientNotMerchant, WireReasonRecipientNotMerchant},
 		"expiring":     {ErrAuthorizationExpiring, WireReasonAuthorizationExpiring},
+		"merchant quota": {
+			ErrMerchantQuotaExceeded,
+			WireReasonMerchantQuotaExceeded,
+		},
+		"facilitator quota": {
+			ErrGlobalQuotaExceeded,
+			WireReasonGlobalQuotaExceeded,
+		},
 	}
 	for name, candidate := range cases {
 		t.Run(name, func(t *testing.T) {
