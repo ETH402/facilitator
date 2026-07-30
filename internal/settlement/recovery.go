@@ -63,17 +63,18 @@ func (w *RecoveryWorker) Run(ctx context.Context) {
 	}
 }
 
-// process runs the four recovery concerns in dependency order: leased
+// process runs the five recovery concerns in dependency order: leased
 // payments first (they may re-enter the active pipeline), then the
 // query-based watches that need no lease because no other worker touches
 // those rows.
 // Each pass is guarded independently so a panic in one concern does not skip
-// the other three, which resolve unrelated stuck transactions.
+// the other four, which resolve unrelated stuck transactions.
 func (w *RecoveryWorker) process(ctx context.Context) {
 	guard(ctx, w.logger, "recovery", "leased", func() { w.recoverLeased(ctx) })
 	guard(ctx, w.logger, "recovery", "replacements", func() { w.observeReplacements(ctx) })
 	guard(ctx, w.logger, "recovery", "nonce-gaps", func() { w.fillNonceGaps(ctx) })
 	guard(ctx, w.logger, "recovery", "gap-fillers", func() { w.observeGapFillers(ctx) })
+	guard(ctx, w.logger, "recovery", "stuck-gap-fillers", func() { w.bumpStuckGapFillers(ctx) })
 }
 
 // recoverLeased claims payments that may need intervention: manual_review
@@ -157,18 +158,32 @@ func (s *Service) recoverPayment(ctx context.Context, paymentID, actor string) e
 		return s.resolveAmbiguous(ctx, work, actor)
 	case work.TransactionStatus == "broadcast" &&
 		!work.BroadcastAttemptedAt.IsZero() &&
-		s.now().Sub(work.BroadcastAttemptedAt) > s.cfg.ReplacementAfter:
+		work.DBNow.Sub(work.BroadcastAttemptedAt) > s.cfg.ReplacementAfter:
 		return s.replaceStuck(ctx, work, actor)
 	}
 	return nil
 }
 
+// ambiguousRetryDelay spaces the identical re-broadcasts of an ambiguous
+// transaction: the recovery grace window, doubled per failed attempt and
+// capped at 32× that window. Every attempt re-signs through the signer — a
+// paid Cloud KMS operation in production — so an unbounded per-tick retry is
+// continuous KMS spend against a provider that may never answer, while no
+// retry at all would strand the payment. The cap keeps a genuinely stuck
+// transaction retrying on a slow cadence rather than never.
+func ambiguousRetryDelay(attempts int, grace time.Duration) time.Duration {
+	const maxShift = 5
+	return grace << min(attempts, maxShift)
+}
+
 // resolveAmbiguous settles the crash window of ADR-0004 decision 4. The
 // signed transaction's keccak is its transaction hash, so the stored raw hash
 // is the lookup key: a receipt or a mempool sighting re-attaches the hash and
-// returns the payment to the broadcast pipeline. Only after the grace window
+// returns the payment to the broadcast pipeline. Only after the backoff window
 // — and only when the exact signing inputs were persisted — may the identical
-// transaction be re-signed and re-broadcast. Identity is proven by the
+// transaction be re-signed and re-broadcast. Failed re-broadcasts are counted
+// and the window doubles per attempt (ambiguousRetryDelay), because each
+// re-sign is a paid KMS operation. Identity is proven by the
 // sighash, which is deterministic across signers; the re-signed bytes may
 // still differ (Cloud KMS randomizes the ECDSA nonce), and a differing hash
 // is then recorded replacement-shaped, so the network mining either signature
@@ -192,8 +207,11 @@ func (s *Service) resolveAmbiguous(ctx context.Context, work Work, actor string)
 	if pending != nil {
 		return s.store.MarkTxRecoveredBroadcast(ctx, work.PaymentID, work.TransactionID, txHash, actor)
 	}
-	if s.now().Sub(work.TransactionUpdatedAt) < s.cfg.RecoveryGrace {
-		return nil // Inside the grace window: the broadcast may still propagate.
+	if retryAt := work.TransactionUpdatedAt.Add(
+		ambiguousRetryDelay(work.AmbiguousAttempts, s.cfg.RecoveryGrace)); work.DBNow.Before(retryAt) {
+		// Inside the backoff window: the broadcast may still propagate, and the
+		// next attempt re-signs through KMS, so it must not run every tick.
+		return nil
 	}
 	if work.MaxFeePerGas == "" || work.MaxPriorityFeePerGas == "" || work.GasLimit == 0 {
 		return errors.New("ambiguous transaction predates stored fee fields; manual reconciliation required")
@@ -229,7 +247,13 @@ func (s *Service) resolveAmbiguous(ctx context.Context, work Work, actor string)
 	if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw)); err != nil {
 		// Unknown outcome again: stay ambiguous. The next tick's on-chain
 		// lookup finds the transaction if this attempt reached the network —
-		// the bytes are identical, so the lookup key is unchanged.
+		// the bytes are identical, so the lookup key is unchanged. Recording
+		// the attempt re-arms and grows the backoff, so a wedged provider is
+		// not re-signed against (a paid KMS operation) on every tick.
+		if markErr := s.store.MarkAmbiguousRetry(ctx, work.PaymentID, work.TransactionID); markErr != nil {
+			return errors.Join(fmt.Errorf("re-broadcast ambiguous transaction: %w", err),
+				fmt.Errorf("record ambiguous retry: %w", markErr))
+		}
 		return fmt.Errorf("re-broadcast ambiguous transaction: %w", err)
 	}
 	return s.store.MarkTxRecoveredBroadcast(ctx, work.PaymentID, work.TransactionID, txHash, actor)
@@ -279,50 +303,44 @@ func (s *Service) signIdentical(ctx context.Context, work Work) (raw []byte, raw
 	return signed.Raw, rawHash, nil
 }
 
-// replaceStuck supersedes a pending transaction with a fee-bumped replacement
-// on the same nonce. The replacement is recorded before it is sent: a send
-// failure then leaves a durable row the next stuck tick re-bumps from, and a
-// mined original retires the row via observeReplacements — recording after
-// sending could instead loop forever on the mempool's price-bump rule. When
-// the ceiling leaves no headroom the transaction is left pending; raising the
-// ceiling is an operator decision, not the worker's.
-func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) error {
-	if work.MaxFeePerGas == "" || work.MaxPriorityFeePerGas == "" || work.GasLimit == 0 {
-		s.logger.WarnContext(ctx, "stuck transaction predates stored fee fields; cannot bump",
-			"payment_id", work.PaymentID, "transaction_id", work.TransactionID)
-		return nil
-	}
+// replacementFees computes the fee pair for replacing a stuck transaction
+// from its stored fees, the latest block's base fee, and the configured
+// ceiling. ok is false when the ceiling leaves no room to satisfy the
+// mempool's price-bump rule; the caller keeps waiting.
+func (s *Service) replacementFees(ctx context.Context, work Work) (maxFee, priority *big.Int, ok bool, err error) {
 	oldMax, ok := new(big.Int).SetString(work.MaxFeePerGas, 10)
 	if !ok {
-		return fmt.Errorf("stored max fee %q is not a decimal integer", work.MaxFeePerGas)
+		return nil, nil, false, fmt.Errorf("stored max fee %q is not a decimal integer", work.MaxFeePerGas)
 	}
 	oldTip, ok := new(big.Int).SetString(work.MaxPriorityFeePerGas, 10)
 	if !ok {
-		return fmt.Errorf("stored priority fee %q is not a decimal integer", work.MaxPriorityFeePerGas)
+		return nil, nil, false, fmt.Errorf("stored priority fee %q is not a decimal integer", work.MaxPriorityFeePerGas)
 	}
 	block, err := s.chain.BlockByNumber(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("fetch latest block: %w", err)
+		return nil, nil, false, fmt.Errorf("fetch latest block: %w", err)
 	}
 	baseFee, ok := new(big.Int).SetString(block.BaseFee, 10)
 	if !ok {
-		return fmt.Errorf("latest block reports invalid base fee %q", block.BaseFee)
+		return nil, nil, false, fmt.Errorf("latest block reports invalid base fee %q", block.BaseFee)
 	}
 	ceiling, ok := new(big.Int).SetString(s.cfg.MaxFeePerGas, 10)
 	if !ok {
-		return fmt.Errorf("configured max fee %q is not a decimal integer", s.cfg.MaxFeePerGas)
+		return nil, nil, false, fmt.Errorf("configured max fee %q is not a decimal integer", s.cfg.MaxFeePerGas)
 	}
-	maxFee, priority, ok := BumpFees(oldMax, oldTip, baseFee, ceiling)
-	if !ok {
-		s.logger.InfoContext(ctx, "no fee headroom to bump stuck transaction; still waiting",
-			"payment_id", work.PaymentID, "transaction_id", work.TransactionID,
-			"tx_hash", work.TxHash)
-		return nil
-	}
+	maxFee, priority, ok = BumpFees(oldMax, oldTip, baseFee, ceiling)
+	return maxFee, priority, ok, nil
+}
+
+// signReplacement signs a fee-bumped replacement of work's transaction on the
+// same nonce and returns the signed bytes with the durable record describing
+// them. A randomized-nonce signer (Cloud KMS) makes the hash unpredictable
+// until signed, which is why the record is built only now.
+func (s *Service) signReplacement(ctx context.Context, work Work, maxFee, priority *big.Int) (signer.SignedTransaction, Replacement, error) {
 	wire := work.Authorization.Wire()
 	calldata, err := TransferWithAuthorizationData(work.Authorization)
 	if err != nil {
-		return fmt.Errorf("build calldata: %w", err)
+		return signer.SignedTransaction{}, Replacement{}, fmt.Errorf("build calldata: %w", err)
 	}
 	signCtx, cancel := context.WithTimeout(ctx, s.cfg.SigningTimeout)
 	signed, err := s.signer.SignTransaction(signCtx, signer.Transaction{
@@ -338,12 +356,12 @@ func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) err
 	})
 	cancel()
 	if err != nil {
-		return fmt.Errorf("sign replacement: %w", err)
+		return signer.SignedTransaction{}, Replacement{}, fmt.Errorf("sign replacement: %w", err)
 	}
 	keccak := sha3.NewLegacyKeccak256()
 	keccak.Write(signed.Raw)
 	rawHash := hex.EncodeToString(keccak.Sum(nil))
-	replacement := Replacement{
+	return signed, Replacement{
 		Nonce:         work.Nonce,
 		TxHash:        "0x" + rawHash,
 		RawHash:       rawHash,
@@ -351,6 +369,35 @@ func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) err
 		MaxFee:        maxFee.String(),
 		PriorityFee:   priority.String(),
 		SignerAddress: work.SignerAddress,
+	}, nil
+}
+
+// replaceStuck supersedes a pending transaction with a fee-bumped replacement
+// on the same nonce. The replacement is recorded before it is sent: a send
+// failure then leaves a durable row the next stuck tick re-bumps from, and a
+// mined original retires the row via observeReplacements — recording after
+// sending could instead loop forever on the mempool's price-bump rule. When
+// the ceiling leaves no headroom the transaction is left pending; raising the
+// ceiling is an operator decision, not the worker's.
+func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) error {
+	if work.MaxFeePerGas == "" || work.MaxPriorityFeePerGas == "" || work.GasLimit == 0 {
+		s.logger.WarnContext(ctx, "stuck transaction predates stored fee fields; cannot bump",
+			"payment_id", work.PaymentID, "transaction_id", work.TransactionID)
+		return nil
+	}
+	maxFee, priority, ok, err := s.replacementFees(ctx, work)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		s.logger.InfoContext(ctx, "no fee headroom to bump stuck transaction; still waiting",
+			"payment_id", work.PaymentID, "transaction_id", work.TransactionID,
+			"tx_hash", work.TxHash)
+		return nil
+	}
+	signed, replacement, err := s.signReplacement(ctx, work, maxFee, priority)
+	if err != nil {
+		return err
 	}
 	if err := s.store.MarkTxReplaced(ctx, work.PaymentID, work.TransactionID, replacement, actor); err != nil {
 		return fmt.Errorf("record replacement: %w", err)
@@ -364,7 +411,10 @@ func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) err
 // observeReplacements checks whether the network mined an original
 // transaction instead of its replacement. Either can win the nonce; when the
 // original lands, the recorded history is corrected and the never-minable
-// replacement is dropped.
+// replacement is dropped. A landed success only enters confirming, which the
+// confirmation worker watches to finality; a landed revert finalizes the
+// payment, so it must first clear the same confirmation depth — a reorg could
+// otherwise resurrect a payment already marked reverted.
 func (w *RecoveryWorker) observeReplacements(ctx context.Context) {
 	tracked, err := w.service.store.ListReplacedPending(ctx)
 	if err != nil {
@@ -384,6 +434,21 @@ func (w *RecoveryWorker) observeReplacements(ctx context.Context) {
 			}
 			if receipt == nil {
 				return
+			}
+			if receipt.Status != 1 {
+				current, err := w.service.chain.BlockNumber(ctx)
+				if err != nil {
+					w.logger.WarnContext(ctx, "fetch block number failed",
+						"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
+					return
+				}
+				depth := uint64(0)
+				if current >= receipt.BlockNumber {
+					depth = current - receipt.BlockNumber + 1
+				}
+				if depth < w.service.cfg.Confirmations {
+					return // Mined but not final: a reorg can still un-revert it.
+				}
 			}
 			if err := w.service.store.MarkReplacementLanded(ctx, t.PaymentID, t.TransactionID,
 				receipt.Status == 1, receipt.BlockNumber, receipt.BlockHash,
@@ -490,6 +555,62 @@ func (w *RecoveryWorker) observeGapFillers(ctx context.Context) {
 	}
 }
 
+// bumpStuckGapFillers fee-bumps prepared gap fillers that have sat pending
+// beyond the replacement window. A filler underpriced out of the mempool
+// would never consume the nonce it was created to free, blocking every later
+// nonce of the signer — the same hazard replaceStuck covers for payment
+// broadcasts, on rows the leased pipeline never claims.
+func (w *RecoveryWorker) bumpStuckGapFillers(ctx context.Context) {
+	works, err := w.service.store.ListStuckGapFillers(ctx, w.service.cfg.SignerAddress,
+		w.service.cfg.ReplacementAfter)
+	if err != nil {
+		w.logger.WarnContext(ctx, "list stuck gap fillers failed", "error", err)
+		return
+	}
+	for _, work := range works {
+		if ctx.Err() != nil {
+			return
+		}
+		w.underLease(ctx, work.PaymentID, "stuck-gap-fillers", func() {
+			if err := w.service.bumpStuckGapFiller(ctx, work); err != nil {
+				w.logger.WarnContext(ctx, "bump stuck gap filler failed",
+					"payment_id", work.PaymentID, "nonce", work.Nonce, "error", err)
+			}
+		})
+	}
+}
+
+// bumpStuckGapFiller supersedes a pending gap filler with a fee-bumped
+// replacement on the same nonce. The filler still predictably reverts on
+// chain — the authorization is expired; only its odds of being mined change.
+// The replacement is recorded, exact signed bytes and all, before it is sent:
+// a send failure then leaves a durable row observeGapFillers re-broadcasts
+// from, and either signature landing resolves the nonce.
+func (s *Service) bumpStuckGapFiller(ctx context.Context, work Work) error {
+	maxFee, priority, ok, err := s.replacementFees(ctx, work)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		s.logger.InfoContext(ctx, "no fee headroom to bump stuck gap filler; still waiting",
+			"payment_id", work.PaymentID, "transaction_id", work.TransactionID,
+			"tx_hash", work.TxHash)
+		return nil
+	}
+	signed, replacement, err := s.signReplacement(ctx, work, maxFee, priority)
+	if err != nil {
+		return err
+	}
+	if err := s.store.MarkGapFillerReplaced(ctx, work.PaymentID, work.TransactionID,
+		replacement, signed.Raw); err != nil {
+		return fmt.Errorf("record gap filler replacement: %w", err)
+	}
+	if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw)); err != nil {
+		return fmt.Errorf("broadcast gap filler replacement: %w", err)
+	}
+	return nil
+}
+
 // observeGapFiller resolves one gap filler. Extracted from the loop rather than
 // inlined as a closure so its early returns read as early returns; the caller
 // holds the payment lease.
@@ -501,6 +622,12 @@ func (w *RecoveryWorker) observeGapFiller(ctx context.Context, t TrackedTransact
 		return
 	}
 	if receipt == nil {
+		if t.Status == "replaced" {
+			// A superseded original: its fee-bumped replacement is the active
+			// broadcast, so there is nothing to re-send — only a mined receipt
+			// (the network chose the original) resolves this row.
+			return
+		}
 		known, err := w.service.chain.TransactionByHash(ctx, t.TxHash)
 		if err != nil {
 			w.logger.WarnContext(ctx, "fetch prepared gap filler failed",

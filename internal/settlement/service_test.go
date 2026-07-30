@@ -39,14 +39,19 @@ type fakeStore struct {
 	replacement        Replacement
 	ambiguousReplaced  bool
 	ambReplacement     Replacement
+	ambiguousRetries   int
 	landed             bool
 	landedSucceeded    bool
 	reorgedOut         bool
 	replacedPending    []TrackedTransaction
 	gapWorks           []Work
 	gapFillers         []TrackedTransaction
+	stuckGapWorks      []Work
 	gapFillerTxHash    string
 	gapFillerRaw       []byte
+	gapFillerReplaced  bool
+	gapFillerBump      Replacement
+	gapFillerBumpRaw   []byte
 	gapFillerResolved  bool
 	unsettleable       int
 	gapFillerEscalated int
@@ -137,6 +142,11 @@ func (f *fakeStore) MarkTxAmbiguousReplaced(_ context.Context, _, _ string, repl
 	return nil
 }
 
+func (f *fakeStore) MarkAmbiguousRetry(context.Context, string, string) error {
+	f.ambiguousRetries++
+	return nil
+}
+
 func (f *fakeStore) MarkReplacementLanded(_ context.Context, _, _ string, succeeded bool, _ uint64, _ string, _ uint64, _, _ string) error {
 	f.landed = true
 	f.landedSucceeded = succeeded
@@ -158,6 +168,17 @@ func (f *fakeStore) ListDroppedBlockingGaps(context.Context, string, time.Time) 
 
 func (f *fakeStore) ListGapFillers(context.Context) ([]TrackedTransaction, error) {
 	return f.gapFillers, nil
+}
+
+func (f *fakeStore) ListStuckGapFillers(context.Context, string, time.Duration) ([]Work, error) {
+	return f.stuckGapWorks, nil
+}
+
+func (f *fakeStore) MarkGapFillerReplaced(_ context.Context, _, _ string, replacement Replacement, raw []byte) error {
+	f.gapFillerReplaced = true
+	f.gapFillerBump = replacement
+	f.gapFillerBumpRaw = append([]byte(nil), raw...)
+	return nil
 }
 
 func (f *fakeStore) MarkGapFillerPrepared(_ context.Context, _, _, txHash string, raw []byte, _ uint64, _, _ string) error {

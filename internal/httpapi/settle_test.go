@@ -104,7 +104,17 @@ func (f settleFakeStore) ListGapFillers(context.Context) ([]settlement.TrackedTr
 	return nil, nil
 }
 
+func (f settleFakeStore) ListStuckGapFillers(context.Context, string, time.Duration) ([]settlement.Work, error) {
+	return nil, nil
+}
+
+func (f settleFakeStore) MarkAmbiguousRetry(context.Context, string, string) error { return nil }
+
 func (f settleFakeStore) MarkGapFillerPrepared(context.Context, string, string, string, []byte, uint64, string, string) error {
+	return nil
+}
+
+func (f settleFakeStore) MarkGapFillerReplaced(context.Context, string, string, settlement.Replacement, []byte) error {
 	return nil
 }
 

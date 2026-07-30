@@ -40,6 +40,26 @@ WHERE id = $2 AND payment_id = $1 AND status = 'ambiguous'`, paymentID, transact
 	return tx.Commit(ctx)
 }
 
+// MarkAmbiguousRetry records a failed identical re-broadcast of an ambiguous
+// transaction: the attempt counter rises and updated_at re-arms, which is what
+// spaces the next re-sign out exponentially instead of every tick. The send
+// outcome is unknown — the transaction may still have reached the network — so
+// the row stays ambiguous for on-chain reconciliation. The database stamps both
+// fields, keeping the backoff on the same clock that measures it.
+func (s *Store) MarkAmbiguousRetry(ctx context.Context, paymentID, transactionID string) error {
+	tag, err := s.Pool.Exec(ctx, `
+UPDATE ethereum_transactions
+SET ambiguous_attempts = ambiguous_attempts + 1, updated_at = now()
+WHERE id = $2 AND payment_id = $1 AND status = 'ambiguous'`, paymentID, transactionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("record ambiguous retry for %s: %w", transactionID, ErrSettlementRace)
+	}
+	return nil
+}
+
 // MarkTxAmbiguousReplaced records the re-signed form of an ambiguous
 // transaction as the replacement of its original. The sighash already proved
 // the transaction identical — same nonce, gas, fees, and calldata — but a
@@ -325,14 +345,15 @@ WHERE t.status = 'dropped'
 
 // ListGapFillers returns prepared gap-fill broadcasts waiting on a receipt:
 // their payments are expired or failed, so the confirmation worker never sees
-// them. The exact raw bytes allow a missing transaction to be re-broadcast
-// identically.
+// them. Replaced originals are included: the network may still mine either
+// signature of the nonce, so both stay watched until one lands. The exact raw
+// bytes allow a missing transaction to be re-broadcast identically.
 func (s *Store) ListGapFillers(ctx context.Context) ([]settlement.TrackedTransaction, error) {
 	rows, err := s.Pool.Query(ctx, `
-SELECT t.payment_id, t.id, t.tx_hash, t.raw_transaction
+SELECT t.payment_id, t.id, t.tx_hash, t.status, t.raw_transaction
 FROM ethereum_transactions t
 JOIN payment_records p ON p.id = t.payment_id
-WHERE t.status = 'broadcast' AND p.state IN ('expired', 'failed')
+WHERE t.status IN ('broadcast', 'replaced') AND p.state IN ('expired', 'failed')
   AND t.raw_transaction_hash IS NOT NULL AND t.raw_transaction IS NOT NULL`)
 	if err != nil {
 		return nil, err
@@ -341,12 +362,67 @@ WHERE t.status = 'broadcast' AND p.state IN ('expired', 'failed')
 	var tracked []settlement.TrackedTransaction
 	for rows.Next() {
 		var item settlement.TrackedTransaction
-		if err := rows.Scan(&item.PaymentID, &item.TransactionID, &item.TxHash, &item.RawTransaction); err != nil {
+		if err := rows.Scan(&item.PaymentID, &item.TransactionID, &item.TxHash, &item.Status, &item.RawTransaction); err != nil {
 			return nil, err
 		}
 		tracked = append(tracked, item)
 	}
 	return tracked, rows.Err()
+}
+
+// ListStuckGapFillers returns broadcast gap fillers that have sat pending
+// beyond the replacement window, so recovery can fee-bump them like any other
+// stuck broadcast. The comparison runs against the database clock because
+// broadcast_attempted_at is database-stamped; the application clock can be
+// skewed. Returned rows carry everything a replacement re-sign needs.
+func (s *Store) ListStuckGapFillers(ctx context.Context, signerAddress string, stuckFor time.Duration) ([]settlement.Work, error) {
+	rows, err := s.Pool.Query(ctx, `
+SELECT p.id, p.payment_identity,
+       p.payer_address, p.recipient_address, p.amount_atomic::text,
+       p.authorization_nonce, p.valid_after, p.valid_before, p.payer_signature,
+       t.id, t.transaction_nonce::text, coalesce(t.tx_hash, ''),
+       t.signer_address, t.gas_limit::text, t.max_fee_per_gas::text,
+       t.max_priority_fee_per_gas::text, p.state
+FROM ethereum_transactions t
+JOIN payment_records p ON p.id = t.payment_id
+WHERE t.status = 'broadcast'
+  AND t.signer_address = $1
+  AND t.raw_transaction IS NOT NULL
+  AND p.state IN ('expired', 'failed')
+  AND t.broadcast_attempted_at < now() - make_interval(secs => $2)`,
+		signerAddress, stuckFor.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var works []settlement.Work
+	for rows.Next() {
+		var work settlement.Work
+		var nonce, gasLimit, state string
+		if err := rows.Scan(
+			&work.PaymentID, &work.PaymentIdentity,
+			&work.Authorization.From, &work.Authorization.To, &work.Authorization.Value,
+			&work.Authorization.Nonce, &work.Authorization.ValidAfter, &work.Authorization.ValidBefore,
+			&work.Authorization.Signature, &work.TransactionID, &nonce, &work.TxHash,
+			&work.SignerAddress, &gasLimit, &work.MaxFeePerGas,
+			&work.MaxPriorityFeePerGas, &state); err != nil {
+			return nil, err
+		}
+		parsed, err := parseNonce(nonce)
+		if err != nil {
+			return nil, err
+		}
+		work.Nonce = parsed
+		limit, err := parseNonce(gasLimit)
+		if err != nil {
+			return nil, fmt.Errorf("gas limit: %w", err)
+		}
+		work.GasLimit = limit
+		work.State = settlement.State(state)
+		work.TransactionStatus = "broadcast"
+		works = append(works, work)
+	}
+	return works, rows.Err()
 }
 
 // MarkGapFillerPrepared durably records the exact signed filler before any
@@ -367,21 +443,85 @@ WHERE id = $1 AND status = 'dropped'`, transactionID, rawHash, txHash, raw, gasL
 	return nil
 }
 
+// MarkGapFillerReplaced supersedes a stuck gap filler with a fee-bumped
+// replacement sharing its nonce, mirroring MarkTxReplaced for a payment that
+// is already terminal: the payment itself does not transition, only the
+// transaction rows move. The replacement carries its exact signed bytes like
+// the original preparation did, so observeGapFillers can re-broadcast it after
+// an ambiguous send. The old row keeps its raw bytes as 'replaced' — the
+// network may still mine either signature of the nonce, so both stay watched.
+func (s *Store) MarkGapFillerReplaced(ctx context.Context, paymentID, oldTxID string, replacement settlement.Replacement, raw []byte) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The old row must leave the active set before the replacement inserts:
+	// the partial unique index allows one active transaction per payment.
+	tag, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions
+SET status = 'replaced', updated_at = now()
+WHERE id = $2 AND payment_id = $1 AND status = 'broadcast' AND raw_transaction IS NOT NULL`,
+		paymentID, oldTxID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("replace gap filler %s: %w", oldTxID, ErrSettlementRace)
+	}
+	var replacementID string
+	err = tx.QueryRow(ctx, `
+INSERT INTO ethereum_transactions(
+  payment_id, tx_hash, signer_address, transaction_nonce, status,
+  raw_transaction_hash, raw_transaction, gas_limit, max_fee_per_gas, max_priority_fee_per_gas,
+  broadcast_attempted_at)
+SELECT payment_id, $3, signer_address, transaction_nonce, 'broadcast',
+       $4, $5, $6, $7, $8, now()
+FROM ethereum_transactions WHERE id = $2 AND payment_id = $1
+RETURNING id`,
+		paymentID, oldTxID, replacement.TxHash, replacement.RawHash, raw,
+		replacement.GasLimit, replacement.MaxFee, replacement.PriorityFee).Scan(&replacementID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions SET replaced_by_id = $3 WHERE id = $2 AND payment_id = $1`,
+		paymentID, oldTxID, replacementID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // MarkGapFillerResolved retires a gap filler from its receipt. It is expected
 // to revert — the authorization expired — and the revert still consumes the
-// nonce, which is the entire point of the fill.
+// nonce, which is the entire point of the fill. Either signature of the nonce
+// may be the one that landed (the active broadcast or a replaced original), so
+// both statuses resolve, and the sibling that can now never mine is dropped to
+// end its watch.
 func (s *Store) MarkGapFillerResolved(ctx context.Context, transactionID string, gasUsed uint64, gasPrice string) error {
-	tag, err := s.Pool.Exec(ctx, `
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 UPDATE ethereum_transactions
 SET status = 'reverted', gas_used = $2, effective_gas_price = $3, updated_at = now()
-WHERE id = $1 AND status = 'broadcast'`, transactionID, gasUsed, gasPrice)
+WHERE id = $1 AND status IN ('broadcast', 'replaced')`, transactionID, gasUsed, gasPrice)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("resolve gap filler %s: %w", transactionID, ErrSettlementRace)
 	}
-	return nil
+	if _, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions
+SET status = 'dropped', updated_at = now()
+WHERE payment_id = (SELECT payment_id FROM ethereum_transactions WHERE id = $1)
+  AND id <> $1 AND status IN ('broadcast', 'replaced')`, transactionID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func scanTracked(rows pgx.Rows) ([]settlement.TrackedTransaction, error) {
@@ -420,13 +560,22 @@ UPDATE ethereum_transactions
 SET status = 'confirming', block_number = $3, block_hash = $4,
     gas_used = $5, effective_gas_price = $6, first_seen_at = coalesce(first_seen_at, now()),
     updated_at = now()
-WHERE id = $2 AND payment_id = $1 AND status = 'broadcast'`,
+WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'replaced')`,
 		paymentID, transactionID, blockNumber, blockHash, gasUsed, gasPrice)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("record succeeded gap filler %s: %w", transactionID, ErrSettlementRace)
+	}
+	// The nonce is consumed, so the sibling signature can never mine; drop it
+	// rather than leaving it watched forever.
+	if _, err := tx.Exec(ctx, `
+UPDATE ethereum_transactions
+SET status = 'dropped', updated_at = now()
+WHERE payment_id = $1 AND id <> $2 AND status IN ('broadcast', 'replaced')`,
+		paymentID, transactionID); err != nil {
+		return err
 	}
 	if err := transitionPayment(ctx, tx, paymentID, settlement.StateExpired, settlement.StateManualReview, actor); err != nil {
 		return err

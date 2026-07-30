@@ -90,6 +90,13 @@ Migration `000009_payment_retention` adds:
 - `payment_records_retention_idx`, limiting each retention scan to old
   unredacted terminal rows.
 
+Migration `000010_ambiguous_retry_backoff` adds:
+
+- `ethereum_transactions.ambiguous_attempts`: the count of failed identical
+  re-broadcasts of an ambiguous transaction. Recovery measures an exponential
+  backoff from it and `updated_at` — each re-sign is a paid Cloud KMS
+  operation, so retries must slow down rather than run every worker tick.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

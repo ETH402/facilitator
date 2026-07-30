@@ -47,9 +47,20 @@ type Work struct {
 	BroadcastAttemptedAt time.Time
 
 	// TransactionUpdatedAt is the last write to the transaction row. Recovery
-	// uses it as the ambiguity clock: only after the grace window may an
+	// uses it as the ambiguity clock: only after the backoff window may an
 	// ambiguous transaction be re-broadcast identically.
 	TransactionUpdatedAt time.Time
+
+	// AmbiguousAttempts counts failed identical re-broadcasts of an ambiguous
+	// transaction. Each attempt is a paid KMS signing operation, so recovery
+	// backs off exponentially per attempt instead of re-signing every tick.
+	AmbiguousAttempts int
+
+	// DBNow is the database clock reading taken when this row was loaded.
+	// The persisted timestamps above are stamped by the database, so intervals
+	// measured against them must use the same clock: the application clock can
+	// be skewed, and mixing the two makes those intervals lie.
+	DBNow time.Time
 }
 
 // BroadcastPending reports whether the transaction still needs signing and
@@ -85,6 +96,11 @@ type TrackedTransaction struct {
 	PaymentID     string
 	TransactionID string
 	TxHash        string
+	// Status is populated for nonce-gap fillers, whose replaced originals stay
+	// watched alongside the active replacement: only a "broadcast" filler may
+	// be re-broadcast, since the replacement already supersedes a "replaced"
+	// one at a lower fee.
+	Status string
 	// RawTransaction is populated for a prepared nonce-gap filler. Persisting
 	// the exact signed bytes makes retry safe with randomized KMS signatures.
 	RawTransaction []byte

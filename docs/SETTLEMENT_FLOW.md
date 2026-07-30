@@ -117,19 +117,28 @@ sighash mismatch means the record is corrupt and the payment stays in
 `manual_review`. Rows written before migration `000006` have no stored sighash
 and fall back to the raw-hash comparison, which only a deterministic signer
 satisfies; rows before `000004` lack the stored fee fields and are resolved by
-on-chain lookup only. A broadcast still pending
+on-chain lookup only. Failed re-broadcasts are counted on the transaction row
+(migration `000010`) and the wait doubles per attempt, capped at 32× the grace
+window — each re-sign is a paid KMS operation, so an unbounded per-tick retry
+would be continuous KMS spend against a provider that may never answer. A
+broadcast still pending
 after `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced by a
 fee-bumped transaction on the same nonce (tip ×1.125, with both the fee cap
 and the tip raised to the mempool's 110% price-bump floor so the node actually
 accepts the replacement, ceiling-capped); when
 the ceiling leaves no headroom the transaction is left pending for an operator
 decision. If the network mines the original instead, recovery records the
-original as the truth and drops the never-minable replacement. A `dropped`
+original as the truth and drops the never-minable replacement — a reverted
+original only once it has cleared the same confirmation depth as a success, so
+a reorg cannot resurrect a payment already marked reverted. A `dropped`
 nonce blocking a later in-flight nonce of the same signer is filled only after
 the authorization has been expired for a full safety margin, whether the payment
 was retired as `expired` or `failed`. Its exact signed bytes are persisted before
 broadcast and reused after an ambiguous send; the predictable revert consumes
-the nonce without reviving the payment. A filler the chain *accepts* is an anomaly — USDC moved on an
+the nonce without reviving the payment. A filler stuck pending past the
+replacement window is fee-bumped on the same nonce like any other stuck
+broadcast, and both signatures stay watched until one lands. A filler the chain
+*accepts* is an anomaly — USDC moved on an
 authorization judged expired, so the record disagrees with the ledger — and is
 escalated once to `manual_review` with its receipt for a human to reconcile,
 which is the only edge out of `expired`. Recovery never finalizes a payment itself — it re-attaches hashes

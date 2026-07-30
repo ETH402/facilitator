@@ -165,14 +165,16 @@ FOR UPDATE`, *merchantID).Scan(&activeMerchantID)
 	// The quota is counted while the merchant row lock is held, so every
 	// settlement for this merchant observes the preceding request's committed
 	// result before deciding. settlement_requested_at is stamped only here, which
-	// makes this exactly the number of broadcasts attempted on the merchant's
-	// behalf; replacements and gap fillers reuse existing rows and correctly do
-	// not count against it.
+	// makes this exactly the number of settlement intents committed on the
+	// merchant's behalf — including intents retired before broadcast, whose gas
+	// was still risked; replacements and gap fillers reuse existing rows and
+	// correctly do not count against it. The window is measured on the database
+	// clock because the stamps are: the application clock can be skewed.
 	var settled int
 	if err := tx.QueryRow(ctx, `
 SELECT count(*) FROM payment_records
-WHERE merchant_id = $1 AND settlement_requested_at > $2`,
-		*merchantID, request.Now.Add(-request.QuotaWindow)).Scan(&settled); err != nil {
+WHERE merchant_id = $1 AND settlement_requested_at > now() - make_interval(secs => $2)`,
+		*merchantID, request.QuotaWindow.Seconds()).Scan(&settled); err != nil {
 		return settlement.Intent{}, fmt.Errorf("count merchant settlements: %w", err)
 	}
 	if settled >= request.Quota {
@@ -196,7 +198,8 @@ WHERE merchant_id = $1 AND settlement_requested_at > $2`,
 	var settledOverall int
 	if err := tx.QueryRow(ctx, `
 SELECT count(*) FROM payment_records
-WHERE settlement_requested_at > $1`, request.Now.Add(-request.QuotaWindow)).Scan(&settledOverall); err != nil {
+WHERE settlement_requested_at > now() - make_interval(secs => $1)`,
+		request.QuotaWindow.Seconds()).Scan(&settledOverall); err != nil {
 		return settlement.Intent{}, fmt.Errorf("count facilitator settlements: %w", err)
 	}
 	if settledOverall >= request.GlobalQuota {

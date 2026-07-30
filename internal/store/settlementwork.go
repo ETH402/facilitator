@@ -47,7 +47,9 @@ RETURNING id, payment_identity, state, claimed_until`,
 // LoadSettlementWork reads the payment calldata fields and the active
 // transaction row for a leased payment. The partial unique index guarantees at
 // most one active transaction, so the join returns exactly one row while
-// settlement is in flight.
+// settlement is in flight. DBNow carries the database clock reading taken with
+// the row: the persisted timestamps are database-stamped, so recovery measures
+// its intervals against the same clock rather than the application's.
 func (s *Store) LoadSettlementWork(ctx context.Context, paymentID string) (settlement.Work, error) {
 	var work settlement.Work
 	var state, signature, nonce string
@@ -60,7 +62,7 @@ SELECT p.id, p.payment_identity, p.state,
        t.id, t.status, t.transaction_nonce::text, coalesce(t.tx_hash, ''),
        t.signer_address, t.raw_transaction_hash, t.sighash,
        t.gas_limit::text, t.max_fee_per_gas::text, t.max_priority_fee_per_gas::text,
-       t.broadcast_attempted_at, t.updated_at
+       t.broadcast_attempted_at, t.updated_at, t.ambiguous_attempts, now()
 FROM payment_records p
 JOIN ethereum_transactions t ON t.payment_id = p.id AND t.status = ANY($2)
 WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
@@ -70,7 +72,8 @@ WHERE p.id = $1`, paymentID, activeTransactionStatuses).Scan(
 		&signature, &work.TransactionID, &work.TransactionStatus, &nonce, &work.TxHash,
 		&work.SignerAddress, &rawHash, &sighash,
 		&gasLimitText, &maxFee, &priorityFee,
-		&broadcastAttemptedAt, &work.TransactionUpdatedAt)
+		&broadcastAttemptedAt, &work.TransactionUpdatedAt,
+		&work.AmbiguousAttempts, &work.DBNow)
 	if err != nil {
 		return settlement.Work{}, err
 	}

@@ -46,6 +46,7 @@ type Store interface {
 	MarkTxConfirmed(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxReverted(ctx context.Context, paymentID, transactionID string, gasUsed uint64, gasPrice, actor string) error
 	MarkTxRecoveredBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error
+	MarkAmbiguousRetry(ctx context.Context, paymentID, transactionID string) error
 	MarkTxAmbiguousReplaced(ctx context.Context, paymentID, oldTxID string, replacement Replacement, actor string) error
 	MarkTxReplaced(ctx context.Context, paymentID, oldTxID string, replacement Replacement, actor string) error
 	MarkReplacementLanded(ctx context.Context, paymentID, minedTxID string, succeeded bool, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
@@ -53,7 +54,9 @@ type Store interface {
 	ListReplacedPending(ctx context.Context) ([]TrackedTransaction, error)
 	ListDroppedBlockingGaps(ctx context.Context, signerAddress string, expiredBefore time.Time) ([]Work, error)
 	ListGapFillers(ctx context.Context) ([]TrackedTransaction, error)
+	ListStuckGapFillers(ctx context.Context, signerAddress string, stuckFor time.Duration) ([]Work, error)
 	MarkGapFillerPrepared(ctx context.Context, transactionID, rawHash, txHash string, raw []byte, gasLimit uint64, maxFee, priorityFee string) error
+	MarkGapFillerReplaced(ctx context.Context, paymentID, oldTxID string, replacement Replacement, raw []byte) error
 	MarkGapFillerResolved(ctx context.Context, transactionID string, gasUsed uint64, gasPrice string) error
 	MarkGapFillerSucceeded(ctx context.Context, paymentID, transactionID string, blockNumber uint64, blockHash string, gasUsed uint64, gasPrice, actor string) error
 }

@@ -12,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestLatestMigrationsRollBack proves 000008 and 000009 are reversible before
-// retention has redacted data. A migration that cannot be undone turns a bad
-// deploy into a database restore; 000009 deliberately refuses rollback after
+// TestLatestMigrationsRollBack proves 000008 through 000010 are reversible
+// before retention has redacted data. A migration that cannot be undone turns a
+// bad deploy into a database restore; 000009 deliberately refuses rollback after
 // redaction because restoring invented authorization values would be worse.
 func TestFairUseMigrationRollsBack(t *testing.T) {
 	url := os.Getenv("ETH402_TEST_DATABASE_URL")
@@ -32,6 +32,19 @@ func TestFairUseMigrationRollsBack(t *testing.T) {
 	}
 	if _, err := conn.Exec(ctx, "TRUNCATE merchants CASCADE"); err != nil {
 		t.Fatal(err)
+	}
+	if err := migrate.Down(ctx, conn, migrations.Files); err != nil {
+		t.Fatalf("rolling back 000010: %v", err)
+	}
+	var backoffColumnExists bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name='ethereum_transactions' AND column_name='ambiguous_attempts'
+	)`).Scan(&backoffColumnExists); err != nil {
+		t.Fatal(err)
+	}
+	if backoffColumnExists {
+		t.Error("ambiguous_attempts survived the 000010 down migration")
 	}
 	if err := migrate.Down(ctx, conn, migrations.Files); err != nil {
 		t.Fatalf("rolling back 000009: %v", err)

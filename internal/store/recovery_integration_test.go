@@ -662,3 +662,149 @@ func TestConcurrentRecoveryWorkersDoNotBothActOnAPayment(t *testing.T) {
 		t.Fatalf("%d of %d instances claimed the payment, want exactly 1", winners, workers)
 	}
 }
+
+// TestAmbiguousRetryBackoff covers the backoff counter behind the ambiguous
+// re-broadcast spacing: each failed re-sign attempt must be durable, or a
+// restart would reset the cadence to per-tick KMS spend.
+func TestAmbiguousRetryBackoff(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("3c", 34))
+	if err := store.MarkTxSigned(ctx, work.TransactionID, strings.Repeat("e", 64), strings.Repeat("a", 64), 120000, "30000000000", "2000000000"); err != nil {
+		t.Fatalf("mark signed: %v", err)
+	}
+	if err := store.MarkTxAmbiguous(ctx, paymentID, work.TransactionID, "worker"); err != nil {
+		t.Fatalf("mark ambiguous: %v", err)
+	}
+	loaded, err := store.LoadSettlementWork(ctx, paymentID)
+	if err != nil {
+		t.Fatalf("load work: %v", err)
+	}
+	if loaded.AmbiguousAttempts != 0 || loaded.DBNow.IsZero() {
+		t.Fatalf("attempts = %d, db now zero = %v", loaded.AmbiguousAttempts, loaded.DBNow.IsZero())
+	}
+	for i := 1; i <= 2; i++ {
+		if err := store.MarkAmbiguousRetry(ctx, paymentID, work.TransactionID); err != nil {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+	}
+	loaded, err = store.LoadSettlementWork(ctx, paymentID)
+	if err != nil {
+		t.Fatalf("load work: %v", err)
+	}
+	if loaded.AmbiguousAttempts != 2 {
+		t.Fatalf("attempts = %d, want 2", loaded.AmbiguousAttempts)
+	}
+	// The stamp is guarded on the ambiguous status: a recovered transaction
+	// must not accept retry marks.
+	if err := store.MarkTxRecoveredBroadcast(ctx, paymentID, work.TransactionID,
+		"0x"+strings.Repeat("e", 64), "worker"); err != nil {
+		t.Fatalf("mark recovered: %v", err)
+	}
+	if err := store.MarkAmbiguousRetry(ctx, paymentID, work.TransactionID); err == nil {
+		t.Fatal("retry recorded against a recovered transaction")
+	}
+}
+
+// TestStuckGapFillerReplacementLifecycle covers the fee-bump path for an
+// underpriced gap filler: selection past the replacement window, the
+// replacement record with its exact signed bytes, both signatures watched,
+// and the nonce resolved whichever of them the network mines.
+func TestStuckGapFillerReplacementLifecycle(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	paymentID, work := seedBroadcastingPayment(t, store, strings.Repeat("4d", 34))
+	if err := store.MarkIntentExpired(ctx, paymentID, work.TransactionID, "worker"); err != nil {
+		t.Fatalf("mark expired: %v", err)
+	}
+	if err := store.MarkGapFillerPrepared(ctx, work.TransactionID,
+		strings.Repeat("8", 64), "0x"+strings.Repeat("8", 64), []byte{1, 2, 3},
+		120000, "30000000000", "2000000000"); err != nil {
+		t.Fatalf("prepare gap filler: %v", err)
+	}
+
+	// Freshly prepared: inside the replacement window, so not stuck yet.
+	stuck, err := store.ListStuckGapFillers(ctx, intentSigner, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("list stuck gap fillers: %v", err)
+	}
+	if len(stuck) != 0 {
+		t.Fatalf("freshly prepared filler selected as stuck: %+v", stuck)
+	}
+	if _, err := store.Pool.Exec(ctx,
+		`UPDATE ethereum_transactions SET broadcast_attempted_at = now() - interval '10 minutes' WHERE id = $1`,
+		work.TransactionID); err != nil {
+		t.Fatalf("age broadcast attempt: %v", err)
+	}
+	stuck, err = store.ListStuckGapFillers(ctx, intentSigner, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("list stuck gap fillers: %v", err)
+	}
+	if len(stuck) != 1 || stuck[0].TransactionID != work.TransactionID || stuck[0].Nonce != work.Nonce {
+		t.Fatalf("stuck = %+v", stuck)
+	}
+	if stuck[0].MaxFeePerGas != "30000000000" || stuck[0].MaxPriorityFeePerGas != "2000000000" ||
+		stuck[0].GasLimit != 120000 || stuck[0].Authorization.Value != "42" {
+		t.Fatalf("stuck work = %+v", stuck[0])
+	}
+
+	rawHash := strings.Repeat("c", 64)
+	replacement := settlement.Replacement{
+		Nonce: work.Nonce, TxHash: "0x" + rawHash, RawHash: rawHash,
+		GasLimit: 120000, MaxFee: "40000000000", PriorityFee: "3000000000", SignerAddress: intentSigner,
+	}
+	if err := store.MarkGapFillerReplaced(ctx, paymentID, work.TransactionID, replacement, []byte{4, 5, 6}); err != nil {
+		t.Fatalf("replace gap filler: %v", err)
+	}
+	status, _ := txRow(t, store, work.TransactionID)
+	if status != "replaced" {
+		t.Fatalf("original status = %s, want replaced", status)
+	}
+	// The replacement took over the active slot and the payment did not move.
+	if state := paymentState(t, store, paymentID); state != "expired" {
+		t.Fatalf("payment state = %s, want expired", state)
+	}
+	fillers, err := store.ListGapFillers(ctx)
+	if err != nil {
+		t.Fatalf("list gap fillers: %v", err)
+	}
+	if len(fillers) != 2 {
+		t.Fatalf("fillers = %+v, want both signatures watched", fillers)
+	}
+	statuses := map[string]string{}
+	var replacementID string
+	for _, filler := range fillers {
+		statuses[filler.Status] = filler.TransactionID
+		if filler.Status == "broadcast" {
+			replacementID = filler.TransactionID
+			if filler.TxHash != replacement.TxHash || string(filler.RawTransaction) != string([]byte{4, 5, 6}) {
+				t.Fatalf("replacement filler = %+v", filler)
+			}
+		}
+	}
+	if statuses["replaced"] != work.TransactionID || replacementID == "" {
+		t.Fatalf("fillers = %+v", fillers)
+	}
+
+	// The network mined the original rather than its bump: the revert still
+	// consumed the nonce, the never-minable replacement is dropped, and the
+	// watch ends.
+	if err := store.MarkGapFillerResolved(ctx, work.TransactionID, 64336, "1000000000"); err != nil {
+		t.Fatalf("resolve landed original: %v", err)
+	}
+	status, _ = txRow(t, store, work.TransactionID)
+	if status != "reverted" {
+		t.Fatalf("original status = %s, want reverted", status)
+	}
+	status, _ = txRow(t, store, replacementID)
+	if status != "dropped" {
+		t.Fatalf("replacement status = %s, want dropped", status)
+	}
+	fillers, err = store.ListGapFillers(ctx)
+	if err != nil {
+		t.Fatalf("list gap fillers: %v", err)
+	}
+	if len(fillers) != 0 {
+		t.Fatalf("fillers after resolve = %+v", fillers)
+	}
+}

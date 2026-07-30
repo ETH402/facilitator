@@ -3,6 +3,7 @@ package settlement
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -38,6 +39,7 @@ func ambiguousWork(raw []byte) Work {
 	work.MaxFeePerGas = "3000000000"
 	work.MaxPriorityFeePerGas = "1000000000"
 	work.TransactionUpdatedAt = time.Now()
+	work.DBNow = time.Now()
 	return work
 }
 
@@ -205,6 +207,59 @@ func TestResolveAmbiguousMissingFeesStaysManual(t *testing.T) {
 	}
 }
 
+// A failed identical re-broadcast must be recorded: the stamp re-arms the
+// backoff, so the next tick does not immediately re-sign (a paid KMS
+// operation) against a provider that keeps failing.
+func TestResolveAmbiguousFailedRebroadcastCountsRetry(t *testing.T) {
+	raw := []byte("raw-tx")
+	work := ambiguousWork(raw)
+	work.TransactionUpdatedAt = time.Now().Add(-time.Hour) // Past the backoff window.
+	store := &fakeStore{work: work}
+	chain := fakeChain{sendErr: context.DeadlineExceeded}
+	service := newTestService(store, fakeSigner{raw: raw, sigHash: testSigHash}, chain)
+	err := service.recoverPayment(context.Background(), work.PaymentID, "test")
+	if err == nil || !strings.Contains(err.Error(), "re-broadcast ambiguous transaction") {
+		t.Fatalf("err = %v", err)
+	}
+	if store.ambiguousRetries != 1 {
+		t.Fatalf("ambiguous retries recorded = %d, want 1", store.ambiguousRetries)
+	}
+	if store.recoveredTxHash != "" {
+		t.Fatalf("recovered despite the failed send: %q", store.recoveredTxHash)
+	}
+}
+
+// After a recorded failure the backoff window doubles per attempt, so a row
+// stamped a moment ago with one attempt against it is not re-signed yet.
+func TestResolveAmbiguousRetryBackoffSkipsReSign(t *testing.T) {
+	raw := []byte("raw-tx")
+	work := ambiguousWork(raw)
+	work.AmbiguousAttempts = 1             // One failed re-broadcast already recorded.
+	work.TransactionUpdatedAt = time.Now() // ...a moment ago: 2× grace has not elapsed.
+	store := &fakeStore{work: work}
+	signer := fakeSigner{raw: raw, sigHash: testSigHash, err: errors.New("must not sign during backoff")}
+	service := newTestService(store, signer, fakeChain{})
+	if err := service.recoverPayment(context.Background(), work.PaymentID, "test"); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if store.recoveredTxHash != "" || store.ambiguousRetries != 0 {
+		t.Fatalf("backed-off row was retried: %q / %d", store.recoveredTxHash, store.ambiguousRetries)
+	}
+}
+
+func TestAmbiguousRetryDelay(t *testing.T) {
+	grace := 2 * time.Minute
+	for attempts, want := range map[int]time.Duration{
+		0: grace, 1: 2 * grace, 2: 4 * grace, 5: 32 * grace,
+		// Capped at 32×: retries slow to a cadence, never to silence.
+		6: 32 * grace, 100: 32 * grace,
+	} {
+		if got := ambiguousRetryDelay(attempts, grace); got != want {
+			t.Errorf("delay(%d) = %v, want %v", attempts, got, want)
+		}
+	}
+}
+
 func stuckWork() Work {
 	work := pendingWork()
 	work.TransactionStatus = "broadcast"
@@ -215,6 +270,7 @@ func stuckWork() Work {
 	work.MaxFeePerGas = "2000000000"
 	work.MaxPriorityFeePerGas = "1000000000"
 	work.BroadcastAttemptedAt = time.Now().Add(-time.Hour)
+	work.DBNow = time.Now()
 	return work
 }
 
@@ -279,9 +335,12 @@ func TestObserveReplacementsLanded(t *testing.T) {
 		store := &fakeStore{
 			replacedPending: []TrackedTransaction{{PaymentID: "payment-1", TransactionID: "tx-1", TxHash: txHash}},
 		}
-		chain := fakeChain{receipts: map[string]*ethereum.Receipt{
-			txHash: {Status: status, BlockNumber: 100, BlockHash: "0xblock"},
-		}}
+		chain := fakeChain{
+			block: 111, // depth 12 at receipt block 100: final for a revert too
+			receipts: map[string]*ethereum.Receipt{
+				txHash: {Status: status, BlockNumber: 100, BlockHash: "0xblock"},
+			},
+		}
 		service := newTestService(store, fakeSigner{}, chain)
 		worker := service.RecoveryWorker()
 		worker.observeReplacements(context.Background())
@@ -291,6 +350,30 @@ func TestObserveReplacementsLanded(t *testing.T) {
 		if store.landedSucceeded != (status == 1) {
 			t.Fatalf("status %d: succeeded = %v", status, store.landedSucceeded)
 		}
+	}
+}
+
+// A mined original that reverted finalizes the payment, so it must wait out
+// the same confirmation depth as a success: recording it early lets a reorg
+// resurrect a payment already marked reverted. A success needs no such gate —
+// it only enters confirming, which the confirmation worker watches to
+// finality.
+func TestObserveReplacementsRevertedWaitsForFinality(t *testing.T) {
+	txHash := "0x" + strings.Repeat("cc", 32)
+	store := &fakeStore{
+		replacedPending: []TrackedTransaction{{PaymentID: "payment-1", TransactionID: "tx-1", TxHash: txHash}},
+	}
+	chain := fakeChain{
+		block: 105, // depth 6 of 12
+		receipts: map[string]*ethereum.Receipt{
+			txHash: {Status: 0, BlockNumber: 100, BlockHash: "0xblock"},
+		},
+	}
+	service := newTestService(store, fakeSigner{}, chain)
+	worker := service.RecoveryWorker()
+	worker.observeReplacements(context.Background())
+	if store.landed {
+		t.Fatal("reverted original finalized below the confirmation depth")
 	}
 }
 
@@ -307,6 +390,86 @@ func TestFillNonceGapBroadcasts(t *testing.T) {
 	}
 	if string(store.gapFillerRaw) != string(raw) {
 		t.Fatalf("prepared raw = %q, want %q", store.gapFillerRaw, raw)
+	}
+}
+
+// A gap filler that sits pending underpriced must get the same fee-bump path
+// as any stuck broadcast: without it the filler never consumes the nonce it
+// was created to free, blocking every later nonce of the signer.
+func TestBumpStuckGapFiller(t *testing.T) {
+	raw := []byte("gap-filler-bump-raw")
+	work := pendingWork()
+	work.TransactionStatus = "broadcast"
+	work.TxHash = "0x" + strings.Repeat("cc", 32)
+	work.GasLimit = 100000
+	work.MaxFeePerGas = "2000000000"
+	work.MaxPriorityFeePerGas = "1000000000"
+	store := &fakeStore{stuckGapWorks: []Work{work}}
+	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	worker := service.RecoveryWorker()
+	worker.bumpStuckGapFillers(context.Background())
+	if !store.gapFillerReplaced {
+		t.Fatal("gap filler replacement was not recorded")
+	}
+	// Same fee math as a stuck payment broadcast: tip 1 gwei bumped to 1.125,
+	// maxFee = 2*1 + 1.125 = 3.125 gwei beneath the 30 gwei ceiling.
+	if store.gapFillerBump.MaxFee != "3125000000" {
+		t.Fatalf("replacement max fee = %q", store.gapFillerBump.MaxFee)
+	}
+	if store.gapFillerBump.PriorityFee != "1125000000" {
+		t.Fatalf("replacement priority fee = %q", store.gapFillerBump.PriorityFee)
+	}
+	if store.gapFillerBump.Nonce != work.Nonce {
+		t.Fatalf("replacement nonce = %d, want %d", store.gapFillerBump.Nonce, work.Nonce)
+	}
+	if string(store.gapFillerBumpRaw) != string(raw) {
+		t.Fatalf("replacement raw = %q, want the exact signed bytes", store.gapFillerBumpRaw)
+	}
+}
+
+// A replaced gap-filler original stays watched — the network may still mine
+// it — but is never re-broadcast: its fee-bumped replacement is the active
+// broadcast, and re-sending the lower-fee original accomplishes nothing.
+func TestObserveGapFillerReplacedOriginalOnlyWatches(t *testing.T) {
+	txHash := "0x" + strings.Repeat("ee", 32)
+	store := &fakeStore{gapFillers: []TrackedTransaction{{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, Status: "replaced", RawTransaction: []byte("original-raw"),
+	}}}
+	var sent string
+	chain := fakeChain{
+		sentRaw:      &sent,
+		receipts:     map[string]*ethereum.Receipt{txHash: nil},
+		transactions: map[string]*ethereum.ChainTransaction{},
+	}
+	service := newTestService(store, fakeSigner{}, chain)
+	worker := service.RecoveryWorker()
+	worker.observeGapFillers(context.Background())
+	if sent != "" {
+		t.Fatalf("replaced original was re-broadcast: %q", sent)
+	}
+	if store.gapFillerResolved {
+		t.Fatal("replaced original resolved without a receipt")
+	}
+}
+
+// When the network mines the replaced original instead of its bump, that
+// revert still consumed the nonce: the fill succeeded.
+func TestObserveGapFillerReplacedOriginalLanded(t *testing.T) {
+	txHash := "0x" + strings.Repeat("ee", 32)
+	store := &fakeStore{gapFillers: []TrackedTransaction{{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, Status: "replaced", RawTransaction: []byte("original-raw"),
+	}}}
+	chain := fakeChain{receipts: map[string]*ethereum.Receipt{
+		txHash: {Status: 0, BlockNumber: 100, GasUsed: 51000, EffectiveGasPrice: "1000000000"},
+	}}
+	service := newTestService(store, fakeSigner{}, chain)
+	worker := service.RecoveryWorker()
+	worker.observeGapFillers(context.Background())
+	if !store.gapFillerResolved {
+		t.Fatal("landed replaced original was not resolved")
 	}
 }
 
