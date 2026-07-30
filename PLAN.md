@@ -128,10 +128,13 @@ Not blocking the milestone, but each one is a control that is weaker than it loo
 - [x] privacy-preserving analytics — posture documented in `docs/PRIVACY.md`;
       settled volume withheld by default because polling a cumulative total
       recovers individual payment amounts
-- [x] KMS-fronted policy signer, moving the zero-value/USDC-selector allowlist out
-      of the ETH402 process and into the signing boundary — the boundary receives
-      authorization fields rather than a transaction, so it builds what it signs
-      and the restriction is structural rather than a check
+- [x] KMS-fronted policy signer, adding the signing boundary as a second,
+      structural enforcement of the zero-value/USDC-selector allowlist — the
+      boundary receives authorization fields rather than a transaction, so it
+      builds what it signs and the restriction is structural rather than a check.
+      The in-process allowlist (`signer.Transaction.Validate`) was not moved out;
+      it still runs and is kept deliberately as a redundant fail-fast (ADR-0004
+      decision 8)
 
 Milestone 4 is complete.
 

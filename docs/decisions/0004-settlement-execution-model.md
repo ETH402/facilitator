@@ -360,14 +360,13 @@ New surface this implies. Delivered:
   from the signer address; a proven revert retires the intent unsigned and
   unbroadcast
 
-Outstanding, and each one weakens a control this ADR claims:
-
-- **a minimum-balance threshold and burn-rate alert** for the signer address.
-  Decision 8 makes the bounded hot balance the operative signer-compromise
-  control, so without the alert the bound is a convention rather than a control.
-
 Resolved since:
 
+- **the minimum-balance threshold and burn-rate alert** for the signer address,
+  which was outstanding when this ADR was written and left decision 8's bounded
+  hot balance a convention rather than a control. The `eth402_signer_balance_*`
+  metrics and the threshold, burn-rate, staleness, and read-failure rules in
+  `deploy/alerts.yml` now make it a monitored control.
 - **Cloud KMS signing is not reproducible** — confirmed against the production
   key (three signatures of one transaction, three distinct raw hashes). This
   invalidated decision 4's original raw-hash identity check; recovery now

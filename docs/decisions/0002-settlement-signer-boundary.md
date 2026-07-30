@@ -10,3 +10,10 @@ explicit dangerous override.
 
 Payment intent, calldata identity, and Ethereum nonce are persisted before
 broadcast. Ambiguous broadcasts are reconciled, never blindly retried.
+
+Amendment — 2026-07-30: production no longer permits the dangerous override
+this ADR allowed. `Config.Validate` rejects `ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER`
+and any raw signer key in production outright, and requires
+`ETH402_SIGNER_MODE` to be `policy` (the KMS-fronted policy signer of ADR-0004
+decision 8) or `disabled`; the direct `external`/KMS and `development` modes are
+rejected in production.
