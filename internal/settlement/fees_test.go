@@ -33,13 +33,28 @@ func TestEstimateFees(t *testing.T) {
 
 func TestBumpFees(t *testing.T) {
 	t.Parallel()
-	// 12.5% tip bump with fresh base fee, under the ceiling.
+	// 12.5% tip bump with fresh base fee, under the ceiling; the mempool's
+	// price-bump rule then raises the cap to 110% of the original (4.4 gwei).
 	maxFee, tip, ok := BumpFees(big.NewInt(4_000_000_000), big.NewInt(2_000_000_000), big.NewInt(1_000_000_000), big.NewInt(30_000_000_000))
 	if !ok {
 		t.Fatal("bump rejected")
 	}
-	if tip.String() != "2250000000" || maxFee.String() != "4250000000" {
+	if tip.String() != "2250000000" || maxFee.String() != "4400000000" {
 		t.Fatalf("maxFee=%s tip=%s", maxFee, tip)
+	}
+	// The realistic case: tip far below base fee. The estimate (21.125 gwei)
+	// would be rejected as underpriced; the cap must reach 110% of the
+	// original's 21 gwei, or the node never accepts the replacement.
+	maxFee, tip, ok = BumpFees(big.NewInt(21_000_000_000), big.NewInt(1_000_000_000), big.NewInt(10_000_000_000), big.NewInt(30_000_000_000))
+	if !ok {
+		t.Fatal("bump rejected")
+	}
+	if tip.String() != "1125000000" || maxFee.String() != "23100000000" {
+		t.Fatalf("maxFee=%s tip=%s, want the 110%% floor", maxFee, tip)
+	}
+	// A ceiling beneath the 110% floor means no acceptable replacement exists.
+	if _, _, ok = BumpFees(big.NewInt(21_000_000_000), big.NewInt(1_000_000_000), big.NewInt(10_000_000_000), big.NewInt(22_000_000_000)); ok {
+		t.Fatal("bump beneath the mempool price-bump floor accepted")
 	}
 	// A zero tip still climbs by the 1 wei minimum.
 	_, tip, ok = BumpFees(big.NewInt(2_000_000_000), big.NewInt(0), big.NewInt(1_000_000_000), big.NewInt(30_000_000_000))

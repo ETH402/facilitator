@@ -230,7 +230,8 @@ func TestReplaceStuckBroadcastsReplacement(t *testing.T) {
 		t.Fatal("replacement was not recorded")
 	}
 	// baseFee 1 gwei, old tip 1 gwei bumped to 1.125 gwei:
-	// maxFee = 2*1 + 1.125 = 3.125 gwei, beneath the 30 gwei ceiling.
+	// maxFee = 2*1 + 1.125 = 3.125 gwei, above the 110% floor of the old
+	// 2 gwei cap and beneath the 30 gwei ceiling.
 	if store.replacement.MaxFee != "3125000000" {
 		t.Fatalf("replacement max fee = %q", store.replacement.MaxFee)
 	}
