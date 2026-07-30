@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	kms "cloud.google.com/go/kms/apiv1"
 	"cloud.google.com/go/kms/apiv1/kmspb"
@@ -39,12 +40,19 @@ type KMSAPI interface {
 	GetPublicKey(ctx context.Context, req *kmspb.GetPublicKeyRequest, opts ...gax.CallOption) (*kmspb.PublicKey, error)
 }
 
+// kmsStartupTimeout bounds the startup public-key fetch. Signing calls carry
+// the caller's signing timeout, but construction runs before any of that
+// wiring — an unresponsive KMS must fail startup, not block it forever.
+const kmsStartupTimeout = 30 * time.Second
+
 // NewCloudKMS resolves the signer's address from the key's public key at
 // construction, so a misconfigured key name or missing permission fails at
 // startup rather than on the first settlement. keyName must name a key
 // version: projects/*/locations/*/keyRings/*/cryptoKeys/*/cryptoKeyVersions/*.
 func NewCloudKMS(ctx context.Context, api KMSAPI, keyName string) (*CloudKMS, error) {
-	public, err := api.GetPublicKey(ctx, &kmspb.GetPublicKeyRequest{Name: keyName})
+	fetchCtx, cancel := context.WithTimeout(ctx, kmsStartupTimeout)
+	defer cancel()
+	public, err := api.GetPublicKey(fetchCtx, &kmspb.GetPublicKeyRequest{Name: keyName})
 	if err != nil {
 		return nil, fmt.Errorf("fetch KMS public key: %w", err)
 	}

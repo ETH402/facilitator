@@ -31,14 +31,38 @@ func TestReadFallback(t *testing.T) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer primary.Close()
-	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x2a"}`))
+	// The fallback is the second attempt, so the request id has moved on; a
+	// compliant endpoint echoes whatever id the request carried.
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(request.ID) + `,"result":"0x2a"}`))
 	}))
 	defer fallback.Close()
 	client := NewClient(primary.URL, fallback.URL, time.Second, 1)
 	got, err := client.BlockNumber(context.Background())
 	if err != nil || got != 42 {
 		t.Fatalf("got %d, %v", got, err)
+	}
+}
+
+// A response whose id does not match the request must error: trusting it
+// would attribute another request's result — or another request's error — to
+// this call.
+func TestResponseIDMismatchRejected(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":999,"result":"0x1"}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "", time.Second, 0)
+	if _, err := client.ChainID(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "does not match request id") {
+		t.Fatalf("err = %v, want a response id mismatch", err)
 	}
 }
 

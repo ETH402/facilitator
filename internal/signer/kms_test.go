@@ -265,3 +265,27 @@ func TestAddressFromPEMRejectsGarbage(t *testing.T) {
 		t.Fatal("accepted an unparseable public key")
 	}
 }
+
+// The startup public-key fetch carries its own timeout: signing calls are
+// bounded by the caller's signing timeout, but construction runs before any
+// of that wiring, and an unresponsive KMS must fail startup rather than block
+// it forever.
+func TestNewCloudKMSBoundsStartupFetch(t *testing.T) {
+	fake := &deadlineCheckingKMS{fakeKMS: newFakeKMS(t)}
+	if _, err := NewCloudKMS(context.Background(), fake, testKeyName); err != nil {
+		t.Fatalf("NewCloudKMS: %v", err)
+	}
+	if !fake.sawDeadline {
+		t.Fatal("startup public-key fetch ran without a deadline")
+	}
+}
+
+type deadlineCheckingKMS struct {
+	*fakeKMS
+	sawDeadline bool
+}
+
+func (f *deadlineCheckingKMS) GetPublicKey(ctx context.Context, req *kmspb.GetPublicKeyRequest, opts ...gax.CallOption) (*kmspb.PublicKey, error) {
+	_, f.sawDeadline = ctx.Deadline()
+	return f.fakeKMS.GetPublicKey(ctx, req, opts...)
+}

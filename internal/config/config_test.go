@@ -95,6 +95,25 @@ func TestSignerRequiresExplicitGasCeiling(t *testing.T) {
 	}
 }
 
+// A gas limit below the floor is not a tuning choice: transferWithAuthorization
+// costs well above 21k gas, so a lower limit guarantees every settlement
+// transaction runs out of gas while still paying for the revert.
+func TestGasLimitFloor(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.SignerMode = "development"
+	cfg.DevSignerKey = "development-only-placeholder"
+	cfg.MaxFeePerGasWei = "30000000000"
+	cfg.MaxGasLimit = 21000
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("gas limit below the floor accepted")
+	}
+	cfg.MaxGasLimit = MinGasLimit
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("gas limit at the floor rejected: %v", err)
+	}
+}
+
 func TestExternalSignerRequiresKMSKeyName(t *testing.T) {
 	t.Parallel()
 	cfg := validConfig()
@@ -242,7 +261,7 @@ func TestProductionRequiresPolicySigner(t *testing.T) {
 	cfg.SignerMode = "external"
 	cfg.KMSKeyName = "projects/eth402/locations/europe-west1/keyRings/settlement/cryptoKeys/signer/cryptoKeyVersions/1"
 	cfg.MaxFeePerGasWei = "1"
-	cfg.MaxGasLimit = 1
+	cfg.MaxGasLimit = MinGasLimit
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("production accepted direct KMS mode")
 	}
@@ -254,7 +273,7 @@ func TestPolicySignerRequiresAnOriginURL(t *testing.T) {
 	cfg.SignerMode = "policy"
 	cfg.PolicySignerToken = "01234567890123456789012345678901"
 	cfg.MaxFeePerGasWei = "1"
-	cfg.MaxGasLimit = 1
+	cfg.MaxGasLimit = MinGasLimit
 	for _, endpoint := range []string{
 		"https://user:password@signer.example",
 		"https://signer.example/path",

@@ -20,6 +20,13 @@ const (
 	MainnetChainID = uint64(1)
 	MainnetNetwork = "eip155:1"
 	MainnetUSDC    = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+
+	// MinGasLimit floors ETH402_MAX_GAS_LIMIT. A transferWithAuthorization on
+	// mainnet USDC costs well above the 21,000-gas plain-transfer floor
+	// (roughly 50–65k depending on the payer's balance state), so a lower
+	// limit is not a tuning choice but a guarantee that every settlement
+	// transaction runs out of gas while still paying for it.
+	MinGasLimit = uint64(100_000)
 )
 
 type Config struct {
@@ -318,6 +325,12 @@ func (c Config) Validate() error {
 	// zero means unset, not unlimited. See docs/OPERATIONS.md.
 	if c.SignerMode != "disabled" && (!maxFeeOK || maxFee.Sign() <= 0 || c.MaxGasLimit == 0) {
 		errs = append(errs, errors.New("enabling a settlement signer requires non-zero max fee per gas and max gas limit"))
+	}
+	// Below the floor every settlement transaction is guaranteed to run out of
+	// gas — the operator pays for a certain revert. Zero stays "unset" and is
+	// handled by the signer gate above.
+	if c.MaxGasLimit != 0 && c.MaxGasLimit < MinGasLimit {
+		errs = append(errs, fmt.Errorf("max gas limit must be zero (unset) or at least %d", MinGasLimit))
 	}
 	seenDomains := make(map[string]bool, len(c.EmailAllowlist))
 	for _, domain := range c.EmailAllowlist {

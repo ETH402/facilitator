@@ -131,6 +131,7 @@ func (e *RPCError) Reverted() bool {
 }
 
 type rpcResponse struct {
+	ID     json.RawMessage `json:"id"`
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
 		Code    int    `json:"code"`
@@ -181,7 +182,8 @@ func (c *Client) readRaw(ctx context.Context, method string, params []any) (json
 }
 
 func (c *Client) call(ctx context.Context, target, method string, params []any) (json.RawMessage, error) {
-	payload, err := json.Marshal(rpcRequest{JSONRPC: "2.0", Method: method, Params: params, ID: c.id.Add(1)})
+	requestID := c.id.Add(1)
+	payload, err := json.Marshal(rpcRequest{JSONRPC: "2.0", Method: method, Params: params, ID: requestID})
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +210,13 @@ func (c *Client) call(ctx context.Context, target, method string, params []any) 
 	var decoded rpcResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, err
+	}
+	// The response must answer this request: a missing or mismatched id means
+	// the endpoint is misbehaving (or a proxy crossed streams), and trusting
+	// the payload would attribute another request's result to this one.
+	var responseID uint64
+	if err := json.Unmarshal(decoded.ID, &responseID); err != nil || responseID != requestID {
+		return nil, fmt.Errorf("RPC response id %s does not match request id %d", decoded.ID, requestID)
 	}
 	if decoded.Error != nil {
 		return nil, &RPCError{Code: decoded.Error.Code, Message: decoded.Error.Message}

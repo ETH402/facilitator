@@ -85,6 +85,22 @@ func TestTransferWithAuthorizationDataRoundTrip(t *testing.T) {
 	}
 }
 
+// transferWithAuthorization takes nine static arguments behind a 4-byte
+// selector, so the payload is exactly 4 + 9×32 bytes. Pinning the length means
+// a future edit — a tuple refactor, a dynamic type — cannot silently change
+// the encoding shape while leaving every field-level assertion passing.
+func TestTransferWithAuthorizationDataLengthIsPinned(t *testing.T) {
+	t.Parallel()
+	data, err := TransferWithAuthorizationData(testAuthorization())
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	const want = 4 + 9*32
+	if len(data) != want {
+		t.Fatalf("calldata length = %d, want %d (4-byte selector + 9×32-byte words)", len(data), want)
+	}
+}
+
 func TestTransferWithAuthorizationDataRejectsBadInput(t *testing.T) {
 	cases := map[string]func(*Authorization){
 		"bad from":    func(a *Authorization) { a.From = "not-an-address" },

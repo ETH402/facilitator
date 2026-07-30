@@ -93,7 +93,10 @@ transactions.
 Gas maximums are typed decimal configuration. Enabling any non-disabled
 `ETH402_SIGNER_MODE` requires non-zero `ETH402_MAX_FEE_PER_GAS_WEI` and
 `ETH402_MAX_GAS_LIMIT`: zero means unset, not unlimited, so a signer cannot be
-switched on without an explicit spend ceiling. A priority fee above the total
+switched on without an explicit spend ceiling. A non-zero gas limit below
+100,000 is rejected outright: a USDC `transferWithAuthorization` costs well
+above the 21,000-gas plain-transfer floor, so a lower limit only guarantees
+out-of-gas reverts the operator still pays for. A priority fee above the total
 fee ceiling is also rejected. Settlement transactions are estimated beneath the
 ceiling — initial max fee is `min(2·baseFee + tip, ETH402_MAX_FEE_PER_GAS_WEI)`
 — so the ceiling is a bound, not the spend; the worst-case per-settlement cost
