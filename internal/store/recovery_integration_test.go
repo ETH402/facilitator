@@ -86,6 +86,18 @@ func TestRecoveredBroadcastReturnsToPipeline(t *testing.T) {
 	if status != "broadcast" || hash != txHash {
 		t.Fatalf("status=%s hash=%s", status, hash)
 	}
+	// The recovery timestamp makes the transaction bump-eligible: without it
+	// replaceStuck ignored recovered transactions and an underpriced one wedged
+	// the signer's nonce sequence forever.
+	var attemptedAt *time.Time
+	if err := store.Pool.QueryRow(ctx,
+		`SELECT broadcast_attempted_at FROM ethereum_transactions WHERE id = $1`, work.TransactionID).
+		Scan(&attemptedAt); err != nil {
+		t.Fatal(err)
+	}
+	if attemptedAt == nil {
+		t.Fatal("recovered transaction has no broadcast_attempted_at; it can never be fee-bumped")
+	}
 	var transitions int
 	if err := store.Pool.QueryRow(ctx, `
 SELECT count(*) FROM payment_transitions
@@ -304,6 +316,66 @@ func TestReplacementLandedReverted(t *testing.T) {
 		t.Fatalf("original status = %s, want reverted", status)
 	}
 	status, _ = txRow(t, store, active.TransactionID)
+	if status != "dropped" {
+		t.Fatalf("replacement status = %s, want dropped", status)
+	}
+}
+
+// TestReplacementLandedAfterReorgOut covers the reorg race: the replacement
+// was sighted mined (payment confirming), its block left the canonical chain
+// (payment back to broadcast), and only then did the original land. The
+// landing must still resolve — guarding on the replaced state alone rolled
+// the whole update back every recovery tick and wedged the payment.
+func TestReplacementLandedAfterReorgOut(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	paymentID, original, active := seedReplaced(t, store, strings.Repeat("7a", 34))
+	blockHash := "0x" + strings.Repeat("c", 64)
+	if err := store.MarkTxConfirming(ctx, paymentID, active.TransactionID, 100, blockHash, "worker"); err != nil {
+		t.Fatalf("mark confirming: %v", err)
+	}
+	if err := store.MarkTxReorgedOut(ctx, paymentID, active.TransactionID, "worker"); err != nil {
+		t.Fatalf("mark reorged out: %v", err)
+	}
+	if state := paymentState(t, store, paymentID); state != "broadcast" {
+		t.Fatalf("state = %s, want broadcast after reorg", state)
+	}
+	if err := store.MarkReplacementLanded(ctx, paymentID, original.TransactionID,
+		true, 101, blockHash, 64336, "1000000000", "worker"); err != nil {
+		t.Fatalf("mark landed: %v", err)
+	}
+	if state := paymentState(t, store, paymentID); state != "confirming" {
+		t.Fatalf("state = %s, want confirming", state)
+	}
+	status, _ := txRow(t, store, original.TransactionID)
+	if status != "confirming" {
+		t.Fatalf("original status = %s, want confirming", status)
+	}
+	status, _ = txRow(t, store, active.TransactionID)
+	if status != "dropped" {
+		t.Fatalf("replacement status = %s, want dropped", status)
+	}
+}
+
+// TestReplacementLandedRevertedWhileConfirming is the same race with the
+// opposite outcome: the sighting of the replacement is contradicted by the
+// original mining and reverting, so the payment must resolve to reverted.
+func TestReplacementLandedRevertedWhileConfirming(t *testing.T) {
+	store := settlementTestStore(t)
+	ctx := context.Background()
+	paymentID, original, active := seedReplaced(t, store, strings.Repeat("8b", 34))
+	blockHash := "0x" + strings.Repeat("c", 64)
+	if err := store.MarkTxConfirming(ctx, paymentID, active.TransactionID, 100, blockHash, "worker"); err != nil {
+		t.Fatalf("mark confirming: %v", err)
+	}
+	if err := store.MarkReplacementLanded(ctx, paymentID, original.TransactionID,
+		false, 0, "", 64336, "1000000000", "worker"); err != nil {
+		t.Fatalf("mark landed: %v", err)
+	}
+	if state := paymentState(t, store, paymentID); state != "reverted" {
+		t.Fatalf("state = %s, want reverted", state)
+	}
+	status, _ := txRow(t, store, active.TransactionID)
 	if status != "dropped" {
 		t.Fatalf("replacement status = %s, want dropped", status)
 	}

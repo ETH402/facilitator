@@ -14,7 +14,10 @@ import (
 // transaction — found on chain, found pending, or re-broadcast identically —
 // and returns the payment to the broadcast pipeline. From here the
 // confirmation worker observes it like any other broadcast; recovery never
-// finalizes anything itself.
+// finalizes anything itself. broadcast_attempted_at is stamped so the stuck
+// pipeline can fee-bump the transaction after the usual window — without it a
+// recovered transaction was invisible to replaceStuck and could wedge pending
+// forever, head-of-line blocking the signer's nonce sequence.
 func (s *Store) MarkTxRecoveredBroadcast(ctx context.Context, paymentID, transactionID, txHash, actor string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -23,7 +26,7 @@ func (s *Store) MarkTxRecoveredBroadcast(ctx context.Context, paymentID, transac
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `
 UPDATE ethereum_transactions
-SET status = 'broadcast', tx_hash = $3, updated_at = now()
+SET status = 'broadcast', tx_hash = $3, broadcast_attempted_at = now(), updated_at = now()
 WHERE id = $2 AND payment_id = $1 AND status = 'ambiguous'`, paymentID, transactionID, txHash)
 	if err != nil {
 		return err
@@ -206,7 +209,22 @@ WHERE id = $2 AND payment_id = $1 AND status = 'replaced'`, paymentID, minedTxID
 	if !succeeded {
 		to = settlement.StateReverted
 	}
-	if err := transitionPayment(ctx, tx, paymentID, settlement.StateReplaced, to, actor); err != nil {
+	// The payment is usually replaced, but ListReplacedPending deliberately
+	// watches more states: a reorg can return the payment to broadcast before
+	// the original lands, and a reverted original can contradict a confirming
+	// sighting of the replacement (its block left the canonical chain). All
+	// three states resolve to the same truth; guarding on replaced alone
+	// rolled this whole update back every tick and wedged the payment.
+	from := []settlement.State{settlement.StateReplaced, settlement.StateBroadcast, settlement.StateConfirming}
+	if succeeded {
+		// confirming → confirming is no edge: a succeeded original while the
+		// payment is confirming means the confirmation worker already sighted
+		// the replacement mined, which the same canonical chain contradicts —
+		// leave that to MarkTxReorgedOut and retry on the next tick.
+		from = from[:2]
+	}
+	if err := transitionPaymentIn(ctx, tx, paymentID, from, to, actor,
+		`state = '`+string(to)+`'`); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
