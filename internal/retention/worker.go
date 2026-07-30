@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/store"
@@ -55,6 +56,18 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) process(ctx context.Context) {
+	// Workers run as bare goroutines, where an unrecovered panic terminates the
+	// whole process (see guard in internal/settlement/worker.go). Recover per
+	// pass so one bad pass neither kills the process nor stops future passes.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			w.config.Logger.ErrorContext(ctx, "retention worker panic recovered",
+				"panic", recovered, "stack", string(debug.Stack()))
+			if w.config.Observer != nil {
+				w.config.Observer.ObserveRetention(0, true, w.now().UTC())
+			}
+		}
+	}()
 	now := w.now().UTC()
 	result, err := w.config.Store.ApplyRetention(ctx, store.RetentionRequest{
 		Now: now, PaymentAfter: w.config.PaymentAfter,

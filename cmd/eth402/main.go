@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -349,16 +350,27 @@ func pruneFairUse(ctx context.Context, database *store.Store, window time.Durati
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			removed, err := store.PruneMerchantUsage(ctx, database.Pool, window, time.Now())
-			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					logger.WarnContext(ctx, "fair-use pruning failed", "error", err)
+			// Recover per tick, like the settlement workers' guard: this
+			// goroutine is bare, so an unrecovered panic would terminate the
+			// whole process and take HTTP serving down with it.
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						logger.ErrorContext(ctx, "fair-use pruning panic recovered",
+							"panic", recovered, "stack", string(debug.Stack()))
+					}
+				}()
+				removed, err := store.PruneMerchantUsage(ctx, database.Pool, window, time.Now())
+				if err != nil {
+					if !errors.Is(err, context.Canceled) {
+						logger.WarnContext(ctx, "fair-use pruning failed", "error", err)
+					}
+					return
 				}
-				continue
-			}
-			if removed > 0 {
-				logger.InfoContext(ctx, "pruned elapsed fair-use windows", "rows", removed)
-			}
+				if removed > 0 {
+					logger.InfoContext(ctx, "pruned elapsed fair-use windows", "rows", removed)
+				}
+			}()
 		}
 	}
 }

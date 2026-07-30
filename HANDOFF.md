@@ -109,11 +109,6 @@ Mainnet-fork e2e (optional, slow): see `docs/LOCAL_DEVELOPMENT.md`
   (payment already terminal; nonce-hygiene edge only).
 - `internal/settlement/recovery.go` has not had a fully independent read;
   it is in scope for the security review.
-- Two background workers are unguarded: the retention worker and the
-  fair-use prune loop (`cmd/eth402/main.go`). Unlike the settlement
-  workers, which recover per tick (`guard` in
-  `internal/settlement/worker.go`), a panic in either crashes the whole
-  facilitator. Alerting catches it, but treat it as an open fix.
 
 ## Environment
 

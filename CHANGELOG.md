@@ -148,6 +148,14 @@ versioned where noted.
   last *completed* tick rather than a flag the worker sets, because a wedged worker
   never gets around to clearing its own flag.
 
+### Fixed
+
+- The retention worker and the fair-use pruning loop now recover panics per
+  tick, like the settlement workers' guard. Both ran as bare goroutines, so
+  one malformed row could have terminated the whole facilitator; now a
+  panicking pass is logged with a stack, observed as a failed retention
+  pass, and the worker keeps ticking.
+
 ### Removed
 
 - Placeholder metrics published as literal zeros: `eth402_confirmation_lag_blocks`,
