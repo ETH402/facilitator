@@ -13,6 +13,12 @@ type SettleRequest = verification.Request
 // Distinct from the intent.go reason codes, which are the durable audit record;
 // these are the public contract and must not change without an OpenAPI bump.
 const (
+	// WireReasonInvalidRequest means the payment is not acceptable to this
+	// facilitator — the same rejections /verify reports with its own specific
+	// reasons. The specific reason travels in errorMessage as a diagnostic so
+	// the public enum stays closed.
+	WireReasonInvalidRequest = "invalid_request"
+
 	WireReasonPaymentNotFound       = ReasonPaymentNotFound
 	WireReasonPaymentNotVerified    = ReasonPaymentNotVerified
 	WireReasonRecipientNotMerchant  = ReasonRecipientNotMerchant

@@ -125,7 +125,12 @@ func NewService(store Store, transactionSigner signer.Signer, chain Chain, cfg C
 func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.SettleResponse, error) {
 	payment, reason := verification.ParseRequest(request)
 	if reason != "" {
-		return rejected(reason, payment), nil
+		// Parse rejections name a payment /verify would have refused. The
+		// specific reason is diagnostic, not contract — the OpenAPI enum is
+		// closed — so it travels in errorMessage behind invalid_request.
+		response := rejected(WireReasonInvalidRequest, payment)
+		response.ErrorMessage = "payment is not acceptable to this facilitator: " + reason
+		return response, nil
 	}
 	intent, err := s.store.CreateSettlementIntent(ctx, IntentRequest{
 		PaymentIdentity: payment.Identity,

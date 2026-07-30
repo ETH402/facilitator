@@ -17,12 +17,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ETH402/facilitator/internal/config"
 	"github.com/ETH402/facilitator/internal/ethereum"
 	"github.com/ETH402/facilitator/internal/merchant"
 	"github.com/ETH402/facilitator/internal/metrics"
 	"github.com/ETH402/facilitator/internal/settlement"
 	"github.com/ETH402/facilitator/internal/stats"
 	"github.com/ETH402/facilitator/internal/verification"
+	x402 "github.com/x402-foundation/x402/go/v2"
 )
 
 const maxRequestBody = 1 << 20
@@ -123,8 +125,9 @@ func (d Dependencies) verify(w http.ResponseWriter, r *http.Request) {
 
 func (d Dependencies) settle(w http.ResponseWriter, r *http.Request) {
 	if d.Settlement == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"success": false, "errorReason": settlement.WireReasonSettlementUnavailable,
+		writeJSON(w, http.StatusServiceUnavailable, x402.SettleResponse{
+			Success: false, ErrorReason: settlement.WireReasonSettlementUnavailable,
+			Network: config.MainnetNetwork,
 		})
 		return
 	}
@@ -132,8 +135,9 @@ func (d Dependencies) settle(w http.ResponseWriter, r *http.Request) {
 	if err := DecodeStrict(w, r, &request); err != nil {
 		d.Metrics.IncSettlement()
 		d.Metrics.IncSettlementFailure()
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"success": false, "errorReason": "invalid_request",
+		writeJSON(w, http.StatusBadRequest, x402.SettleResponse{
+			Success: false, ErrorReason: settlement.WireReasonInvalidRequest,
+			Network: config.MainnetNetwork,
 		})
 		return
 	}
@@ -142,8 +146,9 @@ func (d Dependencies) settle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		d.Metrics.IncSettlementFailure()
 		d.Logger.ErrorContext(r.Context(), "payment settlement failed", "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"success": false, "errorReason": settlement.WireReasonSettlementUnavailable,
+		writeJSON(w, http.StatusServiceUnavailable, x402.SettleResponse{
+			Success: false, ErrorReason: settlement.WireReasonSettlementUnavailable,
+			Network: config.MainnetNetwork,
 		})
 		return
 	}

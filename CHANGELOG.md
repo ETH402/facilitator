@@ -424,6 +424,30 @@ versioned where noted.
 
 ### Fixed
 
+- Recovered ambiguous transactions are now fee-bump eligible.
+  `MarkTxRecoveredBroadcast` never stamped `broadcast_attempted_at`, so
+  `replaceStuck` ignored every transaction that passed through the ambiguous
+  path; an underpriced one wedged pending forever and head-of-line blocked the
+  signer's sequential nonce stream.
+- Replacement fee bumps now satisfy the mempool's price-bump rule on both fee
+  cap and tip (110% of the transaction being replaced). Only the tip was
+  bumped before, so geth rejected most realistic replacements as underpriced —
+  and because the replacement is recorded before it is sent, the rejected fee
+  pair became the next baseline and convergence took a dozen replacement
+  windows instead of one.
+- A mined original now resolves correctly even when its payment is no longer
+  in `replaced`. `ListReplacedPending` deliberately watches `replaced`,
+  `confirming`, and `broadcast` — a reorg can return the payment to
+  `broadcast` before the original lands — but `MarkReplacementLanded` guarded
+  on `replaced` alone and rolled back every recovery tick, wedging the payment
+  while `replaceStuck` kept signing doomed replacements for the consumed
+  nonce.
+- `/settle` rejections now match the declared contract (version 0.7 OpenAPI).
+  Payments the verification parser refuses map to the enum's `invalid_request`
+  with the specific reason in `errorMessage` — previously the parser's
+  internal reason strings, none of them in the enum, were returned verbatim.
+  The 400 and 503 responses now carry the schema-required `transaction` and
+  `network` fields instead of hand-rolled bodies that omitted them.
 - Ambiguous-broadcast recovery no longer depends on reproducible signatures.
   Cloud KMS randomizes the ECDSA nonce, so a re-signed transaction never hashed
   to the stored raw hash and the re-broadcast path of ADR-0004 decision 4 was
@@ -454,7 +478,8 @@ versioned where noted.
 - `google.golang.org/grpc` bumped to v1.82.1 for GO-2026-6061, which
   `govulncheck` found reachable from the Cloud KMS signing path through the gRPC
   HTTP/2 transport.
-- Live settlement is intentionally absent and transaction signing defaults to disabled.
+- Transaction signing defaults to disabled; live settlement requires an
+  explicitly configured signer (Cloud KMS in production).
 - `X-Forwarded-For` is honoured only from configured trusted proxies, using the
   rightmost untrusted entry, so a forged header cannot select another client's
   rate-limit bucket. The bundled Caddy configuration replaces the header and

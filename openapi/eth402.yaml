@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.6.1
+  version: 0.7.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -59,9 +59,12 @@ paths:
         shape is identical to /verify and is parsed by the same strict rules.
         On success the facilitator has broadcast transferWithAuthorization and
         returns its transaction hash; confirmation completes asynchronously
-        (12 confirmations by default). Calls are idempotent per payment: a
-        repeat settles to the same transaction hash. Policy rejections return
-        HTTP 200 with success=false and a stable errorReason.
+        (12 confirmations by default). Calls never settle twice: a repeat
+        returns the recorded transaction hash once the broadcast is recorded,
+        and broadcast_failed while it is still in flight. Policy rejections
+        return HTTP 200 with success=false and a stable errorReason; a payment
+        /verify would have refused is rejected as invalid_request with the
+        specific verification reason in errorMessage.
       requestBody:
         required: true
         content:

@@ -131,7 +131,8 @@ Recovery handles four cases automatically:
   resolves the payment.
 - **Stuck pendings.** A broadcast pending beyond
   `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced with a
-  fee-bumped transaction on the same nonce (tip ×1.125, capped by
+  fee-bumped transaction on the same nonce (tip ×1.125, both fee cap and tip
+  raised to the mempool's 110% price-bump floor, capped by
   `ETH402_MAX_FEE_PER_GAS_WEI`). Whichever version mines, the recorded history
   is corrected to match.
 - **Nonce gaps.** A dropped `expired` or simulation-`failed` intent blocking a

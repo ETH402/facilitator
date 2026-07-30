@@ -562,8 +562,13 @@ func TestSettleInvalidRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	if response.Success || response.ErrorReason == "" {
+	// Parse-layer rejections map to the closed enum's invalid_request; the
+	// specific verification reason is diagnostic only, in errorMessage.
+	if response.Success || response.ErrorReason != WireReasonInvalidRequest {
 		t.Fatalf("response = %+v", response)
+	}
+	if !strings.Contains(response.ErrorMessage, "invalid_") {
+		t.Fatalf("errorMessage = %q, want the specific parse reason", response.ErrorMessage)
 	}
 }
 

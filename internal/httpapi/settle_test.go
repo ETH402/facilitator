@@ -242,6 +242,14 @@ func TestSettleUnavailableWithoutSigner(t *testing.T) {
 	if response["errorReason"] != settlement.WireReasonSettlementUnavailable {
 		t.Fatalf("response = %v", response)
 	}
+	// The OpenAPI schema requires transaction and network on every response,
+	// including the unavailable and malformed-request paths.
+	if transaction, ok := response["transaction"]; !ok || transaction != "" {
+		t.Fatalf("transaction = %v (present %v), want empty string", transaction, ok)
+	}
+	if response["network"] != "eip155:1" {
+		t.Fatalf("network = %v, want eip155:1", response["network"])
+	}
 }
 
 func TestSettleRejectsMalformedBody(t *testing.T) {
@@ -253,6 +261,19 @@ func TestSettleRejectsMalformedBody(t *testing.T) {
 	))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["errorReason"] != settlement.WireReasonInvalidRequest {
+		t.Fatalf("errorReason = %v", response["errorReason"])
+	}
+	if transaction, ok := response["transaction"]; !ok || transaction != "" {
+		t.Fatalf("transaction = %v (present %v), want empty string", transaction, ok)
+	}
+	if response["network"] != "eip155:1" {
+		t.Fatalf("network = %v, want eip155:1", response["network"])
 	}
 }
 

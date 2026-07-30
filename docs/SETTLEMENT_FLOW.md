@@ -119,7 +119,9 @@ and fall back to the raw-hash comparison, which only a deterministic signer
 satisfies; rows before `000004` lack the stored fee fields and are resolved by
 on-chain lookup only. A broadcast still pending
 after `ETH402_SETTLEMENT_REPLACEMENT_AFTER` (default 5m) is replaced by a
-fee-bumped transaction on the same nonce (tip ×1.125, ceiling-capped); when
+fee-bumped transaction on the same nonce (tip ×1.125, with both the fee cap
+and the tip raised to the mempool's 110% price-bump floor so the node actually
+accepts the replacement, ceiling-capped); when
 the ceiling leaves no headroom the transaction is left pending for an operator
 decision. If the network mines the original instead, recovery records the
 original as the truth and drops the never-minable replacement. A `dropped`
