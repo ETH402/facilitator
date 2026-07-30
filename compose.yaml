@@ -28,6 +28,21 @@ services:
       timeout: 3s
       retries: 20
 
+  # Anvil with mining disabled for stuck-transaction / replacement integration
+  # tests: transactions stay pending until evm_mine mines them on demand.
+  anvil-nomine:
+    profiles: ["testing"]
+    image: ghcr.io/foundry-rs/foundry:stable
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--chain-id", "1", "--no-mining", "--silent"]
+    ports:
+      - "8547:8545"
+    healthcheck:
+      test: ["CMD", "cast", "chain-id", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   migrate:
     build: .
     entrypoint: ["/usr/local/bin/migrate"]

@@ -41,6 +41,38 @@ ETH402_TEST_DATABASE_URL='postgres://eth402:eth402_dev_only@localhost:5432/eth40
   go test -tags=e2e -count=1 -v ./internal/e2e
 ```
 
+## Stuck-transaction replacement against a real mempool
+
+The unit suite stubs the chain, so nothing real exercises the transaction
+pool's replacement semantics. The `anvil-nomine` compose service runs Anvil
+with `--no-mining`: broadcasts sit pending until `evm_mine` mines them on
+demand, which lets the integration test prove the full replacement path — a
+foreign same-nonce transaction that outbids the original by only 1 wei takes
+over the nonce in the pool while the durable record stays untouched, the
+recovery worker's proper ≥110% bump is computed from the stored fees, outbids
+that squatter, and is accepted, and after `evm_mine` the payment finalizes
+from the replacement's receipt rather than the original broadcast hash.
+
+Note that Anvil's pool replaces a pending transaction on any strictly greater
+fee; it has no 10% price-bump rule, so the "underpriced" rejection a geth
+mempool would produce cannot be reproduced against it. The production-side
+answer to that rule is `BumpFees`'s ≥110% floors, which the unit suite pins.
+
+```sh
+docker compose --profile testing up -d anvil-nomine postgres
+
+ETH402_TEST_ANVIL_NOMINE_URL=http://localhost:8547 \
+ETH402_TEST_DATABASE_URL='postgres://eth402:eth402_dev_only@localhost:5432/eth402_test?sslmode=disable' \
+  go test -tags=integration -p 1 -run TestReplacementAgainstRealMempool -v ./internal/settlement/
+```
+
+The test signs with Anvil's well-known genesis-funded account #0, which must
+never be used anywhere else. Plain Anvil has no USDC contract, so the
+settlement call returns empty success and the transaction mines with status 1;
+the test exercises mempool, replacement, and confirmation mechanics, not USDC
+semantics (that is the forked e2e test above). The `testing` compose profile
+keeps the service out of the default stack.
+
 ## Abuse and fuzz tests
 
 ```sh
