@@ -95,7 +95,17 @@ and hostile JSON against `/verify` and `/settle`. It found a real denial of serv
 The fork must be mainnet: the verifier requires USDC's real EIP-712 domain
 (`USD Coin` / `2`) at the canonical address, so a bare Anvil cannot substitute. Not
 every public endpoint supports forking — Cloudflare's rejects the methods Anvil
-needs with `-32046`; `ethereum-rpc.publicnode.com` works.
+needs with `-32046`, and `ethereum-rpc.publicnode.com` now rejects explicit-block
+state reads as archive requests even at the just-pinned block, so a fresh fork
+fails immediately (`anvil_setBalance` included). Use an endpoint that serves
+recent historical state without a token, for example
+`https://eth-mainnet.public.blastapi.io`:
+
+```sh
+docker run -d --name eth402-fork -p 8546:8545 --entrypoint anvil \
+  ghcr.io/foundry-rs/foundry:stable \
+  --host 0.0.0.0 --fork-url https://eth-mainnet.public.blastapi.io --chain-id 1
+```
 
 The buyer is funded through USDC's own `configureMinter`/`mint` path via an
 impersonated master minter, so the balance is state the contract agrees with rather
@@ -113,6 +123,8 @@ Archive requests require a personal token
 
 That is the fork expiring, not a facilitator failure. `docker rm -f eth402-fork`
 and start it again to re-pin to current head, or use an archive-capable endpoint.
+(If the error appears on a freshly started fork, the endpoint is rejecting
+explicit-block reads outright — see the endpoint note above.)
 
 Each run generates a fresh buyer, recipient, and facilitator signer, so runs do not
 interfere — but the fork accumulates their state until it is restarted.
