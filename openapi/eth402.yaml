@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.7.0
+  version: 0.8.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -86,6 +86,29 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/X402SettleResponse" }
+  /verify-email:
+    get:
+      operationId: verifyEmailPage
+      summary: Consume an email-verification token from a browser
+      description: >-
+        Browser-facing counterpart of POST /v1/merchants/verify-email; the
+        onboarding email links here. Consumes the single-use token and answers
+        with an HTML page instead of JSON.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Email verified; the page carries the merchant ID.
+          content:
+            text/html: {}
+        "400":
+          description: Token invalid, already used, or expired.
+          content:
+            text/html: {}
+        "500": { description: Verification backend failure (generic HTML page). }
   /v1/merchants/register:
     post:
       operationId: registerMerchant

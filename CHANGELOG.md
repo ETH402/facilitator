@@ -148,6 +148,12 @@ versioned where noted.
   last *completed* tick rather than a flag the worker sets, because a wedged worker
   never gets around to clearing its own flag.
 
+- A browser-facing `GET /verify-email` page that consumes the onboarding
+  email's verification link. The link previously 404'd for anyone who clicked
+  it; only API clients POSTing the token could verify. The page performs the
+  same single-use consumption, confirms the merchant ID, and points at the
+  wallet-challenge step. OpenAPI 0.8.0.
+
 ### Fixed
 
 - The retention worker and the fair-use pruning loop now recover panics per

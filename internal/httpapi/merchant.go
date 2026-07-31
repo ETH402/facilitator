@@ -3,6 +3,7 @@ package httpapi
 import (
 	"crypto/subtle"
 	"errors"
+	"html/template"
 	"net/http"
 	"strings"
 
@@ -16,6 +17,9 @@ func (d Dependencies) merchantRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/merchants/register",
 		newRateLimiter(d.RegistrationRate, d.TrustedProxies).middleware(http.HandlerFunc(d.register)))
 	mux.HandleFunc("POST /v1/merchants/verify-email", d.verifyEmail)
+	// The onboarding email links here: a browser opens GET /verify-email, so it
+	// must consume the token and answer with a page rather than 404.
+	mux.HandleFunc("GET /verify-email", d.verifyEmailPage)
 	mux.HandleFunc("POST /v1/merchants/wallet-challenge", d.walletChallenge)
 	mux.HandleFunc("POST /v1/merchants/verify-wallet", d.verifyWallet)
 	mux.HandleFunc("GET /v1/me", d.withMerchant(d.fairUse(d.me)))
@@ -74,6 +78,65 @@ func (d Dependencies) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Metrics.IncEmailVerification()
 	writeJSON(w, 200, map[string]string{"merchant_id": id, "status": "email_verified"})
+}
+
+type verifyEmailResult struct {
+	Verified   bool
+	MerchantID string
+}
+
+var verifyEmailPageTemplate = template.Must(template.New("verify-email").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETH402 email verification</title>
+<style>
+:root{color-scheme:light dark;--fg:#111;--muted:#666;--bg:#fff;--ok:#1a7f37;--bad:#cf222e}
+@media(prefers-color-scheme:dark){:root{--fg:#e6e6e6;--muted:#9aa0a6;--bg:#0d1117}}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:2rem auto;max-width:36rem;padding:0 1rem;line-height:1.5}
+h1{font-size:1.25rem}p{color:var(--muted)}code{color:var(--fg)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+</style></head>
+<body><main>
+{{if .Verified}}
+<h1 class="ok">Email verified</h1>
+<p>Your merchant email is confirmed. Merchant ID: <code>{{.MerchantID}}</code></p>
+<p>Next step: prove control of the recipient wallet by signing the wallet
+challenge with it, as described in the integration guide. The merchant ID above
+is required for that call.</p>
+{{else}}
+<h1 class="bad">Verification link invalid</h1>
+<p>This link is invalid, was already used, or has expired. Register again with
+the same email address to receive a fresh verification link.</p>
+{{end}}
+</main></body></html>
+`))
+
+// verifyEmailPage consumes an email-verification token from a browser. The
+// onboarding email links here, and a link that 404s reads as a broken service,
+// so the GET performs the same single-use consumption as
+// POST /v1/merchants/verify-email and answers with a page instead of JSON.
+func (d Dependencies) verifyEmailPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Same posture as the status page: self-contained, nothing loaded from
+	// anywhere, no forms for a token page to post anywhere.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+	id, err := d.Merchant.VerifyEmail(r.Context(), r.URL.Query().Get("token"), requestIDFrom(r.Context()))
+	if err != nil {
+		status := http.StatusBadRequest
+		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrNotFound) {
+			// Detail stays in the log; the page stays generic because it is public.
+			d.Logger.ErrorContext(r.Context(), "email verification page failed", "error", err)
+			status = http.StatusInternalServerError
+		}
+		w.WriteHeader(status)
+		_ = verifyEmailPageTemplate.Execute(w, verifyEmailResult{})
+		return
+	}
+	d.Metrics.IncEmailVerification()
+	if err := verifyEmailPageTemplate.Execute(w, verifyEmailResult{Verified: true, MerchantID: id}); err != nil {
+		d.Logger.ErrorContext(r.Context(), "email verification page render failed", "error", err)
+	}
 }
 
 func (d Dependencies) walletChallenge(w http.ResponseWriter, r *http.Request) {

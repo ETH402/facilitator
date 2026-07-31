@@ -289,7 +289,7 @@ func observe(registry *metrics.Registry, next http.Handler) http.Handler {
 func knownRoute(path string) string {
 	switch path {
 	case "/health/live", "/health/ready", "/metrics", "/stats",
-		"/supported", "/verify", "/settle",
+		"/supported", "/verify", "/settle", "/verify-email",
 		"/v1/merchants/register", "/v1/merchants/verify-email",
 		"/v1/merchants/wallet-challenge", "/v1/merchants/verify-wallet",
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",
