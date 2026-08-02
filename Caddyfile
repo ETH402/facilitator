@@ -16,6 +16,7 @@
 	# never served on the public interface. The wildcard matters: /metrics/ and any
 	# subpath must be refused too, or the block is trivially sidestepped.
 	handle /metrics* {
+		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
 		respond "not found" 404
 	}
 
@@ -29,6 +30,10 @@
 	# intermediate hop.
 	reverse_proxy app:8080 {
 		header_up X-Forwarded-For {http.request.remote.host}
+		# CSP is applied below with path-aware proxy rules. Remove the upstream
+		# copy so clients receive one unambiguous policy rather than two identical
+		# fields whose intersection happens to be equivalent.
+		header_down -Content-Security-Policy
 
 		# Bound every stage, so a wedged upstream cannot pin Caddy's workers open.
 		transport http {
@@ -38,6 +43,13 @@
 			write_timeout 60s
 		}
 	}
+
+	# These pages intentionally need policies that are stricter in every other
+	# direction but permit their self-contained inline CSS, and (only for email
+	# verification) the same-origin confirmation form. Path-scoped proxy headers
+	# make that behavior independent of response-header ordering.
+	header /status Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+	header /verify-email Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'"
 
 	# Set on every response, including Caddy's own 404 above, which never reaches
 	# the application's own header middleware.

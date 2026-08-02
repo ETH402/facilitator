@@ -160,7 +160,9 @@ versioned where noted.
 - Caddy now supplies its strict Content Security Policy only when the
   application did not set one. It previously overwrote the self-contained
   status and email-verification pages' page-specific policies, blocking their
-  inline styles and the email confirmation form in production.
+  inline styles and the email confirmation form in production. Explicit
+  path-scoped policies keep those two pages correct regardless of proxy header
+  ordering.
 
 - The Compose PostgreSQL, Anvil, and Prometheus images are now digest-pinned,
   matching the deployment documentation's immutable-image guarantee instead
