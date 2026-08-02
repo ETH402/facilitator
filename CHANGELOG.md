@@ -168,6 +168,11 @@ versioned where noted.
   matching the deployment documentation's immutable-image guarantee instead
   of allowing their tags to move between validation and startup.
 
+- CI now scans the complete Git history with Gitleaks before publication. The
+  only ignored fingerprints are two exact historical findings for Anvil's
+  documented, publicly known development key; future findings in those files
+  are not path-allowlisted. The CI PostgreSQL service is digest-pinned too.
+
 - The retention worker and the fair-use pruning loop now recover panics per
   tick, like the settlement workers' guard. Both ran as bare goroutines, so
   one malformed row could have terminated the whole facilitator; now a
