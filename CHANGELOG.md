@@ -148,13 +148,23 @@ versioned where noted.
   last *completed* tick rather than a flag the worker sets, because a wedged worker
   never gets around to clearing its own flag.
 
-- A browser-facing `GET /verify-email` page that consumes the onboarding
-  email's verification link. The link previously 404'd for anyone who clicked
-  it; only API clients POSTing the token could verify. The page performs the
-  same single-use consumption, confirms the merchant ID, and points at the
-  wallet-challenge step. OpenAPI 0.8.0.
+- A browser-facing `/verify-email` flow for the onboarding email. `GET` renders
+  a no-cache confirmation page without consuming the token, so mail scanners
+  and link previewers cannot invalidate it; an explicit same-origin form `POST`
+  performs the single-use verification, confirms the merchant ID, and points
+  at the wallet-challenge step. API clients retain the existing JSON endpoint.
+  OpenAPI 0.9.0.
 
 ### Fixed
+
+- Caddy now supplies its strict Content Security Policy only when the
+  application did not set one. It previously overwrote the self-contained
+  status and email-verification pages' page-specific policies, blocking their
+  inline styles and the email confirmation form in production.
+
+- The Compose PostgreSQL, Anvil, and Prometheus images are now digest-pinned,
+  matching the deployment documentation's immutable-image guarantee instead
+  of allowing their tags to move between validation and startup.
 
 - The retention worker and the fair-use pruning loop now recover panics per
   tick, like the settlement workers' guard. Both ran as bare goroutines, so

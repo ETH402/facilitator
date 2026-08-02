@@ -145,8 +145,9 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 		t.Fatalf("unknown JSON field returned %d", response.Code)
 	}
 
-	// The onboarding email links to GET /verify-email; a browser must be able to
-	// consume the token there and receive a page, not a 404.
+	// The onboarding email links to GET /verify-email. GET must only render an
+	// explicit confirmation step: mail scanners and previewers follow links and
+	// must not consume the one-time token.
 	response = requestJSON(t, handler, http.MethodPost, "/v1/merchants/register", "", map[string]any{
 		"name": "Browser merchant", "business_email": "browser@example.com",
 		"recipient_address": address, "accept_terms": true,
@@ -162,16 +163,34 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("GET verification link: %d %s", page.Code, page.Body.String())
 	}
-	if !strings.Contains(page.Body.String(), "Email verified") {
-		t.Fatalf("verification page did not confirm: %s", page.Body.String())
+	if !strings.Contains(page.Body.String(), "Confirm your email") {
+		t.Fatalf("verification page omitted confirmation: %s", page.Body.String())
 	}
-	// Tokens are single-use, and a malformed one gets the same generic page.
-	if page = requestJSON(t, handler, http.MethodGet, link.Path+"?"+link.RawQuery, "", nil); page.Code != http.StatusBadRequest {
+	// A second GET still succeeds, proving the first did not consume the token.
+	if page = requestJSON(t, handler, http.MethodGet, link.Path+"?"+link.RawQuery, "", nil); page.Code != http.StatusOK {
+		t.Fatalf("second GET consumed token: %d", page.Code)
+	}
+	page = requestForm(t, handler, link.Path, url.Values{"token": {link.Query().Get("token")}})
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Email verified") {
+		t.Fatalf("browser verification POST: %d %s", page.Code, page.Body.String())
+	}
+	// Tokens remain single-use, and malformed links get the same generic page.
+	if page = requestForm(t, handler, link.Path, url.Values{"token": {link.Query().Get("token")}}); page.Code != http.StatusBadRequest {
 		t.Fatalf("reused token: %d", page.Code)
 	}
 	if page = requestJSON(t, handler, http.MethodGet, "/verify-email?token=wrong", "", nil); page.Code != http.StatusBadRequest {
 		t.Fatalf("garbage token: %d", page.Code)
 	}
+}
+
+func requestForm(t *testing.T, handler http.Handler, path string, values url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path, apiKey string, value any) *httptest.ResponseRecorder {

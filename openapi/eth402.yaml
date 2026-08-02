@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.8.0
+  version: 0.9.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -89,16 +89,37 @@ paths:
   /verify-email:
     get:
       operationId: verifyEmailPage
-      summary: Consume an email-verification token from a browser
+      summary: Render a browser confirmation page for an email-verification token
       description: >-
         Browser-facing counterpart of POST /v1/merchants/verify-email; the
-        onboarding email links here. Consumes the single-use token and answers
-        with an HTML page instead of JSON.
+        onboarding email links here. GET never consumes the token, so automated
+        mail scanners and link previewers cannot complete the one-time action.
       parameters:
         - name: token
           in: query
           required: true
           schema: { type: string }
+      responses:
+        "200":
+          description: Confirmation page rendered; no state was changed.
+          content:
+            text/html: {}
+        "400":
+          description: Token is missing or malformed.
+          content:
+            text/html: {}
+    post:
+      operationId: verifyEmailPageSubmit
+      summary: Consume an email-verification token from the browser confirmation page
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 20 }
       responses:
         "200":
           description: Email verified; the page carries the merchant ID.

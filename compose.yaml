@@ -1,7 +1,7 @@
 name: eth402
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
       POSTGRES_DB: eth402
       POSTGRES_USER: eth402
@@ -17,7 +17,7 @@ services:
       retries: 20
 
   anvil:
-    image: ghcr.io/foundry-rs/foundry:stable
+    image: ghcr.io/foundry-rs/foundry:stable@sha256:043752653d5be351c71709091b3db97c4421c907eb40ea294195e7f532aadf46
     entrypoint: ["anvil"]
     command: ["--host", "0.0.0.0", "--chain-id", "1", "--silent"]
     ports:
@@ -32,7 +32,7 @@ services:
   # tests: transactions stay pending until evm_mine mines them on demand.
   anvil-nomine:
     profiles: ["testing"]
-    image: ghcr.io/foundry-rs/foundry:stable
+    image: ghcr.io/foundry-rs/foundry:stable@sha256:043752653d5be351c71709091b3db97c4421c907eb40ea294195e7f532aadf46
     entrypoint: ["anvil"]
     command: ["--host", "0.0.0.0", "--chain-id", "1", "--no-mining", "--silent"]
     ports:
@@ -124,7 +124,7 @@ services:
       - /data
 
   prometheus:
-    image: prom/prometheus:v3.4.1
+    image: prom/prometheus:v3.4.1@sha256:9abc6cf6aea7710d163dbb28d8eeb7dc5baef01e38fa4cd146a406dd9f07f70d
     profiles: ["observability"]
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:

@@ -17,9 +17,10 @@ func (d Dependencies) merchantRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/merchants/register",
 		newRateLimiter(d.RegistrationRate, d.TrustedProxies).middleware(http.HandlerFunc(d.register)))
 	mux.HandleFunc("POST /v1/merchants/verify-email", d.verifyEmail)
-	// The onboarding email links here: a browser opens GET /verify-email, so it
-	// must consume the token and answer with a page rather than 404.
+	// GET deliberately does not consume the token: mail scanners and link
+	// previewers follow links automatically. Only the explicit form POST does.
 	mux.HandleFunc("GET /verify-email", d.verifyEmailPage)
+	mux.HandleFunc("POST /verify-email", d.verifyEmailPageSubmit)
 	mux.HandleFunc("POST /v1/merchants/wallet-challenge", d.walletChallenge)
 	mux.HandleFunc("POST /v1/merchants/verify-wallet", d.verifyWallet)
 	mux.HandleFunc("GET /v1/me", d.withMerchant(d.fairUse(d.me)))
@@ -81,7 +82,9 @@ func (d Dependencies) verifyEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 type verifyEmailResult struct {
+	Confirm    bool
 	Verified   bool
+	Token      string
 	MerchantID string
 }
 
@@ -94,10 +97,18 @@ var verifyEmailPageTemplate = template.Must(template.New("verify-email").Parse(`
 @media(prefers-color-scheme:dark){:root{--fg:#e6e6e6;--muted:#9aa0a6;--bg:#0d1117}}
 body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:2rem auto;max-width:36rem;padding:0 1rem;line-height:1.5}
 h1{font-size:1.25rem}p{color:var(--muted)}code{color:var(--fg)}
+.button{background:var(--fg);border:0;border-radius:.35rem;color:var(--bg);cursor:pointer;font:inherit;padding:.65rem 1rem}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 </style></head>
 <body><main>
-{{if .Verified}}
+{{if .Confirm}}
+<h1>Confirm your email</h1>
+<p>Select the button below to finish verifying your merchant email address.</p>
+<form method="post" action="/verify-email">
+<input type="hidden" name="token" value="{{.Token}}">
+<button class="button" type="submit">Verify email</button>
+</form>
+{{else if .Verified}}
 <h1 class="ok">Email verified</h1>
 <p>Your merchant email is confirmed. Merchant ID: <code>{{.MerchantID}}</code></p>
 <p>Next step: prove control of the recipient wallet by signing the wallet
@@ -111,17 +122,21 @@ the same email address to receive a fresh verification link.</p>
 </main></body></html>
 `))
 
-// verifyEmailPage consumes an email-verification token from a browser. The
-// onboarding email links here, and a link that 404s reads as a broken service,
-// so the GET performs the same single-use consumption as
-// POST /v1/merchants/verify-email and answers with a page instead of JSON.
+// verifyEmailPage renders an explicit confirmation step without looking up or
+// consuming the token. Automated mail scanners and link previewers commonly
+// issue GET requests, so a GET must not perform the one-time state transition.
 func (d Dependencies) verifyEmailPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Same posture as the status page: self-contained, nothing loaded from
-	// anywhere, no forms for a token page to post anywhere.
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
-	id, err := d.Merchant.VerifyEmail(r.Context(), r.URL.Query().Get("token"), requestIDFrom(r.Context()))
+	renderVerifyEmailPage(w, r.URL.Query().Get("token"))
+}
+
+// verifyEmailPageSubmit consumes the token only after an explicit browser form
+// submission. API clients continue to use POST /v1/merchants/verify-email.
+func (d Dependencies) verifyEmailPageSubmit(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		renderVerifyEmailResult(w, http.StatusBadRequest, verifyEmailResult{})
+		return
+	}
+	id, err := d.Merchant.VerifyEmail(r.Context(), r.PostFormValue("token"), requestIDFrom(r.Context()))
 	if err != nil {
 		status := http.StatusBadRequest
 		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrNotFound) {
@@ -129,14 +144,31 @@ func (d Dependencies) verifyEmailPage(w http.ResponseWriter, r *http.Request) {
 			d.Logger.ErrorContext(r.Context(), "email verification page failed", "error", err)
 			status = http.StatusInternalServerError
 		}
-		w.WriteHeader(status)
-		_ = verifyEmailPageTemplate.Execute(w, verifyEmailResult{})
+		renderVerifyEmailResult(w, status, verifyEmailResult{})
 		return
 	}
 	d.Metrics.IncEmailVerification()
-	if err := verifyEmailPageTemplate.Execute(w, verifyEmailResult{Verified: true, MerchantID: id}); err != nil {
-		d.Logger.ErrorContext(r.Context(), "email verification page render failed", "error", err)
+	renderVerifyEmailResult(w, http.StatusOK, verifyEmailResult{Verified: true, MerchantID: id})
+}
+
+func renderVerifyEmailPage(w http.ResponseWriter, token string) {
+	if len(token) < 20 {
+		renderVerifyEmailResult(w, http.StatusBadRequest, verifyEmailResult{})
+		return
 	}
+	renderVerifyEmailResult(w, http.StatusOK, verifyEmailResult{Confirm: true, Token: token})
+}
+
+func renderVerifyEmailResult(w http.ResponseWriter, status int, result verifyEmailResult) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	// Self-contained: the only permitted action is the same-origin confirmation
+	// form, and the token page loads no scripts, images, fonts, or remote styles.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'")
+	w.WriteHeader(status)
+	_ = verifyEmailPageTemplate.Execute(w, result)
 }
 
 func (d Dependencies) walletChallenge(w http.ResponseWriter, r *http.Request) {
