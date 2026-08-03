@@ -237,8 +237,15 @@ func secureHeaders(allowedOrigin string, next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if origin := r.Header.Get("Origin"); origin != "" && origin != allowedOrigin {
-			writeError(w, http.StatusForbidden, "cors_denied", "cross-origin requests are not allowed", requestIDFrom(r.Context()))
-			return
+			// Browser and webmail navigations can attach their own Origin header to
+			// the verification link. This GET only renders an explicit confirmation
+			// page and never consumes the token, so let it render without granting
+			// the foreign origin CORS read access. The token-consuming POST and every
+			// API route remain same-origin only.
+			if r.Method != http.MethodGet || r.URL.Path != "/verify-email" {
+				writeError(w, http.StatusForbidden, "cors_denied", "cross-origin requests are not allowed", requestIDFrom(r.Context()))
+				return
+			}
 		} else if origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")

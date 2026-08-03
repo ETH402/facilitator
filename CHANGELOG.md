@@ -157,6 +157,12 @@ versioned where noted.
 
 ### Fixed
 
+- Cross-origin browser or webmail navigations can now render the non-consuming
+  `GET /verify-email` confirmation page without receiving CORS read permission.
+  The global CORS guard previously returned `cors_denied` before the page could
+  render when a webmail client attached its own `Origin`; API routes and the
+  token-consuming verification `POST` remain same-origin only. OpenAPI 0.9.1.
+
 - Caddy now supplies its strict Content Security Policy only when the
   application did not set one. It previously overwrote the self-contained
   status and email-verification pages' page-specific policies, blocking their

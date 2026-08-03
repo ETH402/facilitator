@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.9.0
+  version: 0.9.1
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -94,6 +94,8 @@ paths:
         Browser-facing counterpart of POST /v1/merchants/verify-email; the
         onboarding email links here. GET never consumes the token, so automated
         mail scanners and link previewers cannot complete the one-time action.
+        A cross-origin browser navigation may render this page, but receives no
+        CORS read permission; the token-consuming POST remains same-origin only.
       parameters:
         - name: token
           in: query
