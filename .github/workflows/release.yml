@@ -245,7 +245,7 @@ jobs:
           } > "release-build/$IMAGE.build.txt"
           docker save "$IMAGE_REFERENCE" | gzip -n > "release-build/$IMAGE.docker.tar.gz"
           (cd release-build && sha256sum "$IMAGE.docker.tar.gz" "$IMAGE.spdx.json" "$IMAGE.build.txt" > SHA256SUMS)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scanned-image-${{ matrix.image }}
           path: release-build/
@@ -369,7 +369,7 @@ jobs:
         run: |
           cp "$PROVENANCE_BUNDLE" "release-artifacts/${{ matrix.image }}.provenance.sigstore.json"
           cp "$SBOM_BUNDLE" "release-artifacts/${{ matrix.image }}.sbom.sigstore.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-evidence-${{ matrix.image }}
           path: release-artifacts/
