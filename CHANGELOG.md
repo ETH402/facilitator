@@ -157,6 +157,12 @@ versioned where noted.
 
 ### Fixed
 
+- Embedded webmail browsers that preserve their own `Origin` for the explicit
+  email-confirmation form can now complete its POST only when browser-controlled
+  Fetch Metadata proves a user-activated document navigation. Cross-origin
+  scripts, background fetches, scanners, API calls, and CORS reads remain
+  denied. OpenAPI 0.9.2.
+
 - Cross-origin browser or webmail navigations can now render the non-consuming
   `GET /verify-email` confirmation page without receiving CORS read permission.
   The global CORS guard previously returned `cors_denied` before the page could

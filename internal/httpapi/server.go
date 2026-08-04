@@ -238,11 +238,13 @@ func secureHeaders(allowedOrigin string, next http.Handler) http.Handler {
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if origin := r.Header.Get("Origin"); origin != "" && origin != allowedOrigin {
 			// Browser and webmail navigations can attach their own Origin header to
-			// the verification link. This GET only renders an explicit confirmation
-			// page and never consumes the token, so let it render without granting
-			// the foreign origin CORS read access. The token-consuming POST and every
-			// API route remain same-origin only.
-			if r.Method != http.MethodGet || r.URL.Path != "/verify-email" {
+			// the verification page and, in some embedded browsers, preserve that
+			// origin for the form submission. GET never consumes the token. Permit a
+			// POST only when browser-controlled Fetch Metadata proves it is a document
+			// navigation with explicit user activation; scripts and background fetches
+			// cannot set these forbidden request headers. Neither exception grants the
+			// foreign origin CORS read access. Every API route remains same-origin only.
+			if !emailVerificationNavigation(r) {
 				writeError(w, http.StatusForbidden, "cors_denied", "cross-origin requests are not allowed", requestIDFrom(r.Context()))
 				return
 			}
@@ -252,6 +254,19 @@ func secureHeaders(allowedOrigin string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func emailVerificationNavigation(r *http.Request) bool {
+	if r.URL.Path != "/verify-email" {
+		return false
+	}
+	if r.Method == http.MethodGet {
+		return true
+	}
+	return r.Method == http.MethodPost &&
+		r.Header.Get("Sec-Fetch-Mode") == "navigate" &&
+		r.Header.Get("Sec-Fetch-Dest") == "document" &&
+		r.Header.Get("Sec-Fetch-User") == "?1"
 }
 
 func requestLimit(next http.Handler) http.Handler {

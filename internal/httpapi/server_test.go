@@ -325,6 +325,26 @@ func TestCrossOriginEmailVerificationPOSTRemainsDenied(t *testing.T) {
 	}
 }
 
+func TestUserActivatedCrossOriginEmailVerificationPOSTRendersWithoutCORSGrant(t *testing.T) {
+	t.Parallel()
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/verify-email", nil)
+	request.Header.Set("Origin", "https://webmail.example")
+	request.Header.Set("Sec-Fetch-Mode", "navigate")
+	request.Header.Set("Sec-Fetch-Dest", "document")
+	request.Header.Set("Sec-Fetch-User", "?1")
+	recorder := httptest.NewRecorder()
+	secureHeaders("https://api.eth402.org", next).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("user-activated cross-origin verification POST returned %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("foreign origin received CORS read permission %q", got)
+	}
+}
+
 func TestSupportedEndpoint(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
