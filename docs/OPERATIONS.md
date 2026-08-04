@@ -9,19 +9,43 @@ Readiness requires PostgreSQL ping and RPC `eth_chainId == 1`. Liveness only
 asserts the process can serve HTTP. Remove an instance from traffic on
 readiness failure; do not restart-loop solely for an upstream outage.
 
-Use two independently operated Ethereum RPC providers. Safe reads may retry
-within bounds; transaction broadcast must not retry blindly.
+Use two independently operated Ethereum RPC providers. Payment-critical reads
+query both concurrently and fail closed unless they agree. Each provider may
+retry within bounds, but transaction broadcast remains one primary-only attempt
+because a failed send has an unknown outcome. The only relaxed comparison is
+the moving latest head: a difference of at most two blocks is accepted and the
+lower height is used. Latest-block fee reads are then repeated at that fixed
+height and must agree exactly.
+
+Production configuration rejects fragments and requires the two RPC URLs to
+have different canonical host identities; credentials in URL userinfo, paths,
+and query parameters remain supported and are never included in validation
+errors. Different hostnames are only a syntactic guard, not proof of independent
+operation. Record each provider's operator and account ownership in deployment
+evidence and do not use two aliases, regions, or products of the same operator.
+
+Nonce, balance, simulation, contract-state, and bytecode reads deliberately ask
+both providers for `latest` and require the returned state to agree. During
+ordinary one-block propagation skew, a state transition visible to only one
+provider can therefore refuse verification or settlement transiently. This is
+an accepted availability tradeoff: pinning authorization state to the older
+head could approve a nonce or balance that the newer head has already consumed.
+Do not bypass the disagreement by removing a provider; retry after convergence
+and investigate sustained or repeated events.
 
 What `/metrics` actually publishes, and therefore what can be alerted on today:
 
 | Metric | Use |
 |---|---|
-| `eth402_rpc_requests_total`, `eth402_rpc_errors_total` | RPC failure rate; each retry counts, so a read that only succeeds on its fallback still registers the failing provider |
+| `eth402_rpc_requests_total`, `eth402_rpc_errors_total` | RPC attempt failure rate; each provider attempt and retry is counted independently |
+| `eth402_rpc_provider_disagreements_total` | fail-closed disagreements between independently configured RPCs; any increase requires investigation |
 | `eth402_worker_last_tick_timestamp_seconds{worker}` | worker liveness, per worker, from the last *completed* tick |
 | `eth402_signer_balance_wei` and its freshness | the bound on a signer compromise |
 | `eth402_verification_total`, `eth402_settlement_requests_total`, and their failure counters | request volume and failure rate |
 | `eth402_panics_total` | recovered HTTP panics |
 | `eth402_retention_last_tick_timestamp_seconds`, `eth402_retention_errors_total`, `eth402_retention_redacted_payments_total` | privacy-worker liveness, failures, and completed tombstones |
+| `eth402_email_outbox_pending`, `eth402_email_outbox_oldest_pending_age_seconds` | current mail backlog and its oldest age, without merchant/recipient labels |
+| `eth402_email_delivery_last_tick_timestamp_seconds`, `eth402_email_delivery_failures_total` | last successful outbox observation and SMTP/authenticated-decryption failures |
 
 Example rules are in `deploy/alerts.yml`.
 
@@ -33,6 +57,12 @@ settlement latency, pending age, database error counts, and gas-policy rejection
 A metric that never moves is worse than an absent one — an alert on it never fires
 however broken the system is, which is precisely the false assurance an operator
 cannot detect.
+
+Verification classifies a provider value versus another provider error as a
+disagreement and increments the disagreement metric after collecting both
+outcomes. If every provider errors, the read still fails closed but is classified
+as a dependency outage rather than evidence that providers reported different
+chain state.
 
 ## Merchant panel
 
@@ -55,6 +85,39 @@ shows at most 50. The directory query is cached on the public-stats cache
 interval to prevent unauthenticated requests from driving database work;
 consent changes invalidate it immediately. Public rows contain name, declared
 HTTPS website, post-consent confirmed count, and last activity date only.
+
+## Email delivery outbox
+
+Registration and admin-login mail uses `email_delivery_outbox`. The request
+transaction commits the token hash and outbox row together; SMTP is attempted
+after commit and retried by an in-process worker on `ETH402_WORKER_INTERVAL`.
+`email_verification_tokens.sent_at` remains null until SMTP accepts the message,
+so delivery outages do not consume the resend cooldown. A live pending request
+still suppresses duplicate enqueues until its token expires. Retry delay starts
+at five seconds and doubles to five minutes; expired items are abandoned without
+delivery.
+
+Pending raw tokens are AEAD-encrypted with the dedicated
+`ETH402_EMAIL_OUTBOX_KEY`, authenticated against merchant ID, token hash, and
+message kind, and erased on delivery or expiry. Store that independent 32-byte
+key in the production secret manager. Rotating it makes already-pending messages
+undecryptable and causes immediate permanent abandonment: first drain the outbox
+or allow pending tokens to expire, then rotate and restart. Authenticated-
+decryption failure is not retried because the same key/ciphertext can never
+succeed; the worker erases it, increments the failure metric, and logs delivery
+ID, sanitized reason, and the
+originating request ID, never recipient address, link, token, or provider text.
+Each lease claim has a fresh UUID fencing token. A worker may update success or
+retry state only while it still owns that token; once another instance reclaims
+an expired lease, the stale worker's eventual SMTP result cannot overwrite the
+new owner's state.
+
+An SMTP server can accept a message immediately before ETH402 fails to persist
+the success. The lease then expires and the worker submits the same token again.
+This is the unavoidable at-least-once boundary; one-time token consumption makes
+the duplicate harmless. Alert rules cover a missing/stale worker observation,
+old backlog, and any delivery failure. The metrics contain no dynamic labels or
+merchant, recipient, token, request, or delivery identifiers.
 
 ## Signer balance
 

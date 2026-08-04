@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/config"
@@ -239,12 +238,20 @@ func (s *Service) resolveAmbiguous(ctx context.Context, work Work, actor string)
 		if err := s.store.MarkTxAmbiguousReplaced(ctx, work.PaymentID, work.TransactionID, replacement, actor); err != nil {
 			return fmt.Errorf("record re-signed transaction: %w", err)
 		}
-		if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw)); err != nil {
+		returnedHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw))
+		if err != nil {
+			return fmt.Errorf("broadcast re-signed transaction: %w", err)
+		}
+		if err := requireBroadcastHash(returnedHash, replacement.TxHash); err != nil {
 			return fmt.Errorf("broadcast re-signed transaction: %w", err)
 		}
 		return nil
 	}
-	if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw)); err != nil {
+	returnedHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(raw))
+	if err == nil {
+		err = requireBroadcastHash(returnedHash, txHash)
+	}
+	if err != nil {
 		// Unknown outcome again: stay ambiguous. The next tick's on-chain
 		// lookup finds the transaction if this attempt reached the network —
 		// the bytes are identical, so the lookup key is unchanged. Recording
@@ -402,7 +409,11 @@ func (s *Service) replaceStuck(ctx context.Context, work Work, actor string) err
 	if err := s.store.MarkTxReplaced(ctx, work.PaymentID, work.TransactionID, replacement, actor); err != nil {
 		return fmt.Errorf("record replacement: %w", err)
 	}
-	if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw)); err != nil {
+	returnedHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw))
+	if err != nil {
+		return fmt.Errorf("broadcast replacement: %w", err)
+	}
+	if err := requireBroadcastHash(returnedHash, replacement.TxHash); err != nil {
 		return fmt.Errorf("broadcast replacement: %w", err)
 	}
 	return nil
@@ -527,8 +538,8 @@ func (s *Service) fillNonceGap(ctx context.Context, work Work) error {
 	}
 	if returnedHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw)); err != nil {
 		return fmt.Errorf("broadcast prepared gap filler: %w", err)
-	} else if !strings.EqualFold(returnedHash, txHash) {
-		return fmt.Errorf("broadcast prepared gap filler returned hash %s, want %s", returnedHash, txHash)
+	} else if err := requireBroadcastHash(returnedHash, txHash); err != nil {
+		return fmt.Errorf("broadcast prepared gap filler: %w", err)
 	}
 	return nil
 }
@@ -605,7 +616,11 @@ func (s *Service) bumpStuckGapFiller(ctx context.Context, work Work) error {
 		replacement, signed.Raw); err != nil {
 		return fmt.Errorf("record gap filler replacement: %w", err)
 	}
-	if _, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw)); err != nil {
+	returnedHash, err := s.chain.SendRawTransaction(ctx, "0x"+hex.EncodeToString(signed.Raw))
+	if err != nil {
+		return fmt.Errorf("broadcast gap filler replacement: %w", err)
+	}
+	if err := requireBroadcastHash(returnedHash, replacement.TxHash); err != nil {
 		return fmt.Errorf("broadcast gap filler replacement: %w", err)
 	}
 	return nil
@@ -642,9 +657,9 @@ func (w *RecoveryWorker) observeGapFiller(ctx context.Context, t TrackedTransact
 					"payment_id", t.PaymentID, "tx_hash", t.TxHash, "error", err)
 				return
 			}
-			if !strings.EqualFold(returnedHash, t.TxHash) {
+			if err := requireBroadcastHash(returnedHash, t.TxHash); err != nil {
 				w.logger.ErrorContext(ctx, "gap filler provider returned mismatched hash",
-					"payment_id", t.PaymentID, "expected", t.TxHash, "returned", returnedHash)
+					"payment_id", t.PaymentID, "expected", t.TxHash, "returned", returnedHash, "error", err)
 			}
 		}
 		return

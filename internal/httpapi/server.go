@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ETH402/facilitator/internal/config"
 	"github.com/ETH402/facilitator/internal/ethereum"
@@ -532,13 +536,96 @@ func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 
 // DecodeStrict is shared by future merchant and facilitator handlers.
 func DecodeStrict(w http.ResponseWriter, r *http.Request, destination any) error {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	if err != nil {
+		return err
+	}
+	if !utf8.Valid(body) {
+		return errors.New("request body is not valid UTF-8 JSON")
+	}
+	if err := validateUniqueJSONKeys(body); err != nil {
+		return err
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return err
 	}
-	if decoder.Decode(&struct{}{}) == nil {
-		return errors.New("request must contain exactly one JSON value")
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request must contain exactly one JSON value")
+		}
+		return fmt.Errorf("invalid trailing JSON content: %w", err)
+	}
+	return nil
+}
+
+func validateUniqueJSONKeys(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := consumeUniqueJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request must contain exactly one JSON value")
+		}
+		return fmt.Errorf("invalid trailing JSON content: %w", err)
+	}
+	return nil
+}
+
+func consumeUniqueJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delimiter {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := token.(string)
+			if !ok {
+				return errors.New("JSON object key must be a string")
+			}
+			if _, exists := keys[key]; exists {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			keys[key] = struct{}{}
+			if err := consumeUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		return consumeClosingDelimiter(decoder, '}')
+	case '[':
+		for decoder.More() {
+			if err := consumeUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		return consumeClosingDelimiter(decoder, ']')
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+}
+
+func consumeClosingDelimiter(decoder *json.Decoder, expected json.Delim) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != expected {
+		return fmt.Errorf("unexpected JSON delimiter %q", token)
 	}
 	return nil
 }

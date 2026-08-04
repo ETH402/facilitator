@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/mail"
 	"net/url"
 	"strings"
@@ -35,19 +37,36 @@ type Config struct {
 	EmailTTL, Resend, WalletTTL, RecipientCooldown time.Duration
 	AdminSessionTTL, PaymentRetention              time.Duration
 	PublicDirectoryTTL                             time.Duration
+	EmailDeliveryLease                             time.Duration
 	Pepper                                         []byte
+	EmailOutboxKey                                 []byte
 	BlockDisposable, RestrictFree                  bool
 	Allowlist, Denylist                            []string
+	Logger                                         *slog.Logger
+	EmailObserver                                  EmailDeliveryObserver
+}
+
+// EmailDeliveryObserver keeps operational telemetry outside the merchant
+// package. Implementations receive only aggregate counts/times and never
+// recipient, merchant, request, token, or delivery identifiers.
+type EmailDeliveryObserver interface {
+	ObserveEmailOutbox(pending int64, oldestPendingAge time.Duration, at time.Time)
+	ObserveEmailDeliveryFailure()
 }
 
 type Service struct {
-	pool          *pgxpool.Pool
-	mail          email.Sender
-	cfg           Config
-	now           func() time.Time
-	publicMu      sync.Mutex
-	publicCached  []PublicMerchant
-	publicExpires time.Time
+	pool           *pgxpool.Pool
+	mail           email.Sender
+	cfg            Config
+	now            func() time.Time
+	logger         *slog.Logger
+	emailOutboxKey [32]byte
+	emailClaim     time.Duration
+	emailWake      chan struct{}
+	emailObserver  EmailDeliveryObserver
+	publicMu       sync.Mutex
+	publicCached   []PublicMerchant
+	publicExpires  time.Time
 }
 
 type Registration struct {
@@ -91,7 +110,22 @@ func New(pool *pgxpool.Pool, sender email.Sender, cfg Config) *Service {
 	if cfg.PublicDirectoryTTL <= 0 {
 		cfg.PublicDirectoryTTL = 10 * time.Second
 	}
-	return &Service{pool: pool, mail: sender, cfg: cfg, now: time.Now}
+	if cfg.EmailDeliveryLease <= 0 {
+		cfg.EmailDeliveryLease = time.Minute
+	}
+	emailOutboxKey := normalizeEmailOutboxKey(cfg.EmailOutboxKey)
+	cfg.EmailOutboxKey = nil
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &Service{
+		pool: pool, mail: sender, cfg: cfg, now: time.Now, logger: logger,
+		emailOutboxKey: emailOutboxKey,
+		emailClaim:     cfg.EmailDeliveryLease,
+		emailWake:      make(chan struct{}, 1),
+		emailObserver:  cfg.EmailObserver,
+	}
 }
 
 func (s *Service) Register(ctx context.Context, in Registration, requestID string) error {
@@ -134,7 +168,7 @@ func (s *Service) Register(ctx context.Context, in Registration, requestID strin
 		VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),$6,$7,$8)
 		ON CONFLICT DO NOTHING RETURNING id`, in.Name, in.Email, domain, in.Website, in.Description, recipient, s.cfg.TermsVersion, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT id FROM merchants WHERE business_email=$1 AND status <> 'rejected'`, in.Email).Scan(&id)
+		err = tx.QueryRow(ctx, `SELECT id FROM merchants WHERE business_email=$1 AND status <> 'rejected' FOR UPDATE`, in.Email).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The conflicting row was rejected between the insert and this
 			// read. Stay silent so the response cannot distinguish states.
@@ -143,19 +177,27 @@ func (s *Service) Register(ctx context.Context, in Registration, requestID strin
 		if err != nil {
 			return err
 		}
-		var last time.Time
-		err = tx.QueryRow(ctx, `SELECT coalesce(max(sent_at),'-infinity') FROM email_verification_tokens WHERE merchant_id=$1`, id).Scan(&last)
+		var suppressed bool
+		err = tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM email_verification_tokens token
+			LEFT JOIN email_delivery_outbox outbox ON outbox.token_id=token.id
+			WHERE token.merchant_id=$1 AND (
+				(token.sent_at IS NOT NULL AND token.sent_at>$2) OR
+				(token.sent_at IS NULL AND token.expires_at>$3 AND outbox.delivered_at IS NULL
+				 AND outbox.abandoned_at IS NULL)
+			)
+		)`, id, now.Add(-s.cfg.Resend), now).Scan(&suppressed)
 		if err != nil {
 			return err
 		}
-		if now.Sub(last) < s.cfg.Resend {
+		if suppressed {
 			return nil
 		}
 	} else if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO email_verification_tokens(merchant_id,token_hash,expires_at,sent_at)
-		VALUES ($1,$2,$3,$4)`, id, hash, now.Add(s.cfg.EmailTTL), now); err != nil {
+	_, err = s.enqueueEmail(ctx, tx, id, hash, raw, "registration", requestID, now)
+	if err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,request_id)
@@ -165,8 +207,8 @@ func (s *Service) Register(ctx context.Context, in Registration, requestID strin
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	link := strings.TrimRight(s.cfg.BaseURL, "/") + "/verify-email?token=" + url.QueryEscape(raw)
-	return s.mail.Send(ctx, email.Message{To: in.Email, Subject: "Verify your ETH402 email", TextBody: "Verify your email: " + link})
+	s.wakeEmailDelivery()
+	return nil
 }
 
 func (s *Service) validateDomain(domain string) error {
@@ -224,23 +266,30 @@ func (s *Service) RequestAdminLink(ctx context.Context, value, requestID string)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var id string
-	err = tx.QueryRow(ctx, `SELECT id FROM merchants WHERE business_email=$1 AND status <> 'rejected'`, value).Scan(&id)
+	err = tx.QueryRow(ctx, `SELECT id FROM merchants WHERE business_email=$1 AND status <> 'rejected' FOR UPDATE`, value).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	var last time.Time
-	if err = tx.QueryRow(ctx, `SELECT coalesce(max(sent_at),'-infinity')
-		FROM email_verification_tokens WHERE merchant_id=$1`, id).Scan(&last); err != nil {
+	var suppressed bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM email_verification_tokens token
+		LEFT JOIN email_delivery_outbox outbox ON outbox.token_id=token.id
+		WHERE token.merchant_id=$1 AND (
+			(token.sent_at IS NOT NULL AND token.sent_at>$2) OR
+			(token.sent_at IS NULL AND token.expires_at>$3 AND outbox.delivered_at IS NULL
+			 AND outbox.abandoned_at IS NULL)
+		)
+	)`, id, now.Add(-s.cfg.Resend), now).Scan(&suppressed); err != nil {
 		return err
 	}
-	if now.Sub(last) < s.cfg.Resend {
+	if suppressed {
 		return nil
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO email_verification_tokens(merchant_id,token_hash,expires_at,sent_at)
-		VALUES ($1,$2,$3,$4)`, id, hash, now.Add(s.cfg.EmailTTL), now); err != nil {
+	_, err = s.enqueueEmail(ctx, tx, id, hash, raw, "admin_login", requestID, now)
+	if err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,request_id)
@@ -250,8 +299,8 @@ func (s *Service) RequestAdminLink(ctx context.Context, value, requestID string)
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
-	link := strings.TrimRight(s.cfg.BaseURL, "/") + "/verify-email?token=" + url.QueryEscape(raw)
-	return s.mail.Send(ctx, email.Message{To: value, Subject: "Sign in to ETH402", TextBody: "Sign in to your ETH402 merchant panel: " + link})
+	s.wakeEmailDelivery()
+	return nil
 }
 
 func (s *Service) VerifyEmail(ctx context.Context, token, requestID string) (string, error) {

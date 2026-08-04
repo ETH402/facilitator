@@ -308,9 +308,10 @@ func newTestService(store *fakeStore, transactionSigner signer.Signer, chain Cha
 }
 
 func TestBroadcastHappyPath(t *testing.T) {
+	raw := []byte("raw-tx")
 	store := &fakeStore{work: pendingWork()}
-	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
-	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
 	hash, err := service.Broadcast(context.Background(), "payment-1", "test")
 	if err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -376,6 +377,22 @@ func TestBroadcastSendErrorMarksAmbiguous(t *testing.T) {
 	}
 	if store.broadcastTxHash != "" {
 		t.Fatal("a hash was recorded for an ambiguous broadcast")
+	}
+}
+
+func TestBroadcastHashMismatchMarksAmbiguous(t *testing.T) {
+	store := &fakeStore{work: pendingWork()}
+	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
+	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+	hash, err := service.Broadcast(context.Background(), "payment-1", "test")
+	if err == nil || !strings.Contains(err.Error(), "provider returned transaction hash") {
+		t.Fatalf("hash = %q, err = %v", hash, err)
+	}
+	if !store.ambiguous {
+		t.Fatal("mismatched acknowledgement was not left for local-hash reconciliation")
+	}
+	if store.broadcastTxHash != "" {
+		t.Fatalf("provider-controlled hash was recorded: %q", store.broadcastTxHash)
 	}
 }
 
@@ -594,13 +611,14 @@ func TestSettleInvalidRequest(t *testing.T) {
 }
 
 func TestSettleBroadcastsInline(t *testing.T) {
+	raw := []byte("raw-tx")
 	work := pendingWork()
 	store := &fakeStore{
 		work:   work,
 		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
 	}
-	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
-	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
 	response, err := service.Settle(context.Background(), settleRequest())
 	if err != nil {
 		t.Fatalf("settle: %v", err)
@@ -713,9 +731,10 @@ func TestBroadcastSimulationFailureKeepsIntent(t *testing.T) {
 // on the network with nothing recording it — the ambiguous case, which costs a
 // human to resolve. Every restart was previously a chance to create one.
 func TestBroadcastRecordsItsHashDespiteCancellation(t *testing.T) {
+	raw := []byte("raw-tx")
 	store := &fakeStore{work: pendingWork()}
-	chain := &cancellationAwareChain{txHash: "0x" + strings.Repeat("ab", 32)}
-	service := newTestService(store, fakeSigner{raw: []byte("raw-tx")}, chain)
+	chain := &cancellationAwareChain{txHash: "0x" + keccakHex(raw)}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
 
 	// Cancelled before the pipeline runs: the harshest version of a shutdown
 	// arriving mid-broadcast.

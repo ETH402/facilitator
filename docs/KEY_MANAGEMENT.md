@@ -41,3 +41,13 @@ SameSite=Strict cookie. Email creates an unprivileged
 session; API-key management requires that the registered recipient wallet has
 freshly authenticated that same session. Admin session tokens are not API keys,
 cannot authorize x402 calls, and are pruned after expiry/revocation.
+
+Email delivery has a third, independent secret:
+`ETH402_EMAIL_OUTBOX_KEY` is exactly 32 random bytes encoded as 64 hexadecimal
+characters. It encrypts the raw one-time token only between transactional enqueue
+and SMTP acceptance/expiry; verification still stores only SHA-256 hashes. Keep
+it in the production secret manager, never reuse the API-key pepper, operator
+token, SMTP password, or settlement key, and never print it. Ciphertext is bound
+to the merchant ID, token hash, and message kind to reject row swapping. Rotation
+requires draining or expiring every pending outbox row before replacing the key;
+delivered/abandoned rows contain no ciphertext and need no re-encryption.

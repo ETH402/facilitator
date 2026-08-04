@@ -1,6 +1,7 @@
 package ethereum
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,11 +17,18 @@ import (
 
 var errTransactionsDisabled = errors.New("transaction submission is disabled in the verification client")
 
+// ErrProviderDisagreement means independently configured RPCs returned
+// different answers to the same payment-critical read. Availability fallback
+// is unsafe for verification: one equivocating provider must not be able to
+// decide whether an authorization is settleable merely by answering first.
+var ErrProviderDisagreement = errors.New("ethereum RPC providers disagree")
+
 // VerificationClient implements the official x402 EVM facilitator signer
 // interface for read-only verification. Its transaction methods deliberately
 // fail closed; settlement uses a separate signer in Milestone 3.
 type VerificationClient struct {
-	clients []*ethclient.Client
+	clients  []*ethclient.Client
+	observer ProviderDisagreementObserver
 }
 
 func NewVerificationClient(primary, fallback string) (*VerificationClient, error) {
@@ -51,6 +59,14 @@ func (c *VerificationClient) Close() {
 	}
 }
 
+// ObserveProviderDisagreements attaches the shared production metric sink.
+// Verification uses go-ethereum's client directly, so it cannot report the
+// settlement client's per-attempt counters, but disagreement is a common
+// safety signal across both read paths.
+func (c *VerificationClient) ObserveProviderDisagreements(observer ProviderDisagreementObserver) {
+	c.observer = observer
+}
+
 func (c *VerificationClient) GetAddresses() []string { return []string{} }
 
 func (c *VerificationClient) ReadContract(
@@ -69,9 +85,9 @@ func (c *VerificationClient) ReadContract(
 		return nil, fmt.Errorf("pack %s call: %w", functionName, err)
 	}
 	target := common.HexToAddress(address)
-	result, err := readFallback(c.clients, func(client *ethclient.Client) ([]byte, error) {
+	result, err := readAgreement(ctx, c.clients, func(client *ethclient.Client) ([]byte, error) {
 		return client.CallContract(ctx, ethereum.CallMsg{To: &target, Data: data}, nil)
-	})
+	}, bytes.Equal, c.observer)
 	if err != nil {
 		return nil, fmt.Errorf("eth_call %s: %w", functionName, err)
 	}
@@ -129,30 +145,90 @@ func (c *VerificationClient) GetBalance(ctx context.Context, address, tokenAddre
 }
 
 func (c *VerificationClient) GetChainID(ctx context.Context) (*big.Int, error) {
-	return readFallback(c.clients, func(client *ethclient.Client) (*big.Int, error) {
+	return readAgreement(ctx, c.clients, func(client *ethclient.Client) (*big.Int, error) {
 		return client.ChainID(ctx)
-	})
+	}, func(left, right *big.Int) bool { return left.Cmp(right) == 0 }, c.observer)
 }
 
 func (c *VerificationClient) GetCode(ctx context.Context, address string) ([]byte, error) {
 	target := common.HexToAddress(address)
-	return readFallback(c.clients, func(client *ethclient.Client) ([]byte, error) {
+	return readAgreement(ctx, c.clients, func(client *ethclient.Client) ([]byte, error) {
 		return client.CodeAt(ctx, target, nil)
-	})
+	}, bytes.Equal, c.observer)
 }
 
-func readFallback[T any](clients []*ethclient.Client, read func(*ethclient.Client) (T, error)) (T, error) {
+// readAgreement requires every configured provider to answer and agree. A
+// single-provider client remains useful for local development, while production
+// config supplies two independently operated providers. Reads run concurrently
+// so the safety check costs one provider latency rather than their sum.
+func readAgreement[T any](
+	ctx context.Context,
+	clients []*ethclient.Client,
+	read func(*ethclient.Client) (T, error),
+	equal func(T, T) bool,
+	observer ProviderDisagreementObserver,
+) (T, error) {
 	var zero T
-	var last error
-	for _, client := range clients {
-		value, err := read(client)
-		if err == nil {
-			return value, nil
+	if len(clients) == 0 {
+		return zero, errors.New("no RPC clients configured")
+	}
+	type result struct {
+		index int
+		value T
+		err   error
+	}
+	results := make(chan result, len(clients))
+	for index, client := range clients {
+		go func() {
+			value, err := read(client)
+			results <- result{index: index, value: value, err: err}
+		}()
+	}
+	outcomes := make([]result, len(clients))
+	for range clients {
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case outcome := <-results:
+			outcomes[outcome.index] = outcome
 		}
-		last = err
 	}
-	if last == nil {
-		last = errors.New("no RPC clients configured")
+
+	successes := 0
+	for _, outcome := range outcomes {
+		if outcome.err == nil {
+			successes++
+		}
 	}
-	return zero, last
+	if successes != 0 && successes != len(outcomes) {
+		observeProviderDisagreement(observer)
+		return zero, fmt.Errorf("%w: providers returned divergent success and error outcomes", ErrProviderDisagreement)
+	}
+	if successes == 0 {
+		// Every provider failed, so there is no successful chain-state value to
+		// disagree with. Do not wrap the provider error: go-ethereum transport
+		// errors can include the authenticated endpoint URL, which callers log.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return zero, ctxErr
+		}
+		return zero, errors.New("ethereum RPC providers unavailable")
+	}
+
+	values := make([]T, len(outcomes))
+	for index, outcome := range outcomes {
+		values[index] = outcome.value
+	}
+	for index := 1; index < len(values); index++ {
+		if !equal(values[0], values[index]) {
+			observeProviderDisagreement(observer)
+			return zero, fmt.Errorf("%w: provider 1 and provider %d", ErrProviderDisagreement, index+1)
+		}
+	}
+	return values[0], nil
+}
+
+func observeProviderDisagreement(observer ProviderDisagreementObserver) {
+	if observer != nil {
+		observer.ObserveRPCDisagreement()
+	}
 }

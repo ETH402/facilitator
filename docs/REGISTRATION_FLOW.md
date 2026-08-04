@@ -7,8 +7,10 @@ sequenceDiagram
   participant Mail as Email adapter
   participant DB as PostgreSQL
   M->>E: registration + terms acceptance
-  E->>DB: pending merchant + hashed email token + audit
-  E->>Mail: one-time verification link
+  E->>DB: pending merchant + hashed token + encrypted delivery outbox + audit
+  E->>Mail: claim outbox item and submit one-time verification link
+  Mail-->>E: accepted or transient failure
+  E->>DB: accepted: sent_at + erase ciphertext; failed: schedule retry
   M->>E: raw token
   E->>DB: hash raw token, match stored hash, and consume once
   M->>E: request recipient challenge
@@ -26,7 +28,14 @@ fresh `authenticate-admin` recipient signature before the panel may show private
 statistics or manage API keys. See [ADR-0005](decisions/0005-merchant-admin-sessions-and-private-stats.md).
 
 Email responses are enumeration-resistant. Resends and registrations are
-throttled. Disposable/free-provider and domain lists are operator controls,
+throttled. A live pending delivery suppresses duplicates, while the normal
+resend cooldown starts only after the mail adapter accepts the message. SMTP
+failure never leaves a misleading `sent_at`: the same one-time token is retried
+from a leased durable outbox with bounded exponential backoff. The raw token is
+AEAD-encrypted under the dedicated email-outbox key only while delivery is
+pending, bound to its merchant/hash/message kind, and erased after delivery or
+expiry; verification stores and compares only its SHA-256 hash.
+Disposable/free-provider and domain lists are operator controls,
 not proof of legitimacy. A determined actor can create multiple accounts.
 
 Recipient changes require API-key authentication, a fresh challenge for the

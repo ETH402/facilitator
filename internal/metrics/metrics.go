@@ -28,15 +28,20 @@ type Registry struct {
 	// Signer balance is stored as a string so an arbitrarily large wei value
 	// survives; it is converted only at exposition, where Prometheus requires a
 	// float anyway.
-	signerBalanceWei  atomic.Value
-	signerBalanceAt   atomic.Int64
-	signerBalanceErr  atomic.Uint64
-	rpcRequests       atomic.Uint64
-	rpcErrors         atomic.Uint64
-	fairUseRefusals   atomic.Uint64
-	retentionLastTick atomic.Int64
-	retentionErrors   atomic.Uint64
-	retentionRedacted atomic.Uint64
+	signerBalanceWei   atomic.Value
+	signerBalanceAt    atomic.Int64
+	signerBalanceErr   atomic.Uint64
+	rpcRequests        atomic.Uint64
+	rpcErrors          atomic.Uint64
+	rpcDisagreements   atomic.Uint64
+	fairUseRefusals    atomic.Uint64
+	retentionLastTick  atomic.Int64
+	retentionErrors    atomic.Uint64
+	retentionRedacted  atomic.Uint64
+	emailOutboxPending atomic.Int64
+	emailOutboxOldest  atomic.Int64
+	emailOutboxTick    atomic.Int64
+	emailDeliveryFails atomic.Uint64
 	// Worker heartbeats, keyed by worker name. A worker is healthy when it has
 	// ticked recently; absence is as meaningful as staleness, so a worker that
 	// never started is never reported healthy.
@@ -93,6 +98,30 @@ func (r *Registry) ObserveRPC(failed bool) {
 		r.rpcErrors.Add(1)
 	}
 }
+
+// ObserveRPCDisagreement counts successful provider responses whose decoded
+// payment-critical state differs. It is separate from rpcErrors: both attempts
+// succeeded as requests, but the logical read failed closed and needs a distinct
+// operator alert.
+func (r *Registry) ObserveRPCDisagreement() { r.rpcDisagreements.Add(1) }
+
+// ObserveEmailOutbox records aggregate delivery backlog and a successful worker
+// observation. No merchant, recipient, token, request, or delivery identifier is
+// accepted here, keeping the metrics boundary low-cardinality and secret-free.
+func (r *Registry) ObserveEmailOutbox(pending int64, oldestPendingAge time.Duration, at time.Time) {
+	if pending < 0 {
+		pending = 0
+	}
+	oldest := oldestPendingAge / time.Second
+	if oldest < 0 {
+		oldest = 0
+	}
+	r.emailOutboxPending.Store(pending)
+	r.emailOutboxOldest.Store(int64(oldest))
+	r.emailOutboxTick.Store(at.Unix())
+}
+
+func (r *Registry) ObserveEmailDeliveryFailure() { r.emailDeliveryFails.Add(1) }
 
 // Heartbeat records that a worker completed a tick. Health is derived from
 // recency rather than a boolean the worker sets, because a worker that has
@@ -172,9 +201,23 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		"# TYPE eth402_rpc_requests_total counter\neth402_rpc_requests_total %d\n", r.rpcRequests.Load())
 	_, _ = fmt.Fprintf(w, "# HELP eth402_rpc_errors_total Failed Ethereum RPC attempts.\n"+
 		"# TYPE eth402_rpc_errors_total counter\neth402_rpc_errors_total %d\n", r.rpcErrors.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_rpc_provider_disagreements_total Payment-critical Ethereum RPC reads whose providers disagreed.\n"+
+		"# TYPE eth402_rpc_provider_disagreements_total counter\neth402_rpc_provider_disagreements_total %d\n", r.rpcDisagreements.Load())
 	r.writeWorkerHealth(w)
 	r.writeSignerBalance(w)
 	r.writeRetention(w)
+	r.writeEmailDelivery(w)
+}
+
+func (r *Registry) writeEmailDelivery(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "# HELP eth402_email_outbox_pending Pending registration and admin-login email deliveries.\n"+
+		"# TYPE eth402_email_outbox_pending gauge\neth402_email_outbox_pending %d\n", r.emailOutboxPending.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_email_outbox_oldest_pending_age_seconds Age of the oldest pending email delivery.\n"+
+		"# TYPE eth402_email_outbox_oldest_pending_age_seconds gauge\neth402_email_outbox_oldest_pending_age_seconds %d\n", r.emailOutboxOldest.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_email_delivery_last_tick_timestamp_seconds Last successful email-outbox worker observation.\n"+
+		"# TYPE eth402_email_delivery_last_tick_timestamp_seconds gauge\neth402_email_delivery_last_tick_timestamp_seconds %d\n", r.emailOutboxTick.Load())
+	_, _ = fmt.Fprintf(w, "# HELP eth402_email_delivery_failures_total Failed SMTP submissions or permanently unreadable outbox payloads.\n"+
+		"# TYPE eth402_email_delivery_failures_total counter\neth402_email_delivery_failures_total %d\n", r.emailDeliveryFails.Load())
 }
 
 // writeWorkerHealth publishes each worker's last tick. The timestamp rather than a

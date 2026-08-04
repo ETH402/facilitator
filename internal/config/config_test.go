@@ -26,7 +26,24 @@ func validConfig() Config {
 		MetricsEnabled:     true,
 		LogLevel:           "info",
 		TermsVersion:       "test", APIKeyPepper: "01234567890123456789012345678901",
+		EmailOutboxKey: "1111111111111111111111111111111111111111111111111111111111111111",
 	}
+}
+
+func validProductionConfig() Config {
+	cfg := validConfig()
+	cfg.Environment = "production"
+	cfg.PublicBaseURL = "https://eth402.example"
+	cfg.DatabaseURL = "postgres://eth402@example.internal/eth402?sslmode=verify-full"
+	cfg.EthereumRPCURL = "https://primary-rpc.example"
+	cfg.FallbackRPCURL = "https://fallback-rpc.example"
+	cfg.EmailBackend = "smtp"
+	cfg.SMTPAddress = "smtp.example.com:465"
+	cfg.SMTPFrom = "verify@example.com"
+	cfg.SMTPTLSMode = "tls"
+	cfg.SMTPTimeout = 10 * time.Second
+	cfg.APIKeyPepper = "independent-production-pepper-value"
+	return cfg
 }
 
 func TestLogLevel(t *testing.T) {
@@ -59,6 +76,31 @@ func TestValidate(t *testing.T) {
 	bad.USDCContract = "0x0000000000000000000000000000000000000000"
 	if err := bad.Validate(); err == nil {
 		t.Fatal("unsupported asset accepted")
+	}
+}
+
+func TestEmailOutboxKeyValidation(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"", "abcd", strings.Repeat("z", 64), strings.Repeat("1", 62)} {
+		cfg := validConfig()
+		cfg.EmailOutboxKey = value
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid email outbox key %q accepted", value)
+		}
+	}
+	cfg := validConfig()
+	cfg.APIKeyPepper = cfg.EmailOutboxKey
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("email outbox key reused as API key pepper")
+	}
+}
+
+func TestProductionRejectsDevelopmentEmailOutboxKey(t *testing.T) {
+	t.Parallel()
+	cfg := validProductionConfig()
+	cfg.EmailOutboxKey = strings.Repeat("0", 64)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("production accepted development email outbox key")
 	}
 }
 
@@ -214,8 +256,9 @@ func TestProductionAcceptsSMTP(t *testing.T) {
 		t.Fatalf("safe production SMTP configuration rejected: %v", err)
 	}
 	summary := fmt.Sprint(cfg.RedactedSummary())
-	if strings.Contains(summary, cfg.SMTPPassword) || strings.Contains(summary, cfg.SMTPUsername) {
-		t.Fatal("SMTP credentials exposed in redacted configuration summary")
+	if strings.Contains(summary, cfg.SMTPPassword) || strings.Contains(summary, cfg.SMTPUsername) ||
+		strings.Contains(summary, cfg.EmailOutboxKey) {
+		t.Fatal("email credentials exposed in redacted configuration summary")
 	}
 }
 
@@ -241,6 +284,80 @@ func TestProductionRequiresIndependentEncryptedDependencies(t *testing.T) {
 	cfg.MetricsEnabled = false
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("production accepted one RPC, non-verifying database TLS, and disabled metrics")
+	}
+}
+
+func TestProductionRPCsRequireDistinctCanonicalHostIdentities(t *testing.T) {
+	t.Parallel()
+	testCredential := strings.Repeat("credential", 2)
+	tests := []struct {
+		name, primary, fallback string
+	}{
+		{
+			name:     "host casing paths and query credentials",
+			primary:  fmt.Sprintf("HTTPS://user:%s@RPC.EXAMPLE/rpc?api-key=%s", testCredential, testCredential),
+			fallback: fmt.Sprintf("https://other:%s@rpc.example/v2?api-key=%s", testCredential, testCredential),
+		},
+		{
+			name:     "default port root and trailing dot",
+			primary:  "https://rpc.example.:443/",
+			fallback: "https://rpc.example?network=mainnet",
+		},
+		{
+			name:     "different ports remain one host identity",
+			primary:  "https://rpc.example:443",
+			fallback: "https://rpc.example:8443/private",
+		},
+		{
+			name:     "equivalent IPv6 spellings",
+			primary:  "https://[2001:0db8:0:0:0:0:0:1]/rpc",
+			fallback: "https://[2001:db8::1]:443?key=secret",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validProductionConfig()
+			cfg.EthereumRPCURL = test.primary
+			cfg.FallbackRPCURL = test.fallback
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "distinct host identities") {
+				t.Fatalf("equivalent RPC hosts accepted: %v", err)
+			}
+			for _, secret := range []string{testCredential, "api-key=", "key=secret"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("RPC validation error leaked endpoint credential %q: %v", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func TestProductionRPCEndpointFormsAndAuthenticatedURLs(t *testing.T) {
+	t.Parallel()
+	cfg := validProductionConfig()
+	testCredential := strings.Repeat("credential", 2)
+	cfg.EthereumRPCURL = fmt.Sprintf("https://primary-user:%s@primary-rpc.example/v2/key?tenant=one", testCredential)
+	cfg.FallbackRPCURL = fmt.Sprintf("https://fallback-rpc.example/rpc?api-key=%s", testCredential)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("authenticated RPC endpoints on distinct hosts rejected: %v", err)
+	}
+
+	for _, endpoint := range []string{
+		"https://primary-rpc.example/rpc#ignored",
+		"https://primary-rpc.example/rpc#",
+		"https:///missing-host",
+		"http://primary-rpc.example",
+		"https://primary-rpc.example:0",
+		"https://primary-rpc.example:65536",
+		"https://réseau.example",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			invalid := validProductionConfig()
+			invalid.EthereumRPCURL = endpoint
+			if err := invalid.Validate(); err == nil {
+				t.Fatalf("invalid production RPC endpoint accepted: %q", endpoint)
+			}
+		})
 	}
 }
 

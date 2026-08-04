@@ -60,6 +60,90 @@ func testServer(dbErr, rpcErr error, chain uint64) http.Handler {
 	}).Handler()
 }
 
+func TestDecodeStrictAcceptsValidJSONValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		body        string
+		destination any
+	}{
+		{
+			name: "object",
+			body: `{"name":"merchant","nested":{"value":7},"items":[{"id":1},{"id":2}]}`,
+			destination: &struct {
+				Name   string `json:"name"`
+				Nested struct {
+					Value int `json:"value"`
+				} `json:"nested"`
+				Items []map[string]int `json:"items"`
+			}{},
+		},
+		{name: "array", body: `[1,2,3]`, destination: &[]int{}},
+		{name: "scalar", body: ` "merchant" `, destination: new(string)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(test.body))
+			if err := DecodeStrict(recorder, request, test.destination); err != nil {
+				t.Fatalf("DecodeStrict() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeStrictRejectsAmbiguousOrMalformedJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		body          string
+		errorContains string
+	}{
+		{name: "duplicate top-level key", body: `{"name":"first","name":"second"}`, errorContains: "duplicate JSON object key"},
+		{name: "duplicate nested key", body: `{"nested":{"value":1,"value":2}}`, errorContains: "duplicate JSON object key"},
+		{name: "duplicate key inside array", body: `{"items":[{"id":1,"id":2}]}`, errorContains: "duplicate JSON object key"},
+		{name: "escaped-equivalent key", body: `{"name":"first","na\u006de":"second"}`, errorContains: "duplicate JSON object key"},
+		{name: "nested escaped-equivalent key", body: `{"nested":{"value":1,"val\u0075e":2}}`, errorContains: "duplicate JSON object key"},
+		{name: "invalid UTF-8", body: string([]byte{'{', '"', 'n', 'a', 'm', 'e', '"', ':', '"', 0xff, '"', '}'}), errorContains: "not valid UTF-8"},
+		{name: "trailing junk", body: `{"name":"merchant"} garbage`, errorContains: "invalid trailing JSON content"},
+		{name: "second JSON value", body: `{"name":"merchant"} {"name":"other"}`, errorContains: "exactly one JSON value"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			destination := struct {
+				Name   string           `json:"name"`
+				Nested map[string]int   `json:"nested"`
+				Items  []map[string]int `json:"items"`
+			}{}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(test.body))
+			err := DecodeStrict(recorder, request, &destination)
+			if err == nil {
+				t.Fatal("DecodeStrict() accepted ambiguous or malformed JSON")
+			}
+			if !strings.Contains(err.Error(), test.errorContains) {
+				t.Fatalf("DecodeStrict() error = %q, want substring %q", err, test.errorContains)
+			}
+			if destination.Name != "" || destination.Nested != nil || destination.Items != nil {
+				t.Fatalf("destination mutated before rejection: %#v", destination)
+			}
+		})
+	}
+}
+
+func TestDecodeStrictPreservesRequestBodyLimit(t *testing.T) {
+	t.Parallel()
+	body := `{"name":"` + strings.Repeat("x", maxRequestBody) + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	err := DecodeStrict(httptest.NewRecorder(), request, &struct {
+		Name string `json:"name"`
+	}{})
+	var maxBytesError *http.MaxBytesError
+	if !errors.As(err, &maxBytesError) {
+		t.Fatalf("DecodeStrict() error = %v, want *http.MaxBytesError", err)
+	}
+}
+
 func TestHealthEndpoints(t *testing.T) {
 	t.Parallel()
 	handler := testServer(nil, nil, 1)

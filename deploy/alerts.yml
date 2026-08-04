@@ -108,9 +108,21 @@ groups:
         annotations:
           summary: "Ethereum RPC failure rate above 25%"
           description: >-
-            Each retry is counted, so a read succeeding only on its fallback still
-            registers the failing provider. Verification and settlement both depend
-            on these reads; sustained failures stall broadcasts and confirmations.
+            Each provider attempt and retry is counted independently. Verification
+            and settlement require every configured provider; sustained failures
+            stall broadcasts and confirmations rather than degrading to one source.
+
+      - alert: EthereumRPCProviderDisagreement
+        expr: increase(eth402_rpc_provider_disagreements_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ethereum RPC providers disagree on payment-critical state"
+          description: >-
+            ETH402 failed the read closed. Investigate provider integrity, chain
+            selection, and synchronization before resuming settlement; do not remove
+            one provider merely to make the alert clear.
 
       - alert: RetentionWorkerStalled
         # Default retention interval is one hour. Tune this threshold when changing
@@ -140,3 +152,49 @@ groups:
           severity: warning
         annotations:
           summary: "Privacy retention pass failed"
+
+      - alert: EmailDeliveryWorkerStalled
+        expr: >-
+          eth402_email_delivery_last_tick_timestamp_seconds > 0
+            and time() - eth402_email_delivery_last_tick_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Email delivery worker has stopped observing its outbox"
+          description: >-
+            Registration and merchant-login messages may remain queued. Check
+            database connectivity, worker logs, and process health.
+
+      - alert: EmailDeliveryWorkerAbsent
+        expr: eth402_email_delivery_last_tick_timestamp_seconds == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Email delivery worker has never completed an observation"
+
+      - alert: EmailDeliveryBacklogOld
+        expr: >-
+          eth402_email_outbox_pending > 0
+            and eth402_email_outbox_oldest_pending_age_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Email delivery backlog is not draining"
+          description: >-
+            The oldest pending registration or login message is over five minutes
+            old. Inspect SMTP reachability and recent sanitized delivery failures.
+
+      - alert: EmailDeliveryFailures
+        expr: increase(eth402_email_delivery_failures_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Email delivery failed"
+          description: >-
+            Includes transient SMTP failures and permanently abandoned payloads
+            that failed authenticated decryption. Corruption logs contain only a
+            delivery ID and request ID; inspect them without exporting ciphertext.

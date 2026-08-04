@@ -15,11 +15,14 @@ curl http://localhost/health/ready
 curl http://localhost/stats
 ```
 
-The logging email backend emits the verification body so the development link
-can be used; the file backend writes mode-0600 JSON under `email-outbox/`.
-Both expose raw email tokens by design and are forbidden in production. Never
-copy these logs or files to shared systems. No development private key is
-supplied by default and signing is disabled.
+The default file email backend writes mode-0600 JSON into the application's
+temporary `/tmp/email-outbox` directory. Copy a message out of the container
+with `docker compose cp app:/tmp/email-outbox ./email-outbox`, follow its link,
+then delete the local copy. The optional logging backend records only recipient
+and subject; it deliberately does not log the message body because that contains
+a raw verification token. Email files are forbidden in production and must
+never be copied to shared systems. No development private key is supplied by
+default and signing is disabled.
 
 Use `docker compose down -v` only when intentionally discarding local database
 state.

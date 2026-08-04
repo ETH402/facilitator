@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"math/big"
@@ -19,6 +20,7 @@ import (
 	"github.com/ETH402/facilitator/internal/stats"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/types"
+	"golang.org/x/crypto/sha3"
 )
 
 type settleFakeStore struct{ work settlement.Work }
@@ -221,7 +223,9 @@ func settleHandler(service *settlement.Service, registry *metrics.Registry) http
 
 func TestSettleEndpoint(t *testing.T) {
 	t.Parallel()
-	txHash := "0x" + strings.Repeat("ab", 32)
+	digest := sha3.NewLegacyKeccak256()
+	digest.Write([]byte("signed-raw-transaction"))
+	txHash := "0x" + hex.EncodeToString(digest.Sum(nil))
 	handler := settleHandler(settleTestService(txHash), metrics.New())
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/settle", strings.NewReader(settleTestBody(t))))
@@ -284,6 +288,48 @@ func TestSettleRejectsMalformedBody(t *testing.T) {
 	}
 	if response["network"] != "eip155:1" {
 		t.Fatalf("network = %v, want eip155:1", response["network"])
+	}
+}
+
+func TestSettleRejectsAmbiguousJSONBodies(t *testing.T) {
+	t.Parallel()
+	valid := settleTestBody(t)
+	duplicateTopLevel := strings.Replace(valid, "{", `{"x402Version":2,`, 1)
+	escapedDuplicateTopLevel := strings.Replace(valid, "{", `{"\u0078402Version":2,`, 1)
+	duplicateNested := strings.Replace(
+		valid,
+		`"authorization":{`,
+		`"authorization":{"from":"0x2222222222222222222222222222222222222222",`,
+		1,
+	)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "duplicate top-level key", body: duplicateTopLevel},
+		{name: "duplicate nested key", body: duplicateNested},
+		{name: "escaped-equivalent key", body: escapedDuplicateTopLevel},
+		{name: "trailing junk", body: valid + " garbage"},
+		{name: "second JSON value", body: valid + ` {}`},
+	}
+	handler := settleHandler(settleTestService("0x"), metrics.New())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(
+				http.MethodPost, "/settle", strings.NewReader(test.body),
+			))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			var response x402.SettleResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.ErrorReason != settlement.WireReasonInvalidRequest {
+				t.Fatalf("errorReason = %q", response.ErrorReason)
+			}
+		})
 	}
 }
 

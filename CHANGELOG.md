@@ -7,6 +7,26 @@ versioned where noted.
 
 ### Fixed
 
+- Payment-critical Ethereum reads now require concurrent agreement from both
+  configured providers, report and alert on disagreement, bind receipts and
+  transaction responses to the requested hashes/blocks, and compare every
+  broadcast acknowledgement with the transaction hash derived locally from the
+  signed bytes.
+
+- JSON request decoding now rejects trailing values and duplicate keys at any
+  nesting depth, including escaped spellings of the same key, before typed x402
+  decoding.
+
+- Registration and merchant-login email now uses a transactional, leased
+  delivery outbox. Transient SMTP failures are retried without falsely starting
+  the resend cooldown, pending token material is separately encrypted and
+  erased after delivery/expiry, per-claim fencing prevents stale-worker writes,
+  authenticated-decryption failures are permanently abandoned, backlog/failure
+  metrics and alerts are available, and public responses remain enumeration-safe.
+
+- Public HTTPS responses now advertise a one-year HSTS policy without capturing
+  unrelated subdomains or opting the registrable domain into browser preload.
+
 - Caddy now applies mutually exclusive default and page-specific content
   security policies, so the merchant panel can load its same-origin script
   without weakening the policy used by API responses.
@@ -16,6 +36,19 @@ versioned where noted.
   keeps merchant authentication and machine APIs isolated on the API origin.
 
 ### Added
+
+- Reproducible SSH/Docker production manifests and an explicit PostgreSQL
+  owner/migration/runtime role model with authoritative least-privilege grants,
+  existing-schema adoption, and tests that fail when a migration adds an
+  ungranted table.
+
+- A tag/manual, SHA-pinned release workflow that reruns the security-review
+  quality gates, builds and scans the facilitator and policy-signer images,
+  generates SPDX SBOMs, records immutable registry digests, creates GitHub
+  provenance and SBOM attestations, and publishes the evidence as release
+  assets. Release operations and current private-repository limitations are
+  documented, and Dependabot now proposes reviewed Go, Docker, and Actions
+  updates without granting itself deployment or production access.
 
 - An ETH402-branded, responsive public landing page and network activity view,
   plus a redesigned merchant console with dedicated overview, analytics,
@@ -180,6 +213,12 @@ versioned where noted.
   performs the single-use verification, confirms the merchant ID, and points
   at the wallet-challenge step. API clients retain the existing JSON endpoint.
   OpenAPI 0.9.0.
+
+### Changed
+
+- Updated the official x402 Go SDK pin from v2.19.0 to v2.20.0 after reviewing
+  the upstream release diff; the exact-EVM facilitator path used by ETH402 is
+  unchanged.
 
 ### Fixed
 

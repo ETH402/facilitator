@@ -26,7 +26,10 @@ type Sender interface {
 type LogSender struct{ Logger *slog.Logger }
 
 func (s LogSender) Send(_ context.Context, m Message) error {
-	s.Logger.Info("development email delivery", "to", m.To, "subject", m.Subject, "body", m.TextBody)
+	// The raw verification token is part of TextBody. Even the development
+	// adapter must not copy it into durable/shared logs; use FileSender with its
+	// mode-0600 output when a local developer needs to follow the link.
+	s.Logger.Info("development email delivery simulated", "to", m.To, "subject", m.Subject)
 	return nil
 }
 

@@ -1,0 +1,419 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+  TEST_DATABASE_URL: postgres://eth402:eth402_dev_only@localhost:5432/eth402_test?sslmode=disable
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.tag.outputs.commit }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          fetch-depth: 0
+      - name: Require a public, annotated SemVer tag on main
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: |
+          set -eu
+          if [ "$REPOSITORY_VISIBILITY" != "public" ]; then
+            echo "Release publishing requires a public repository (or a reviewed Enterprise-specific workflow)." >&2
+            echo "Artifact attestations are unavailable to private GitHub Free/Pro/Team repositories." >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+            echo "Select an existing release tag when dispatching this workflow." >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "release tag must use vMAJOR.MINOR.PATCH with an optional prerelease suffix" >&2
+            exit 1
+          fi
+          release_status=$(curl --silent --show-error \
+            --output "$RUNNER_TEMP/existing-release.json" \
+            --write-out '%{http_code}' \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME")
+          case "$release_status" in
+            404) ;;
+            200)
+              echo "release $GITHUB_REF_NAME already exists; refusing before any registry push" >&2
+              exit 1
+              ;;
+            *)
+              echo "could not prove the release identifier is unused (GitHub HTTP $release_status)" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "release tag must be annotated; create and verify a signed annotated tag" >&2
+            exit 1
+          fi
+          tag_object=$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{tag}")
+          verification=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.verification')
+          if [ "$(printf '%s' "$verification" | jq -r '.verified')" != "true" ]; then
+            reason=$(printf '%s' "$verification" | jq -r '.reason // "unknown"')
+            echo "GitHub did not verify the release-tag signature (reason: $reason)" >&2
+            exit 1
+          fi
+          commit=$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "release commit is not reachable from origin/main" >&2
+            exit 1
+          fi
+          printf 'tag=%s\ncommit=%s\n' "$GITHUB_REF_NAME" "$commit" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: Release quality gates
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_DB: eth402_test
+          POSTGRES_USER: eth402
+          POSTGRES_PASSWORD: eth402_dev_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eth402 -d eth402_test"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          ref: ${{ needs.validate-tag.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Verify source identity and clean formatting
+        env:
+          EXPECTED_COMMIT: ${{ needs.validate-tag.outputs.commit }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -z "$(gofmt -l .)"
+      - name: Vet and build
+        run: |
+          go vet ./...
+          go build ./...
+      - name: Unit tests
+        run: go test ./...
+      - name: Race tests
+        run: go test -race ./...
+      - name: Migration up/down/up
+        env:
+          ETH402_ENV: test
+          ETH402_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          ETH402_ETHEREUM_RPC_URL: http://localhost:8545
+        run: |
+          go run ./cmd/migrate up
+          go run ./cmd/migrate down
+          go run ./cmd/migrate up
+      - name: Database integration tests under race detector
+        env:
+          ETH402_TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: go test -tags=integration -race -p 1 ./internal/...
+      - name: Incident simulations
+        env:
+          ETH402_TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: make incident-simulations
+      - name: Abuse simulations
+        run: go test -tags=abuse -race -timeout 20m ./internal/httpapi
+      - name: Bounded parser fuzzing
+        run: |
+          go test -run=^$ -fuzz=FuzzUnsigned -fuzztime=1m ./internal/policy
+          go test -run=^$ -fuzz=FuzzSplitSignature -fuzztime=30s ./internal/policy
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+      - name: Go vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Scan complete Git history for secrets
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          "$(go env GOPATH)/bin/gitleaks" git --redact --verbose .
+
+  images:
+    name: Build and scan ${{ matrix.image }}
+    needs: [validate-tag, quality]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: facilitator
+            target: ""
+          - image: policysigner
+            target: policysigner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          ref: ${{ needs.validate-tag.outputs.commit }}
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3
+      - name: Derive immutable image coordinates
+        id: coordinates
+        env:
+          IMAGE: ${{ matrix.image }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -eu
+          mkdir -p release-build
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image_name="ghcr.io/$owner/$IMAGE"
+          image_reference="$image_name:$RELEASE_TAG"
+          printf 'name=%s\nreference=%s\n' "$image_name" "$image_reference" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: ${{ steps.coordinates.outputs.reference }}
+      - name: Scan the exact local image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.coordinates.outputs.reference }}
+          version: v0.70.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+          timeout: 10m
+      - name: Generate SPDX JSON SBOM for the exact local image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.coordinates.outputs.reference }}
+          format: spdx-json
+          output-file: release-build/${{ matrix.image }}.spdx.json
+          syft-version: v1.50.0
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+      - name: Freeze the exact scanned image for publication
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_NAME: ${{ steps.coordinates.outputs.name }}
+          IMAGE_REFERENCE: ${{ steps.coordinates.outputs.reference }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.validate-tag.outputs.commit }}
+        run: |
+          set -eu
+          image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE_REFERENCE")
+          {
+            printf 'image=%s\n' "$IMAGE_NAME"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'tagged_reference=%s\n' "$IMAGE_REFERENCE"
+            printf 'local_image_id=%s\n' "$image_id"
+            printf 'source_commit=%s\n' "$SOURCE_COMMIT"
+            printf 'platform=linux/amd64\n'
+          } > "release-build/$IMAGE.build.txt"
+          docker save "$IMAGE_REFERENCE" | gzip -n > "release-build/$IMAGE.docker.tar.gz"
+          (cd release-build && sha256sum "$IMAGE.docker.tar.gz" "$IMAGE.spdx.json" "$IMAGE.build.txt" > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scanned-image-${{ matrix.image }}
+          path: release-build/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-images:
+    name: Publish and attest ${{ matrix.image }}
+    needs: [validate-tag, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [facilitator, policysigner]
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: scanned-image-${{ matrix.image }}
+          path: release-build
+      - name: Verify and load the exact scanned image
+        id: coordinates
+        env:
+          IMAGE: ${{ matrix.image }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.validate-tag.outputs.commit }}
+        run: |
+          set -eu
+          (cd release-build && sha256sum --check SHA256SUMS)
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image_name="ghcr.io/$owner/$IMAGE"
+          image_reference="$image_name:$RELEASE_TAG"
+          build_file="release-build/$IMAGE.build.txt"
+          if [ "$(sed -n 's/^image=//p' "$build_file")" != "$image_name" ] || \
+             [ "$(sed -n 's/^tag=//p' "$build_file")" != "$RELEASE_TAG" ] || \
+             [ "$(sed -n 's/^tagged_reference=//p' "$build_file")" != "$image_reference" ] || \
+             [ "$(sed -n 's/^source_commit=//p' "$build_file")" != "$SOURCE_COMMIT" ] || \
+             [ "$(sed -n 's/^platform=//p' "$build_file")" != "linux/amd64" ]; then
+            echo "scanned-image evidence does not match this release job" >&2
+            exit 1
+          fi
+          gzip --decompress --stdout "release-build/$IMAGE.docker.tar.gz" | docker load
+          expected_id=$(sed -n 's/^local_image_id=//p' "$build_file")
+          loaded_id=$(docker image inspect --format '{{.Id}}' "$image_reference")
+          if ! printf '%s\n' "$expected_id" | grep -Eq '^sha256:[0-9a-f]{64}$' || \
+             [ "$loaded_id" != "$expected_id" ]; then
+            echo "loaded image identity differs from the scanned image" >&2
+            exit 1
+          fi
+          printf 'name=%s\nreference=%s\n' "$image_name" "$image_reference" >> "$GITHUB_OUTPUT"
+      - name: Authenticate to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Require an unused registry tag
+        env:
+          IMAGE_REFERENCE: ${{ steps.coordinates.outputs.reference }}
+        run: |
+          set -eu
+          if docker manifest inspect "$IMAGE_REFERENCE" \
+            > /dev/null 2> "$RUNNER_TEMP/manifest-inspect.err"; then
+            echo "registry tag $IMAGE_REFERENCE already exists; this release version is burned" >&2
+            exit 1
+          fi
+          if ! grep -Eqi 'manifest unknown|no such manifest|not found' "$RUNNER_TEMP/manifest-inspect.err"; then
+            echo "could not prove registry tag $IMAGE_REFERENCE is unused; refusing to push" >&2
+            exit 1
+          fi
+      - name: Push the scanned image and record its registry digest
+        id: push
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_NAME: ${{ steps.coordinates.outputs.name }}
+          IMAGE_REFERENCE: ${{ steps.coordinates.outputs.reference }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.validate-tag.outputs.commit }}
+        run: |
+          set -eu
+          push_output=$(docker push "$IMAGE_REFERENCE" 2>&1)
+          printf '%s\n' "$push_output"
+          digest=$(printf '%s\n' "$push_output" | sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' | tail -n 1)
+          if ! printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "could not determine pushed registry digest" >&2
+            exit 1
+          fi
+          mkdir -p release-artifacts
+          cp "release-build/$IMAGE.spdx.json" "release-artifacts/$IMAGE.spdx.json"
+          cp "release-build/$IMAGE.build.txt" "release-artifacts/$IMAGE.build.txt"
+          {
+            printf 'image=%s\n' "$IMAGE_NAME"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'digest=%s\n' "$digest"
+            printf 'reference=%s@%s\n' "$IMAGE_NAME" "$digest"
+            printf 'source_commit=%s\n' "$SOURCE_COMMIT"
+            printf 'platform=linux/amd64\n'
+          } > "release-artifacts/$IMAGE.digest.txt"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest image build provenance
+        id: provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ steps.coordinates.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Attest image SBOM
+        id: sbom-attestation
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-name: ${{ steps.coordinates.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: release-artifacts/${{ matrix.image }}.spdx.json
+          push-to-registry: true
+      - name: Preserve attestation bundles
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
+        run: |
+          cp "$PROVENANCE_BUNDLE" "release-artifacts/${{ matrix.image }}.provenance.sigstore.json"
+          cp "$SBOM_BUNDLE" "release-artifacts/${{ matrix.image }}.sbom.sigstore.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-evidence-${{ matrix.image }}
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove registry credentials
+        if: ${{ always() }}
+        run: docker logout ghcr.io
+
+  publish-release:
+    name: Publish GitHub release
+    needs: [validate-tag, publish-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create digest manifest and checksums
+        env:
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.validate-tag.outputs.commit }}
+        run: |
+          set -eu
+          {
+            printf 'release_tag=%s\n' "$RELEASE_TAG"
+            printf 'source_commit=%s\n\n' "$SOURCE_COMMIT"
+            for file in release-assets/*.digest.txt; do
+              printf '[%s]\n' "$(basename "$file" .digest.txt)"
+              cat "$file"
+              printf '\n'
+            done
+          } > release-assets/release-manifest.txt
+          (cd release-assets && sha256sum *.build.txt *.digest.txt *.spdx.json *.sigstore.json release-manifest.txt > SHA256SUMS)
+      - name: Publish a release with all evidence attached
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -eu
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; release identifiers are never overwritten" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --draft --verify-tag --generate-notes --title "$RELEASE_TAG"
+          gh release edit "$RELEASE_TAG" --draft=false

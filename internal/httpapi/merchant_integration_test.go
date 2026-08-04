@@ -79,6 +79,7 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 		AdminSessionTTL: time.Hour, PaymentRetention: 30 * 24 * time.Hour,
 		PublicDirectoryTTL: time.Nanosecond,
 		Pepper:             []byte("01234567890123456789012345678901"),
+		EmailOutboxKey:     []byte("12345678901234567890123456789012"),
 	})
 	registry := metrics.New()
 	handler := New(Dependencies{
@@ -99,6 +100,9 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("registration: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := merchantService.DeliverPendingEmail(ctx); err != nil {
+		t.Fatal(err)
 	}
 	link, err := url.Parse(strings.TrimPrefix(sender.message.TextBody, "Verify your email: "))
 	if err != nil {
@@ -154,6 +158,9 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 		"name": "Browser merchant", "business_email": "browser@example.com",
 		"recipient_address": address, "accept_terms": true,
 	})
+	if _, err := merchantService.DeliverPendingEmail(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("second registration: %d %s", response.Code, response.Body.String())
 	}
@@ -289,6 +296,9 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("admin link: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := merchantService.DeliverPendingEmail(ctx); err != nil {
+		t.Fatal(err)
 	}
 	link, err = url.Parse(strings.TrimPrefix(sender.message.TextBody, "Sign in to your ETH402 merchant panel: "))
 	if err != nil {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -65,6 +66,7 @@ type Config struct {
 	SMTPTimeout        time.Duration
 	EmailTokenTTL      time.Duration
 	EmailResend        time.Duration
+	EmailOutboxKey     string
 	WalletChallengeTTL time.Duration
 	MerchantSessionTTL time.Duration
 	RecipientCooldown  time.Duration
@@ -170,6 +172,7 @@ func Load() (Config, error) {
 		SMTPTimeout:        l.duration("ETH402_SMTP_TIMEOUT", 10*time.Second),
 		EmailTokenTTL:      l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
 		EmailResend:        l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
+		EmailOutboxKey:     l.str("ETH402_EMAIL_OUTBOX_KEY", "0000000000000000000000000000000000000000000000000000000000000000"),
 		WalletChallengeTTL: l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
 		MerchantSessionTTL: l.duration("ETH402_MERCHANT_SESSION_TTL", 12*time.Hour),
 		RecipientCooldown:  l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
@@ -282,6 +285,12 @@ func (c Config) Validate() error {
 	if len(c.APIKeyPepper) < 32 {
 		errs = append(errs, errors.New("API key pepper must be at least 32 bytes"))
 	}
+	if decoded, err := hex.DecodeString(c.EmailOutboxKey); err != nil || len(decoded) != 32 {
+		errs = append(errs, errors.New("email outbox key must be exactly 32 bytes encoded as 64 hexadecimal characters"))
+	}
+	if c.EmailOutboxKey == c.APIKeyPepper {
+		errs = append(errs, errors.New("email outbox key and API key pepper must be independent"))
+	}
 	if c.TermsVersion == "" {
 		errs = append(errs, errors.New("terms version is required"))
 	}
@@ -377,16 +386,16 @@ func (c Config) Validate() error {
 		if c.PublicBaseURL != "" && !strings.HasPrefix(c.PublicBaseURL, "https://") {
 			errs = append(errs, errors.New("production public URL must use HTTPS"))
 		}
-		primaryRPC, primaryErr := url.Parse(c.EthereumRPCURL)
-		fallbackRPC, fallbackErr := url.Parse(c.FallbackRPCURL)
-		if primaryErr != nil || primaryRPC.Scheme != "https" {
+		primaryRPCHost, primaryErr := productionRPCHostIdentity(c.EthereumRPCURL)
+		fallbackRPCHost, fallbackErr := productionRPCHostIdentity(c.FallbackRPCURL)
+		if primaryErr != nil {
 			errs = append(errs, errors.New("production primary Ethereum RPC must use HTTPS"))
 		}
-		if c.FallbackRPCURL == "" || fallbackErr != nil || fallbackRPC.Scheme != "https" {
+		if c.FallbackRPCURL == "" || fallbackErr != nil {
 			errs = append(errs, errors.New("production requires an HTTPS fallback Ethereum RPC"))
 		}
-		if c.FallbackRPCURL != "" && c.FallbackRPCURL == c.EthereumRPCURL {
-			errs = append(errs, errors.New("production Ethereum RPCs must be distinct"))
+		if primaryErr == nil && fallbackErr == nil && primaryRPCHost == fallbackRPCHost {
+			errs = append(errs, errors.New("production Ethereum RPCs must use distinct host identities"))
 		}
 		database, databaseErr := url.Parse(c.DatabaseURL)
 		if databaseErr != nil || (database.Scheme != "postgres" && database.Scheme != "postgresql") ||
@@ -405,6 +414,9 @@ func (c Config) Validate() error {
 		if c.APIKeyPepper == "eth402-development-pepper-change-me" {
 			errs = append(errs, errors.New("development API key pepper is forbidden in production"))
 		}
+		if c.EmailOutboxKey == "0000000000000000000000000000000000000000000000000000000000000000" {
+			errs = append(errs, errors.New("development email outbox key is forbidden in production"))
+		}
 		if c.OperatorToken != "" && len(c.OperatorToken) < 32 {
 			errs = append(errs, errors.New("production operator token must be at least 32 bytes"))
 		}
@@ -413,6 +425,50 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// productionRPCHostIdentity validates the endpoint without ever including it
+// in an error. RPC URLs commonly carry credentials in userinfo or query
+// parameters, so diagnostics must not echo the raw value. Provider independence
+// cannot be proven from a URL, but requiring different canonical host identities
+// prevents one endpoint from being configured twice through casing, port, path,
+// query, credential, or fragment aliases.
+func productionRPCHostIdentity(raw string) (string, error) {
+	// url.Parse does not distinguish an absent fragment from a trailing empty
+	// fragment. Neither belongs in an HTTP RPC endpoint, and fragments are not
+	// transmitted to the server, so reject the marker before parsing.
+	if raw == "" || strings.Contains(raw, "#") {
+		return "", errors.New("invalid RPC endpoint")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Opaque != "" || !strings.EqualFold(parsed.Scheme, "https") ||
+		parsed.Host == "" || parsed.Hostname() == "" {
+		return "", errors.New("invalid RPC endpoint")
+	}
+	if port := parsed.Port(); port != "" {
+		value, portErr := strconv.ParseUint(port, 10, 16)
+		if portErr != nil || value == 0 {
+			return "", errors.New("invalid RPC endpoint")
+		}
+	}
+
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	// net/http converts internationalized names to ASCII for transport. Reject
+	// the Unicode spelling here so it cannot be paired with its punycode spelling
+	// and mistaken for a second host identity without adding IDNA normalization to
+	// this security-sensitive comparison.
+	for _, character := range host {
+		if character > 0x7f {
+			return "", errors.New("invalid RPC endpoint")
+		}
+	}
+	if address, parseErr := netip.ParseAddr(host); parseErr == nil {
+		host = address.Unmap().String()
+	}
+	if host == "" {
+		return "", errors.New("invalid RPC endpoint")
+	}
+	return host, nil
 }
 
 var logLevels = map[string]slog.Level{

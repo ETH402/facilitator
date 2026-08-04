@@ -3,20 +3,26 @@ package ethereum
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-type countingObserver struct{ requests, failures int }
+type countingObserver struct {
+	requests, failures, disagreements atomic.Int64
+}
 
 func (c *countingObserver) ObserveRPC(failed bool) {
-	c.requests++
+	c.requests.Add(1)
 	if failed {
-		c.failures++
+		c.failures.Add(1)
 	}
 }
+
+func (c *countingObserver) ObserveRPCDisagreement() { c.disagreements.Add(1) }
 
 // Counts must come from the real request path, not from a hand-called method.
 func TestObserverCountsRealRequestsAndRetries(t *testing.T) {
@@ -43,19 +49,38 @@ func TestObserverCountsRealRequestsAndRetries(t *testing.T) {
 	if _, err := c.ChainID(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if o.requests != 1 || o.failures != 0 {
-		t.Fatalf("success: requests=%d failures=%d", o.requests, o.failures)
+	if o.requests.Load() != 1 || o.failures.Load() != 0 {
+		t.Fatalf("success: requests=%d failures=%d", o.requests.Load(), o.failures.Load())
 	}
 
-	// Retries must each be counted: a read that only succeeds on its fallback has
-	// still exercised a failing provider, which is what an operator needs to see.
+	// Both providers are mandatory. The failing provider consumes its retry
+	// budget while the healthy provider answers once; every actual attempt is
+	// counted even though the logical read fails closed.
 	o2 := &countingObserver{}
 	c2 := NewClient(bad.URL, ok.URL, 2*time.Second, 1)
 	c2.Observe(o2)
-	if _, err := c2.ChainID(context.Background()); err != nil {
-		t.Fatalf("fallback should have succeeded: %v", err)
+	if _, err := c2.ChainID(context.Background()); err == nil {
+		t.Fatal("one-provider result was accepted")
 	}
-	if o2.requests != 2 || o2.failures != 1 {
-		t.Fatalf("fallback: requests=%d failures=%d, want 2 and 1", o2.requests, o2.failures)
+	if o2.requests.Load() != 3 || o2.failures.Load() != 2 {
+		t.Fatalf("required providers: requests=%d failures=%d, want 3 and 2",
+			o2.requests.Load(), o2.failures.Load())
+	}
+}
+
+func TestObserverCountsProviderDisagreementSeparately(t *testing.T) {
+	primary := staticRPCServer(t, `"0x1"`)
+	defer primary.Close()
+	fallback := staticRPCServer(t, `"0x2"`)
+	defer fallback.Close()
+	observer := &countingObserver{}
+	client := NewClient(primary.URL, fallback.URL, 2*time.Second, 0)
+	client.Observe(observer)
+	if _, err := client.ChainID(context.Background()); !errors.Is(err, ErrProviderDisagreement) {
+		t.Fatalf("err = %v, want disagreement", err)
+	}
+	if observer.requests.Load() != 2 || observer.failures.Load() != 0 || observer.disagreements.Load() != 1 {
+		t.Fatalf("requests=%d failures=%d disagreements=%d",
+			observer.requests.Load(), observer.failures.Load(), observer.disagreements.Load())
 	}
 }

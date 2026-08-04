@@ -12,7 +12,7 @@ flowchart LR
   Merchant -->|x402 verify / settle| API[ETH402 HTTP API]
   Operator[Operator] --> API
   API --> DB[(PostgreSQL)]
-  API --> RPC[Primary / fallback Ethereum RPC]
+  API --> RPC[Independent agreeing Ethereum RPCs]
   API --> Signer[External signer trust boundary]
   API --> Mail[Email provider]
   API --> Metrics[Prometheus]
@@ -33,13 +33,22 @@ flowchart LR
 - `internal/settlement`: state rules, `/settle` admission, the broadcast
   pipeline shared by HTTP and workers, and confirmation.
 - `internal/ethereum`: bounded health reads, read-only verification calls,
-  primary/fallback RPC reads, and the single-attempt broadcast path (a failed
-  send is ambiguous, so it never rotates providers).
+  concurrent fail-closed agreement across independent RPCs, and the
+  single-attempt primary-only broadcast path (a failed send is ambiguous, so it
+  never rotates providers). Moving heads may differ by at most two blocks; the
+  lower height is selected and all state at a fixed height must agree exactly.
 - `internal/signer`: transaction-signing boundary. Raw keys are development-only.
 - `internal/email`, `walletproof`, `auth`, `merchant`: onboarding boundary.
   Production email delivery is provider-neutral SMTP with mandatory
   certificate-verified TLS; development logging/file delivery cannot be
-  selected in production.
+  selected in production. Registration/admin-link transactions atomically
+  create the hashed verification token and a durable delivery-outbox item.
+  SMTP runs outside that transaction; a leased worker retries transient
+  failures, records `sent_at` only after acceptance, and erases the temporary
+  AEAD-encrypted token material after delivery or expiry. Duplicate mail is
+  possible after an SMTP-success/database-failure ambiguity, but carries the
+  same one-time token and is idempotent at consumption. Per-claim UUID fencing
+  prevents an expired worker from overwriting a newer worker's reclaimed lease.
 - `GET /` and `GET /explore`: first-party product and aggregate network pages.
   They render the cached public stats snapshot and only separately opted-in
   merchant profiles; they do not alter the versioned `/stats` JSON contract.

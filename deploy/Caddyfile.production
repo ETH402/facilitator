@@ -1,0 +1,92 @@
+{
+	servers {
+		# Caddy is the only ingress on this Docker network. If a CDN is added,
+		# replace this with the CDN ranges and preserve the full proxy chain.
+		trusted_proxies static private_ranges
+		max_header_size 32KB
+	}
+}
+
+(eth402_proxy) {
+	request_body {
+		max_size 1MB
+	}
+
+	reverse_proxy app:8080 {
+		# Overwrite rather than append. The application trusts Caddy's private
+		# Docker address, so no client-supplied X-Forwarded-For value may cross
+		# that trust boundary even when the immediate peer was NAT-private.
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_down -Content-Security-Policy
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 30s
+			read_timeout 60s
+			write_timeout 60s
+		}
+	}
+}
+
+(eth402_headers) {
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+}
+
+eth402.org, www.eth402.org {
+	encode zstd gzip
+
+	handle /metrics* {
+		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		respond "not found" 404
+	}
+
+	@api_routes path /merchant* /status /supported /stats
+	handle @api_routes {
+		redir https://api.eth402.org{uri} 308
+	}
+	@product path / /explore /assets/*
+	handle @product {
+		import eth402_proxy
+	}
+	handle {
+		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		respond "not found" 404
+	}
+
+	header / Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	header /explore Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	header /assets/* Content-Security-Policy "default-src 'none'"
+	import eth402_headers
+}
+
+api.eth402.org {
+	encode zstd gzip
+
+	handle / {
+		redir https://eth402.org/ 308
+	}
+	handle /explore {
+		redir https://eth402.org/explore 308
+	}
+
+	handle /metrics* {
+		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		respond "not found" 404
+	}
+	handle {
+		import eth402_proxy
+	}
+
+	header /status Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+	header /verify-email Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'"
+	header /merchant* Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	@default_csp not path /status /verify-email /merchant*
+	header @default_csp Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+	import eth402_headers
+}

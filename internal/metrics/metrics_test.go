@@ -69,7 +69,7 @@ func TestSetSignerBalanceIgnoresNil(t *testing.T) {
 func TestRPCCountersReflectAttempts(t *testing.T) {
 	r := New()
 	body := scrape(t, r)
-	for _, want := range []string{"eth402_rpc_requests_total 0", "eth402_rpc_errors_total 0"} {
+	for _, want := range []string{"eth402_rpc_requests_total 0", "eth402_rpc_errors_total 0", "eth402_rpc_provider_disagreements_total 0"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -77,8 +77,43 @@ func TestRPCCountersReflectAttempts(t *testing.T) {
 	r.ObserveRPC(false)
 	r.ObserveRPC(true)
 	r.ObserveRPC(true)
+	r.ObserveRPCDisagreement()
 	body = scrape(t, r)
-	for _, want := range []string{"eth402_rpc_requests_total 3", "eth402_rpc_errors_total 2"} {
+	for _, want := range []string{"eth402_rpc_requests_total 3", "eth402_rpc_errors_total 2", "eth402_rpc_provider_disagreements_total 1"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestEmailDeliveryMetrics(t *testing.T) {
+	t.Parallel()
+	r := New()
+	at := time.Unix(1_700_000_000, 0)
+	r.ObserveEmailOutbox(3, 95*time.Second, at)
+	r.ObserveEmailDeliveryFailure()
+	body := scrape(t, r)
+	for _, want := range []string{
+		"eth402_email_outbox_pending 3",
+		"eth402_email_outbox_oldest_pending_age_seconds 95",
+		"eth402_email_delivery_last_tick_timestamp_seconds 1700000000",
+		"eth402_email_delivery_failures_total 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestEmailDeliveryMetricsClampInvalidInputs(t *testing.T) {
+	t.Parallel()
+	r := New()
+	r.ObserveEmailOutbox(-1, -time.Second, time.Unix(1, 0))
+	body := scrape(t, r)
+	for _, want := range []string{
+		"eth402_email_outbox_pending 0",
+		"eth402_email_outbox_oldest_pending_age_seconds 0",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
 		}

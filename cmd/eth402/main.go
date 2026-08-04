@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -121,6 +122,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer verificationRPC.Close()
+	verificationRPC.ObserveProviderDisagreements(registry)
 	verificationService := verification.New(
 		exactfacilitator.NewExactEvmScheme(verificationRPC, nil),
 		verificationRPC,
@@ -180,7 +182,19 @@ func main() {
 		PublicDirectoryTTL: cfg.StatsCacheTTL,
 		Pepper:             []byte(cfg.APIKeyPepper), BlockDisposable: cfg.BlockDisposable,
 		RestrictFree: cfg.RestrictFreeEmail, Allowlist: cfg.EmailAllowlist, Denylist: cfg.EmailDenylist,
+		Logger:             logger,
+		EmailObserver:      registry,
+		EmailDeliveryLease: max(2*cfg.SMTPTimeout, time.Minute),
+		EmailOutboxKey: func() []byte {
+			key, _ := hex.DecodeString(cfg.EmailOutboxKey) // validated by config.Load
+			return key
+		}(),
 	})
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		merchantService.RunEmailDelivery(root, cfg.WorkerInterval)
+	}()
 
 	// Settlement is wired only when a signer is enabled; with the signer
 	// disabled /settle reports settlement_unavailable and no workers run.

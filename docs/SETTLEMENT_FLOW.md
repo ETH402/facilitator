@@ -64,8 +64,11 @@ Broadcast is synchronous-attempt, asynchronous-fallback. `/settle` claims the
 payment lease and runs the pipeline inline — build the
 `transferWithAuthorization` calldata from the durable record, sign under
 `ETH402_SIGNING_TIMEOUT`, record the signed-transaction hash, broadcast once
-against the primary RPC, record the transaction hash — and returns the official
-`SettleResponse` with the hash. A duplicate call for an already-broadcast
+against the primary RPC, require its returned hash to equal the locally derived
+keccak of the signed bytes, record that local hash — and returns the official
+`SettleResponse` with the hash. A mismatched acknowledgement is treated like an
+unknown send outcome and reconciled under the local hash rather than allowing
+provider-controlled identity into durable state. A duplicate call for an already-broadcast
 payment returns the recorded hash, including after it becomes terminally
 `confirmed` or `reverted`. If the inline attempt cannot finish (signer
 or RPC failure), the durable intent remains and the broadcast worker retries it
@@ -77,8 +80,10 @@ expires before broadcast is retired as `expired` with its transaction `dropped`
 rather than buying a predictable revert (decision 11).
 
 The confirmation worker leases payments in `broadcast`/`confirming`/`replaced`,
-reads the receipt, and finalizes at `ETH402_REQUIRED_CONFIRMATIONS` (default
-12) canonical confirmations; successful and `status=0` receipts pass the same
+reads the receipt, binds its transaction hash to the requested transaction and
+its block identity to the requested canonical block, and finalizes at
+`ETH402_REQUIRED_CONFIRMATIONS` (default 12) canonical confirmations. Only
+receipt status `0` or `1` is accepted; successful and `status=0` receipts pass the same
 canonical-hash and depth checks before becoming terminal. A
 transaction previously seen mined whose receipt disappears from the canonical
 chain was reorged out: it returns to `broadcast` and is observed from scratch.

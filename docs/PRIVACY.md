@@ -14,6 +14,12 @@ not a design choice. Payer addresses are pseudonymous but not anonymous: they ar
 public on chain and frequently linkable to a person.
 
 Merchant records additionally hold an email address and a recipient address.
+While a registration or login email is pending delivery, its raw one-time token
+is retained only as AEAD ciphertext under a dedicated application secret. The
+ciphertext is erased as soon as SMTP accepts the message or the token expires;
+the long-lived verification row contains only the SHA-256 hash. This temporary,
+reversible outbox field is the minimum needed for durable retries and is included
+in encrypted backups until erased there by the operator's backup lifecycle.
 
 The merchant panel can show private per-merchant aggregates only after explicit
 opt-in. Opt-in starts the observation window; the panel does not retroactively
@@ -98,6 +104,7 @@ The privacy-first defaults are:
 |---|---:|---|
 | terminal payment authorization | 30 days | remove merchant linkage, payer/recipient addresses, authorization nonce and times, payload hash, payer signature, leases, and stored raw transaction bytes |
 | expired email tokens | 24 hours after expiry | delete |
+| pending email token ciphertext | until SMTP acceptance or token expiry | erase in place; the outbox row may remain until its token is pruned |
 | unreferenced expired wallet challenges | 24 hours after expiry | delete |
 | revoked API keys | 30 days after revocation | delete |
 | expired/revoked merchant admin sessions | 24 hours after expiry/revocation | delete |

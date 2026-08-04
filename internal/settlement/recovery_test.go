@@ -159,6 +159,24 @@ func TestResolveAmbiguousNondeterministicBroadcastFailsAfterRecording(t *testing
 	}
 }
 
+func TestResolveAmbiguousNondeterministicHashMismatchLeavesReplacement(t *testing.T) {
+	work := ambiguousWork([]byte("raw-tx"))
+	work.TransactionUpdatedAt = time.Now().Add(-time.Hour)
+	store := &fakeStore{work: work}
+	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
+	service := newTestService(store, fakeSigner{raw: []byte("raw-tx-resigned"), sigHash: testSigHash}, chain)
+	err := service.recoverPayment(context.Background(), work.PaymentID, "test")
+	if err == nil || !strings.Contains(err.Error(), "provider returned transaction hash") {
+		t.Fatalf("err = %v", err)
+	}
+	if !store.ambiguousReplaced {
+		t.Fatal("locally identified replacement was not retained for reconciliation")
+	}
+	if store.ambReplacement.TxHash != "0x"+keccakHex([]byte("raw-tx-resigned")) {
+		t.Fatalf("replacement hash = %q", store.ambReplacement.TxHash)
+	}
+}
+
 func TestResolveAmbiguousSighashMismatchRefuses(t *testing.T) {
 	work := ambiguousWork([]byte("raw-tx"))
 	work.Sighash = strings.Repeat("00", 32) // Corrupt: re-signing reproduces a different sighash.
@@ -229,6 +247,22 @@ func TestResolveAmbiguousFailedRebroadcastCountsRetry(t *testing.T) {
 	}
 }
 
+func TestResolveAmbiguousMismatchedRebroadcastCountsRetry(t *testing.T) {
+	raw := []byte("raw-tx")
+	work := ambiguousWork(raw)
+	work.TransactionUpdatedAt = time.Now().Add(-time.Hour)
+	store := &fakeStore{work: work}
+	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
+	service := newTestService(store, fakeSigner{raw: raw, sigHash: testSigHash}, chain)
+	err := service.recoverPayment(context.Background(), work.PaymentID, "test")
+	if err == nil || !strings.Contains(err.Error(), "provider returned transaction hash") {
+		t.Fatalf("err = %v", err)
+	}
+	if store.ambiguousRetries != 1 || store.recoveredTxHash != "" {
+		t.Fatalf("retry count / recovered hash = %d / %q", store.ambiguousRetries, store.recoveredTxHash)
+	}
+}
+
 // After a recorded failure the backoff window doubles per attempt, so a row
 // stamped a moment ago with one attempt against it is not re-signed yet.
 func TestResolveAmbiguousRetryBackoffSkipsReSign(t *testing.T) {
@@ -275,10 +309,11 @@ func stuckWork() Work {
 }
 
 func TestReplaceStuckBroadcastsReplacement(t *testing.T) {
+	raw := []byte("replacement-raw")
 	work := stuckWork()
 	store := &fakeStore{work: work}
-	chain := fakeChain{txHash: "0x" + strings.Repeat("dd", 32)}
-	service := newTestService(store, fakeSigner{raw: []byte("replacement-raw")}, chain)
+	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
 	if err := service.recoverPayment(context.Background(), work.PaymentID, "test"); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -296,6 +331,20 @@ func TestReplaceStuckBroadcastsReplacement(t *testing.T) {
 	}
 	if store.replacement.Nonce != work.Nonce {
 		t.Fatalf("replacement nonce = %d, want %d", store.replacement.Nonce, work.Nonce)
+	}
+}
+
+func TestReplaceStuckHashMismatchLeavesRecordedReplacement(t *testing.T) {
+	work := stuckWork()
+	store := &fakeStore{work: work}
+	chain := fakeChain{txHash: "0x" + strings.Repeat("dd", 32)}
+	service := newTestService(store, fakeSigner{raw: []byte("replacement-raw")}, chain)
+	err := service.recoverPayment(context.Background(), work.PaymentID, "test")
+	if err == nil || !strings.Contains(err.Error(), "provider returned transaction hash") {
+		t.Fatalf("err = %v", err)
+	}
+	if !store.replaced {
+		t.Fatal("replacement was not durably recorded before the ambiguous acknowledgement")
 	}
 }
 
@@ -393,6 +442,21 @@ func TestFillNonceGapBroadcasts(t *testing.T) {
 	}
 }
 
+func TestFillNonceGapRejectsMismatchedHashAfterPreparing(t *testing.T) {
+	raw := []byte("gap-filler-raw")
+	work := pendingWork()
+	store := &fakeStore{}
+	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	err := service.fillNonceGap(context.Background(), work)
+	if err == nil || !strings.Contains(err.Error(), "provider returned transaction hash") {
+		t.Fatalf("err = %v", err)
+	}
+	if store.gapFillerTxHash != "0x"+keccakHex(raw) || string(store.gapFillerRaw) != string(raw) {
+		t.Fatalf("prepared hash / raw = %q / %q", store.gapFillerTxHash, store.gapFillerRaw)
+	}
+}
+
 // A gap filler that sits pending underpriced must get the same fee-bump path
 // as any stuck broadcast: without it the filler never consumes the nonce it
 // was created to free, blocking every later nonce of the signer.
@@ -425,6 +489,25 @@ func TestBumpStuckGapFiller(t *testing.T) {
 	}
 	if string(store.gapFillerBumpRaw) != string(raw) {
 		t.Fatalf("replacement raw = %q, want the exact signed bytes", store.gapFillerBumpRaw)
+	}
+}
+
+func TestBumpStuckGapFillerHashMismatchLeavesRecordedReplacement(t *testing.T) {
+	work := pendingWork()
+	work.TransactionStatus = "broadcast"
+	work.TxHash = "0x" + strings.Repeat("cc", 32)
+	work.GasLimit = 100000
+	work.MaxFeePerGas = "2000000000"
+	work.MaxPriorityFeePerGas = "1000000000"
+	store := &fakeStore{stuckGapWorks: []Work{work}}
+	chain := fakeChain{txHash: "0x" + strings.Repeat("ff", 32)}
+	service := newTestService(store, fakeSigner{raw: []byte("gap-filler-bump-raw")}, chain)
+	service.RecoveryWorker().bumpStuckGapFillers(context.Background())
+	if !store.gapFillerReplaced {
+		t.Fatal("gap-filler replacement was not retained for local-hash reconciliation")
+	}
+	if store.gapFillerBump.TxHash != "0x"+keccakHex([]byte("gap-filler-bump-raw")) {
+		t.Fatalf("replacement hash = %q", store.gapFillerBump.TxHash)
 	}
 }
 

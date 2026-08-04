@@ -55,9 +55,9 @@ curl --fail-with-body \
 ```
 
 The `202` response is deliberately the same for a new and an existing valid
-registration. Obtain the one-time token from the verification email. In the
-development `log` backend, the email appears in the service log; the `file`
-backend writes it to `ETH402_EMAIL_FILE_DIR`. A frontend receiving the emailed
+registration. Obtain the one-time token from the verification email. In
+development, the `log` backend records delivery without the secret body; the default
+`file` backend writes it to `ETH402_EMAIL_FILE_DIR`. A frontend receiving the emailed
 link must extract its `token` query parameter and submit it to the API:
 
 ```sh

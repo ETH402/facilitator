@@ -324,6 +324,7 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 	keccak := sha3.NewLegacyKeccak256()
 	keccak.Write(signed.Raw)
 	rawSum := keccak.Sum(nil)
+	expectedTxHash := "0x" + hex.EncodeToString(rawSum)
 	if err := s.store.MarkTxSigned(ctx, work.TransactionID, hex.EncodeToString(rawSum),
 		hex.EncodeToString(signed.SigHash[:]), s.cfg.GasLimit, maxFee.String(), priorityFee.String()); err != nil {
 		return "", fmt.Errorf("record signed transaction: %w", err)
@@ -337,18 +338,33 @@ func (s *Service) broadcastClaimed(ctx context.Context, work Work, actor string)
 	broadcastCtx, endBroadcast := context.WithTimeout(context.WithoutCancel(ctx), broadcastGrace)
 	defer endBroadcast()
 	txHash, err := s.chain.SendRawTransaction(broadcastCtx, "0x"+hex.EncodeToString(signed.Raw))
+	if err == nil {
+		err = requireBroadcastHash(txHash, expectedTxHash)
+	}
 	if err != nil {
 		// The outcome is unknown: the provider may have accepted the
-		// transaction. Mark it ambiguous; recovery resolves it on chain.
+		// transaction. A mismatched provider hash is equally ambiguous: the
+		// locally derived hash remains the only safe reconciliation key.
 		if markErr := s.store.MarkTxAmbiguous(broadcastCtx, work.PaymentID, work.TransactionID, actor); markErr != nil {
 			return "", errors.Join(fmt.Errorf("broadcast: %w", err), fmt.Errorf("mark ambiguous: %w", markErr))
 		}
 		return "", fmt.Errorf("broadcast: %w", err)
 	}
-	if err := s.store.MarkTxBroadcast(broadcastCtx, work.PaymentID, work.TransactionID, txHash, actor); err != nil {
+	if err := s.store.MarkTxBroadcast(broadcastCtx, work.PaymentID, work.TransactionID, expectedTxHash, actor); err != nil {
 		return "", fmt.Errorf("record broadcast: %w", err)
 	}
-	return txHash, nil
+	return expectedTxHash, nil
+}
+
+// requireBroadcastHash binds a provider's acknowledgement to the exact signed
+// bytes submitted. A successful JSON-RPC response is not evidence of identity:
+// the transaction hash is locally derivable and must agree before state moves
+// out of an ambiguous/recoverable form.
+func requireBroadcastHash(returned, expected string) error {
+	if !strings.EqualFold(returned, expected) {
+		return fmt.Errorf("provider returned transaction hash %s, want %s", returned, expected)
+	}
+	return nil
 }
 
 // Confirmation observes one leased payment's transaction once. It is the

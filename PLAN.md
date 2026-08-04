@@ -42,7 +42,7 @@ RPC-aware verification and a separate security review.
 Status: implementation complete on `milestone-2-verification`; final validation
 is recorded in the milestone report.
 
-- [x] pin official Go v2.19.0 types and exact-EVM verifier
+- [x] pin official Go v2.20.0 types and exact-EVM verifier
 - [x] expose `/supported` and `/verify` without merchant authentication
 - [x] enforce only v2 + exact + eip155:1 + native USDC + EIP-3009
 - [x] validate exact amount/recipient, authorization time, EIP-712 signature,

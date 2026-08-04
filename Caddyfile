@@ -62,6 +62,11 @@
 	# the application's own header middleware.
 	header {
 		-Server
+		# Browsers ignore HSTS over the local HTTP listener; the same directive
+		# becomes effective when this block is deployed on its HTTPS hostname.
+		# Deliberately omit includeSubDomains/preload so unrelated future names are
+		# not irreversibly captured by this service's rollout decision.
+		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 		X-Frame-Options DENY

@@ -16,6 +16,9 @@ A production deployment should run the immutable application image
 behind Caddy or a managed TLS load balancer, use managed PostgreSQL with TLS
 and point-in-time recovery, two authenticated Ethereum RPCs, a real email
 provider, centralized secret management, and the KMS-fronted policy signer.
+The exact tag, build, scan, SBOM, attestation, digest-verification, and release
+procedure is documented in [Immutable releases](RELEASES.md). A release tag is
+never a deployment reference.
 
 Production email uses the provider-neutral `smtp` backend with mandatory
 certificate-verified TLS. Set `ETH402_SMTP_TLS_MODE=starttls` for explicit
@@ -32,17 +35,26 @@ canonical chain/asset constants, and managed secrets. The process rejects raw
 private keys, direct KMS mode, and unsafe signer overrides. Settlement must use
 `ETH402_SIGNER_MODE=policy` or remain disabled.
 
-Configuration validation additionally requires two distinct HTTPS RPC URLs,
+Configuration validation additionally requires HTTPS RPC URLs on two distinct
+canonical host identities (fragments are rejected),
 `sslmode=verify-full` on PostgreSQL, and enabled metrics. Startup queries both
 RPCs independently for chain ID 1, probes SMTP TLS/authentication without
 sending a message, and requires the database migration set to match the binary
 exactly. A missing migration cannot become a runtime SQL error, and an older
 binary cannot silently start against a newer unreviewed schema.
 
+Host inequality cannot prove provider independence: record the operator behind
+each hostname in deployment evidence. URL userinfo and query credentials are
+supported, but validation and redacted summaries never print them.
+
 Start from [`deploy/production.env.example`](../deploy/production.env.example).
 Before touching dependencies, validate a populated environment with
 `eth402 -check-config`; output is redacted and the command performs no network
 or database calls. A normal start then performs the dependency preflight above.
+The checked-in [SSH/Docker deployment](SSH_DOCKER_DEPLOYMENT.md) provides the
+immutable Compose and Caddy topology used outside GCP. PostgreSQL role creation,
+exact runtime DML, and the post-migration grant step are specified in
+[PostgreSQL production roles](POSTGRESQL_ROLES.md).
 
 Choose and record the retention values before rollout. The defaults tombstone
 terminal payment authorization data after 30 days, prune expired onboarding
@@ -117,7 +129,7 @@ intent. `--max-instances` above 1 is therefore fine. See
 | Database | Cloud SQL for PostgreSQL | private IP; separate owner, migration, and runtime roles |
 | Signer | Cloud KMS, `EC_SIGN_SECP256K1_SHA256` | `ETH402_SIGNER_MODE=policy` via the boundary below; direct `external` mode is rejected in production |
 | Signing boundary | Cloud Run or GCE, own service identity | `cmd/policysigner`; the only identity granted the KMS key |
-| Secrets | Secret Manager | `ETH402_API_KEY_PEPPER`, `ETH402_OPERATOR_TOKEN`, database credentials |
+| Secrets | Secret Manager | `ETH402_API_KEY_PEPPER`, `ETH402_EMAIL_OUTBOX_KEY`, `ETH402_OPERATOR_TOKEN`, SMTP and database credentials |
 | Metrics | Managed Prometheus | scrape `/metrics` on the internal port; rules from `deploy/alerts.yml` |
 | TLS | Cloud Load Balancing, or Caddy | if terminating at the balancer, add its egress range to `ETH402_TRUSTED_PROXIES` |
 
@@ -183,6 +195,15 @@ It needs `UPDATE` on payment and transaction rows for state transitions and
 retention tombstones, but no DDL and no ability to disable the append-only
 triggers. The migration role owns schema changes and is not used by the service.
 
+Provision `ETH402_EMAIL_OUTBOX_KEY` as an independent 32-byte random secret,
+hex-encoded to 64 characters, alongside (but not equal to) the SMTP credential
+and API-key pepper. Production validation rejects the development all-zero value.
+The runtime role needs `SELECT`, `INSERT`, and `UPDATE` on
+`email_delivery_outbox`, plus `UPDATE` on `email_verification_tokens.sent_at`.
+Do not rotate the key while pending rows exist: drain delivery or wait through
+the email-token TTL first, then replace the secret and restart. Delivered and
+expired rows have their ciphertext erased.
+
 ### Deploys and in-flight settlement
 
 A deploy sends `SIGTERM`. The process stops accepting requests, then waits up to 45
@@ -221,6 +242,11 @@ product origin would put verification links and authentication callbacks on a ho
 that intentionally does not expose those routes. Apply equally strict proxy limits
 and security headers to both site blocks, refuse unknown product-site paths, and do
 not expose `/metrics` there.
+
+Serve `Strict-Transport-Security: max-age=31536000` from every HTTPS product and
+API response. The bundled Caddy header omits `includeSubDomains` and `preload` on
+purpose: enabling either captures names outside the facilitator's routing scope
+and needs a separate inventory and rollback decision.
 
 Any deployment that terminates connections in front of the application must set
 `ETH402_TRUSTED_PROXIES` to every intermediate hop. Left empty, rate limits key

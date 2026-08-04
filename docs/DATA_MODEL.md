@@ -113,6 +113,21 @@ Migration `000012_public_merchant_profiles` adds:
   begin at this timestamp and use only payment rows whose retained
   `merchant_id` still attributes them to the merchant.
 
+Migration `000013_email_delivery_outbox` changes/adds:
+
+- `email_verification_tokens.sent_at` becomes nullable and has no default. Null
+  means the provider has not accepted the message; resend cooldown is measured
+  only from a non-null delivery timestamp.
+- `email_delivery_outbox`: one durable delivery row per token, with message kind,
+  attempt/backoff state, a bounded claim lease, originating request ID, and
+  mutually exclusive delivered/abandoned timestamps. Pending raw token material
+  is separate-key AEAD ciphertext authenticated against merchant ID, token hash,
+  and message kind; it is nulled after provider acceptance or token expiry. The
+  token table itself continues to store only the SHA-256 verification hash.
+  Every claim receives a fresh UUID ownership token; completion/failure updates
+  require that token, fencing a stale worker after another instance reclaims the
+  expired lease.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,
