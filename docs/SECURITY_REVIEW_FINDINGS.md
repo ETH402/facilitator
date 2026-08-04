@@ -12,19 +12,13 @@ a substitute for their sign-off.
 ## Baseline
 
 - Frozen commit named in the review packet: `d431603ab45d67bb071cb71841e1cce8978f27f5`
-- This document describes changes carried as an **uncommitted working-tree
-  diff on top of that commit** at the time of writing. Before engaging a
-  reviewer, commit these changes and update the frozen-commit record in
-  [SECURITY_REVIEW.md](SECURITY_REVIEW.md) to the new commit hash — the
-  packet requires review of an exact, clean revision.
-
-```
- internal/merchant/service.go                   | 21 ++++++++-
- internal/merchant/service_integration_test.go  | 61 ++++++++++++++++++++++++
- migrations/000004_settlement_recovery.down.sql | 12 +++--
- migrations/000004_settlement_recovery.up.sql   |  5 ++-
- internal/store/settlement_recovery_migration_integration_test.go | new file
-```
+- Both fixes below landed as separate commits on top of it:
+  - `d859799` security: block suspended merchants from reclaiming an address
+  - `9fcdb0a` fix: make settlement recovery migration reversible
+- Before engaging a reviewer, update the frozen-commit record in
+  [SECURITY_REVIEW.md](SECURITY_REVIEW.md) to whichever of these is the new
+  HEAD at review time — the packet requires review of an exact, named
+  revision, and `d431603` is no longer it.
 
 ## What changed
 
