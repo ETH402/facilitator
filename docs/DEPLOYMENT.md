@@ -204,6 +204,24 @@ load balancer. **If you terminate elsewhere, add that balancer's egress range to
 `ETH402_TRUSTED_PROXIES`** — otherwise every client collapses into one rate-limit
 bucket, which is the failure this project has already had once.
 
+The hosted ETH402 deployment deliberately separates its public product site from
+the security-sensitive application origin:
+
+- `eth402.org` and `www.eth402.org` serve only `/`, `/explore`, and first-party
+  `/assets/*`. Merchant navigation and public API links redirect to
+  `https://api.eth402.org`.
+- `api.eth402.org` remains the origin for the merchant panel, email verification,
+  session cookies, and machine APIs. Its `/` and `/explore` routes redirect to the
+  canonical `https://eth402.org` pages.
+- DNS points the apex at the Caddy host and aliases `www` to the apex. Each name is
+  present in Caddy's site addresses so certificate issuance and renewal cover both.
+
+Keep `ETH402_PUBLIC_BASE_URL` on the API origin in this topology. Moving it to the
+product origin would put verification links and authentication callbacks on a host
+that intentionally does not expose those routes. Apply equally strict proxy limits
+and security headers to both site blocks, refuse unknown product-site paths, and do
+not expose `/metrics` there.
+
 Any deployment that terminates connections in front of the application must set
 `ETH402_TRUSTED_PROXIES` to every intermediate hop. Left empty, rate limits key
 on the proxy address and degrade to one shared bucket for all traffic. See

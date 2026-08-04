@@ -11,6 +11,10 @@ versioned where noted.
   security policies, so the merchant panel can load its same-origin script
   without weakening the policy used by API responses.
 
+- Production routing now serves the public product pages from `eth402.org` and
+  `www.eth402.org`, redirects duplicate pages away from `api.eth402.org`, and
+  keeps merchant authentication and machine APIs isolated on the API origin.
+
 ### Added
 
 - An ETH402-branded, responsive public landing page and network activity view,
