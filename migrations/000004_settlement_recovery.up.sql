@@ -15,5 +15,8 @@ ALTER TABLE ethereum_transactions
 -- payment legitimately share a nonce. The invariant that actually matters —
 -- at most one in-flight transaction per payment — stays enforced by the
 -- ethereum_transactions_active_payment_unique partial index.
+-- IF EXISTS: the down migration does not restore this constraint (see
+-- 000004_settlement_recovery.down.sql), so re-applying this migration after a
+-- rollback must not assume it is still there.
 ALTER TABLE ethereum_transactions
-    DROP CONSTRAINT ethereum_transactions_payment_id_transaction_nonce_key;
+    DROP CONSTRAINT IF EXISTS ethereum_transactions_payment_id_transaction_nonce_key;
