@@ -451,16 +451,8 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 		return "", ErrConflict
 	}
 	if action == "verify_recipient" {
-		// The NOT EXISTS guard stops a suspended merchant from regaining active
-		// status for the same wallet under a fresh registration: suspension
-		// otherwise has no lasting effect on the address it was meant to stop.
 		if tag, err = tx.Exec(ctx, `UPDATE merchants SET wallet_verified_at=$2,status='active',updated_at=$2
-			WHERE id=$1 AND email_verified_at IS NOT NULL AND status='pending'
-			AND NOT EXISTS (
-				SELECT 1 FROM merchants suspended
-				WHERE suspended.recipient_address = merchants.recipient_address
-				  AND suspended.status = 'suspended' AND suspended.id <> merchants.id
-			)`, merchantID, now); err != nil {
+			WHERE id=$1 AND email_verified_at IS NOT NULL AND status='pending'`, merchantID, now); err != nil {
 			return "", err
 		}
 		if tag.RowsAffected() != 1 {
@@ -496,17 +488,8 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 		if now.Sub(lastChange) < s.cfg.RecipientCooldown {
 			return "", ErrThrottled
 		}
-		// Same guard as activation: a merchant cannot move onto a wallet a
-		// suspension is currently in effect for.
-		if tag, err = tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,wallet_verified_at=$3,updated_at=$3
-			WHERE id=$1 AND NOT EXISTS (
-				SELECT 1 FROM merchants suspended
-				WHERE suspended.recipient_address = $2 AND suspended.status = 'suspended' AND suspended.id <> $1
-			)`, merchantID, strings.ToLower(address), now); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,wallet_verified_at=$3,updated_at=$3 WHERE id=$1`, merchantID, strings.ToLower(address), now); err != nil {
 			return "", err
-		}
-		if tag.RowsAffected() != 1 {
-			return "", ErrForbidden
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO recipient_address_history
 			(merchant_id,previous_address,new_address,requested_at,verified_at,actor_type,actor_id,wallet_challenge_id)
