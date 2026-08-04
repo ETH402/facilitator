@@ -61,6 +61,8 @@ jobs:
         # -p 1 because these packages share one database and coordinate through a
         # Postgres advisory lock, so they must not run concurrently.
         run: go test -tags=integration -p 1 ./internal/...
+      - name: PostgreSQL role upgrade and privilege test
+        run: deploy/postgres/integration-test.sh
 
   lint:
     runs-on: ubuntu-latest

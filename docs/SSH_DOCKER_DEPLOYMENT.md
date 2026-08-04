@@ -93,3 +93,22 @@ SSH by operator source and key authentication. Database egress, both
 authenticated RPC providers, SMTP, and the policy-signer endpoint are the only
 application dependencies. Backups must leave this host and use a credential
 that neither the app nor migration container can read.
+
+## Restore drill
+
+Test every custom-format logical backup on an isolated PostgreSQL 17 instance.
+For archives compressed after `pg_dump --format=custom --no-owner`, omit stored
+ACLs during the data restore and reapply the reviewed role bootstrap, ownership,
+and runtime-grant scripts separately. This prevents a legacy production role
+name in an archive from making the recovery test environment-dependent:
+
+```sh
+gzip -dc eth402-YYYYMMDDTHHMMSSZ.dump.gz \
+  | pg_restore --dbname=eth402_restore --no-owner --no-acl --exit-on-error
+```
+
+After the restore, verify every migration row and critical table count, then run
+the role procedure in [PostgreSQL production roles](POSTGRESQL_ROLES.md). Record
+the backup checksum, restore time, PostgreSQL image digest, schema version, and
+test result in deployment evidence. A successful dump command without this
+restore drill is not a usable rollback gate.
