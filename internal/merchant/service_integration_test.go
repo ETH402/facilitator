@@ -210,6 +210,67 @@ func TestRecipientCooldownIgnoresUnrelatedMerchantWrites(t *testing.T) {
 	}
 }
 
+// TestSuspendedMerchantCannotReactivateSameAddressUnderNewRegistration closes
+// the gap where recipient_address carries no uniqueness constraint: without
+// the NOT EXISTS guard in VerifyWallet, a suspended operator who still
+// controls the wallet could register a second merchant with a different email
+// but the same recipient_address and reach status='active' again, so
+// suspension would have no lasting effect on the address it targeted.
+func TestSuspendedMerchantCannotReactivateSameAddressUnderNewRegistration(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sender := &captureSender{}
+	service := New(pool, sender, Config{
+		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
+		EmailTTL: time.Hour, Resend: time.Minute, WalletTTL: 3 * time.Hour,
+		RecipientCooldown: time.Hour,
+		Pepper:            []byte("01234567890123456789012345678901"),
+		EmailOutboxKey:    bytes.Repeat([]byte{0x42}, 32),
+	})
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	merchantID := activate(t, service, sender, address, key)
+	if err := service.Suspend(ctx, merchantID, "fraud", "test-operator", false, "request-suspend"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Register(ctx, Registration{
+		Name: "Second identity", Email: "second@example.com", Recipient: address, AcceptTerms: true,
+	}, "request-5"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DeliverPendingEmail(ctx); err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(strings.TrimPrefix(sender.message.TextBody, "Verify your email: "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := service.VerifyEmail(ctx, link.Query().Get("token"), "request-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := service.WalletChallenge(ctx, secondID, "", "verify-recipient", "request-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.VerifyWallet(ctx, secondID, challenge.ID, challenge.Message,
+		signMessage(t, challenge.Message, key), "verify-recipient", "request-8"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("reactivating a suspended address under a new merchant returned %v, want ErrForbidden", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM merchants WHERE id=$1`, secondID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("second registration status = %q, want %q", status, "pending")
+	}
+}
+
 func TestOnboardingLifecycle(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
