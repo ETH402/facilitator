@@ -5,6 +5,14 @@ schema and refuses to start when applied and embedded versions differ. Use
 separate PostgreSQL owner, migration, and runtime roles; runtime needs only
 required table/sequence operations and no DDL.
 
+Treat rollback across `000004_settlement_recovery` as conditionally
+irreversible. Once two transaction-history rows for one payment legitimately
+share a signer nonce, the older schema's uniqueness constraint cannot represent
+the data. The migration command locks and checks the table and refuses before
+changing schema. Restore a backup from before replacement history existed or
+recover forward; never delete or rewrite payment facts merely to force a
+downgrade, and never edit an applied migration file.
+
 Readiness requires PostgreSQL ping and RPC `eth_chainId == 1`. Liveness only
 asserts the process can serve HTTP. Remove an instance from traffic on
 readiness failure; do not restart-loop solely for an upstream outage.
