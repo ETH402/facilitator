@@ -103,12 +103,16 @@ and runtime-grant scripts separately. This prevents a legacy production role
 name in an archive from making the recovery test environment-dependent:
 
 ```sh
+createdb eth402
 gzip -dc eth402-YYYYMMDDTHHMMSSZ.dump.gz \
-  | pg_restore --dbname=eth402_restore --no-owner --no-acl --exit-on-error
+  | pg_restore --dbname=eth402 --no-owner --no-acl --exit-on-error
 ```
 
-After the restore, verify every migration row and critical table count, then run
-the role procedure in [PostgreSQL production roles](POSTGRESQL_ROLES.md). Record
-the backup checksum, restore time, PostgreSQL image digest, schema version, and
-test result in deployment evidence. A successful dump command without this
-restore drill is not a usable rollback gate.
+The `eth402` database name is required because every role script fails closed on
+any other name. Run this only in a fresh isolated test cluster; never overwrite a
+live database. After the restore, verify every migration row and critical table
+count, then run the role procedure in
+[PostgreSQL production roles](POSTGRESQL_ROLES.md). Record the backup checksum,
+restore time, PostgreSQL image digest, schema version, and test result in
+deployment evidence. A successful dump command without this restore drill is
+not a usable rollback gate.
