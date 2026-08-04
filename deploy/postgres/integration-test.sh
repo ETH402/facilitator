@@ -24,7 +24,10 @@ docker run -d --name "$container_name" \
 ready=false
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-  if docker exec "$container_name" pg_isready -U eth402_legacy -d eth402 >/dev/null 2>&1; then
+  # The image's temporary initialization server accepts Unix-socket probes and
+  # then shuts down. TCP loopback becomes ready only after the final postmaster
+  # starts, avoiding a createdb race during that handoff on slower CI runners.
+  if docker exec "$container_name" pg_isready -h 127.0.0.1 -U eth402_legacy -d eth402 >/dev/null 2>&1; then
     ready=true
     break
   fi
