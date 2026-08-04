@@ -56,6 +56,8 @@ See [public integration](docs/INTEGRATION.md),
 
 ## Implemented endpoints
 
+- `GET /` — first-party ETH402 product landing page
+- `GET /explore` — aggregate network activity and separately opted-in merchants
 - `GET /health/live`
 - `GET /health/ready`
 - `GET /metrics`
@@ -64,7 +66,7 @@ See [public integration](docs/INTEGRATION.md),
 - `POST /verify`
 - `POST /settle` (requires a settlement signer; otherwise `settlement_unavailable`)
 - merchant registration and email/wallet verification under `/v1/merchants/*`
-- self-contained email-plus-wallet merchant administration at `GET /merchant`
+- same-origin email-plus-wallet merchant administration at `GET /merchant`
 - authenticated profile, API-key, and recipient-change APIs under `/v1/*`
 - operator suspension and reinstatement under `/v1/admin/*`
 

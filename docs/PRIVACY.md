@@ -21,6 +21,15 @@ query earlier payments. Turning it off immediately removes access. This does not
 disable payment and audit records required for verification, settlement,
 idempotency, abuse controls, or incident response.
 
+Public merchant discovery is a separate opt-in and is never inferred from
+private analytics consent. When enabled, `/` and `/explore` may show the
+merchant's name, declared website, confirmed-settlement count since that public
+opt-in, and the date of its latest counted settlement. They do not show email,
+merchant or payment identifiers, payer or recipient addresses, amounts, or
+volume. Opting out removes the profile immediately. Because even a per-merchant
+count reveals business activity, the setting requires the same fresh recipient
+wallet authentication as API-key and analytics administration.
+
 ## What is published without authentication
 
 `/stats` and `/status` are public. They publish:
@@ -31,8 +40,10 @@ idempotency, abuse controls, or incident response.
   registered and verified merchants
 - block heights and confirmation lag
 
-They do **not** publish payer addresses, merchant identifiers, email addresses,
-payment identities, or individual amounts, and there is no endpoint that does.
+The landing and network pages also publish separately opted-in merchant names,
+declared websites, and post-consent confirmed-payment counts as described above.
+They do **not** publish payer addresses, internal merchant identifiers, email
+addresses, payment identities, recipient wallets, individual amounts, or volume.
 
 ## Why settled volume is withheld by default
 
@@ -66,11 +77,11 @@ is refused by the bundled reverse proxy on the public listener and carries no pa
 or merchant identifiers — worker heartbeats, RPC failure counts, HTTP status
 counts, and the signer balance.
 
-There is deliberately **no third-party analytics**, no tracking script, and no
-external asset on any page this service serves: `VISION.md` commits to operating
-without proprietary dependencies, and the status page in particular must keep
-working during the network failures it exists to report. A test asserts the page
-loads nothing external.
+There is deliberately **no third-party analytics**, no tracking script, font,
+or external asset on any page this service serves: `VISION.md` commits to
+operating without proprietary dependencies. Product pages use only same-origin
+CSS and JavaScript; the status page remains fully inline so it keeps working
+during the network failures it exists to report. Tests enforce both boundaries.
 
 ## Logs
 

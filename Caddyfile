@@ -44,14 +44,18 @@
 		}
 	}
 
-	# These pages intentionally need policies that are stricter in every other
-	# direction but permit their self-contained inline CSS, and (only for email
-	# verification) the same-origin confirmation form. Path-scoped proxy headers
-	# make that behavior independent of response-header ordering.
+	# Human-facing pages get narrowly scoped policies: status and email verification
+	# retain inline CSS, while product pages load only first-party assets. Only the
+	# email and merchant flows permit forms; only the merchant panel runs script.
+	# Mutually exclusive path matchers avoid intersecting a page policy with the
+	# API default and accidentally blocking a required asset.
 	header /status Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 	header /verify-email Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'"
-	header /merchant* Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
-	@default_csp not path /status /verify-email /merchant*
+	header / Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	header /explore Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	header /assets/* Content-Security-Policy "default-src 'none'"
+	header /merchant* Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	@default_csp not path / /status /verify-email /explore /assets/* /merchant*
 	header @default_csp Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
 
 	# Set on every response, including Caddy's own 404 above, which never reaches

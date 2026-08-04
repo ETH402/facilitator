@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,6 +36,13 @@ type MerchantStats struct {
 	ConfirmedVolumeUSDC   string    `json:"confirmed_volume_usdc"`
 }
 
+type PublicMerchant struct {
+	Name                 string     `json:"name"`
+	Website              *string    `json:"website,omitempty"`
+	ConfirmedSettlements int64      `json:"confirmed_settlements"`
+	LastConfirmedAt      *time.Time `json:"last_confirmed_at,omitempty"`
+}
+
 func (s *Service) newAdminSession() (AdminSession, error) {
 	if s.cfg.AdminSessionTTL <= 0 {
 		return AdminSession{}, ErrInvalid
@@ -55,7 +63,8 @@ func (s *Service) AuthenticateAdmin(ctx context.Context, token string) (AdminPri
 	var m Merchant
 	var walletVerifiedAt *time.Time
 	err := s.pool.QueryRow(ctx, `SELECT m.id,m.name,m.business_email,m.recipient_address,m.status,
-		m.website,m.description,m.email_verified_at,m.wallet_verified_at,m.stats_opted_in_at,m.created_at,
+		m.website,m.description,m.email_verified_at,m.wallet_verified_at,m.stats_opted_in_at,
+		m.public_profile_opted_in_at,m.created_at,
 		session.wallet_verified_at
 		FROM merchant_admin_sessions session
 		JOIN merchants m ON m.id=session.merchant_id
@@ -63,7 +72,8 @@ func (s *Service) AuthenticateAdmin(ctx context.Context, token string) (AdminPri
 		  AND session.expires_at>$2 AND m.status <> 'rejected'`,
 		secret.Hash(token), s.now().UTC()).Scan(
 		&m.ID, &m.Name, &m.Email, &m.Recipient, &m.Status, &m.Website, &m.Description,
-		&m.EmailVerifiedAt, &m.WalletVerifiedAt, &m.StatsOptedInAt, &m.CreatedAt, &walletVerifiedAt)
+		&m.EmailVerifiedAt, &m.WalletVerifiedAt, &m.StatsOptedInAt, &m.PublicProfileOptedInAt,
+		&m.CreatedAt, &walletVerifiedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AdminPrincipal{}, ErrUnauthorized
 	}
@@ -201,6 +211,104 @@ func (s *Service) SetStatsConsent(ctx context.Context, merchantID string, enable
 		return nil, err
 	}
 	return value, nil
+}
+
+func (s *Service) SetPublicProfileConsent(ctx context.Context, merchantID string, enabled bool, requestID string) (*time.Time, error) {
+	if !validUUID(merchantID) {
+		return nil, ErrInvalid
+	}
+	now := s.now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status string
+	var existing *time.Time
+	if err = tx.QueryRow(ctx, `SELECT status,public_profile_opted_in_at FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
+		Scan(&status, &existing); errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if status != "active" {
+		return nil, ErrForbidden
+	}
+	value := existing
+	event := "merchant.public_profile_opted_out"
+	if enabled {
+		event = "merchant.public_profile_opted_in"
+		if value == nil {
+			value = &now
+		}
+	} else {
+		value = nil
+	}
+	if _, err = tx.Exec(ctx, `UPDATE merchants SET public_profile_opted_in_at=$2,updated_at=$3 WHERE id=$1`, merchantID, value, now); err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,actor_id,request_id)
+		VALUES ($1,$2,'merchant',$3,$4)`, event, merchantID, merchantID, requestID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	s.invalidatePublicLeaderboard()
+	return value, nil
+}
+
+// PublicLeaderboard returns only fields a wallet-authenticated merchant opted
+// into publishing. Counts begin at the public opt-in timestamp; no amounts,
+// addresses, email, payer identity, or pre-consent activity leave this method.
+func (s *Service) PublicLeaderboard(ctx context.Context, limit int) ([]PublicMerchant, error) {
+	if limit < 1 || limit > 100 {
+		return nil, ErrInvalid
+	}
+	s.publicMu.Lock()
+	defer s.publicMu.Unlock()
+	if s.now().Before(s.publicExpires) {
+		return append([]PublicMerchant(nil), s.publicCached[:min(limit, len(s.publicCached))]...), nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT m.name,m.website,count(p.id),max(p.confirmed_at)
+		FROM merchants m
+		LEFT JOIN payment_records p ON p.merchant_id=m.id AND p.state='confirmed'
+			AND p.created_at >= m.public_profile_opted_in_at
+		WHERE m.status='active' AND m.public_profile_opted_in_at IS NOT NULL
+		GROUP BY m.id,m.name,m.website
+		ORDER BY count(p.id) DESC, max(p.confirmed_at) DESC NULLS LAST, lower(m.name),m.id
+		LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]PublicMerchant, 0)
+	for rows.Next() {
+		var item PublicMerchant
+		if err = rows.Scan(&item.Name, &item.Website, &item.ConfirmedSettlements, &item.LastConfirmedAt); err != nil {
+			return nil, err
+		}
+		if item.Website != nil {
+			parsed, parseErr := url.Parse(*item.Website)
+			if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
+				item.Website = nil
+			}
+		}
+		result = append(result, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	s.publicCached = append(s.publicCached[:0], result...)
+	s.publicExpires = s.now().Add(s.cfg.PublicDirectoryTTL)
+	return append([]PublicMerchant(nil), result[:min(limit, len(result))]...), nil
+}
+
+func (s *Service) invalidatePublicLeaderboard() {
+	s.publicMu.Lock()
+	s.publicCached = nil
+	s.publicExpires = time.Time{}
+	s.publicMu.Unlock()
 }
 
 func (s *Service) Stats(ctx context.Context, merchantID string) (MerchantStats, error) {

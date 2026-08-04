@@ -77,7 +77,8 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
 		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: 10 * time.Minute,
 		AdminSessionTTL: time.Hour, PaymentRetention: 30 * 24 * time.Hour,
-		Pepper: []byte("01234567890123456789012345678901"),
+		PublicDirectoryTTL: time.Nanosecond,
+		Pepper:             []byte("01234567890123456789012345678901"),
 	})
 	registry := metrics.New()
 	handler := New(Dependencies{
@@ -242,6 +243,45 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 		t.Fatalf("post-opt-in payment missing from merchant stats: %+v", merchantStats)
 	}
 
+	// Public discovery is a separate wallet-authorized consent. Private analytics
+	// neither publishes the merchant nor backfills activity into the leaderboard.
+	publicMerchants, err := merchantService.PublicLeaderboard(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publicMerchants) != 0 {
+		t.Fatalf("private analytics silently published merchant: %+v", publicMerchants)
+	}
+	response = requestAdminJSON(t, handler, http.MethodPut, "/merchant/api/public-profile", adminCookie, map[string]bool{"enabled": true})
+	if response.Code != http.StatusOK {
+		t.Fatalf("public profile opt-in: %d %s", response.Code, response.Body.String())
+	}
+	publicMerchants, err = merchantService.PublicLeaderboard(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publicMerchants) != 1 || publicMerchants[0].ConfirmedSettlements != 0 ||
+		publicMerchants[0].Name != "Browser merchant" {
+		t.Fatalf("public profile leaked pre-consent activity: %+v", publicMerchants)
+	}
+	insertMerchantPayment("e", "f", 456, time.Now())
+	publicMerchants, err = merchantService.PublicLeaderboard(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publicMerchants) != 1 || publicMerchants[0].ConfirmedSettlements != 1 {
+		t.Fatalf("public profile omitted post-consent settlement: %+v", publicMerchants)
+	}
+	page = requestJSON(t, handler, http.MethodGet, "/explore", "", nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Browser merchant") {
+		t.Fatalf("network page omitted opted-in merchant: %d %s", page.Code, page.Body.String())
+	}
+	for _, privateValue := range []string{"browser@example.com", strings.ToLower(address), "0.000456"} {
+		if strings.Contains(page.Body.String(), privateValue) {
+			t.Fatalf("network page disclosed private value %q", privateValue)
+		}
+	}
+
 	// A later email sign-in is intentionally not enough for sensitive panel
 	// operations. The registered recipient must elevate each new session.
 	response = requestJSON(t, handler, http.MethodPost, "/v1/merchants/admin-link", "", map[string]string{
@@ -266,6 +306,10 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	decodeResponse(t, response, http.StatusOK, &signedIn)
 	if signedIn.WalletAuthenticated {
 		t.Fatal("email-only session was wallet-authenticated")
+	}
+	response = requestAdminJSON(t, handler, http.MethodPut, "/merchant/api/public-profile", secondCookie, map[string]bool{"enabled": false})
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("email-only session changed public profile consent: %d", response.Code)
 	}
 	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/api-keys", secondCookie, nil)
 	if response.Code != http.StatusForbidden {

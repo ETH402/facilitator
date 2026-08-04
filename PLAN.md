@@ -145,6 +145,11 @@ Milestone 4 is complete.
       activation, API-key management, and opt-in private retained-window
       statistics are available without third-party frontend dependencies
 
+- [x] first-party product surface — an ETH402-branded landing page, aggregate
+      network view, and redesigned merchant dashboard share same-origin assets;
+      merchant discovery is a separate wallet-authorized opt-in and publishes
+      counts rather than amounts or addresses
+
 - [x] data retention — migration `000009` plus the bounded retention worker
       expire stale un-settled verifications and tombstone terminal payer
       authorizations after 30 days by default, without changing lifetime

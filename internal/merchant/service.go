@@ -9,6 +9,7 @@ import (
 	"net/mail"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/auth"
@@ -33,16 +34,20 @@ type Config struct {
 	BaseURL, TermsVersion                          string
 	EmailTTL, Resend, WalletTTL, RecipientCooldown time.Duration
 	AdminSessionTTL, PaymentRetention              time.Duration
+	PublicDirectoryTTL                             time.Duration
 	Pepper                                         []byte
 	BlockDisposable, RestrictFree                  bool
 	Allowlist, Denylist                            []string
 }
 
 type Service struct {
-	pool *pgxpool.Pool
-	mail email.Sender
-	cfg  Config
-	now  func() time.Time
+	pool          *pgxpool.Pool
+	mail          email.Sender
+	cfg           Config
+	now           func() time.Time
+	publicMu      sync.Mutex
+	publicCached  []PublicMerchant
+	publicExpires time.Time
 }
 
 type Registration struct {
@@ -59,17 +64,18 @@ type Challenge struct {
 }
 
 type Merchant struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	Email            string     `json:"business_email"`
-	Recipient        string     `json:"recipient_address"`
-	Status           string     `json:"status"`
-	Website          *string    `json:"website,omitempty"`
-	Description      *string    `json:"description,omitempty"`
-	EmailVerifiedAt  *time.Time `json:"email_verified_at,omitempty"`
-	WalletVerifiedAt *time.Time `json:"wallet_verified_at,omitempty"`
-	StatsOptedInAt   *time.Time `json:"stats_opted_in_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID                     string     `json:"id"`
+	Name                   string     `json:"name"`
+	Email                  string     `json:"business_email"`
+	Recipient              string     `json:"recipient_address"`
+	Status                 string     `json:"status"`
+	Website                *string    `json:"website,omitempty"`
+	Description            *string    `json:"description,omitempty"`
+	EmailVerifiedAt        *time.Time `json:"email_verified_at,omitempty"`
+	WalletVerifiedAt       *time.Time `json:"wallet_verified_at,omitempty"`
+	StatsOptedInAt         *time.Time `json:"stats_opted_in_at,omitempty"`
+	PublicProfileOptedInAt *time.Time `json:"public_profile_opted_in_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
 }
 
 type APIKey struct {
@@ -82,6 +88,9 @@ type APIKey struct {
 }
 
 func New(pool *pgxpool.Pool, sender email.Sender, cfg Config) *Service {
+	if cfg.PublicDirectoryTTL <= 0 {
+		cfg.PublicDirectoryTTL = 10 * time.Second
+	}
 	return &Service{pool: pool, mail: sender, cfg: cfg, now: time.Now}
 }
 
@@ -463,11 +472,11 @@ func (s *Service) Authenticate(ctx context.Context, value string) (Merchant, err
 	var m Merchant
 	var stored string
 	err := s.pool.QueryRow(ctx, `SELECT m.id,m.name,m.business_email,m.recipient_address,m.status,m.website,m.description,
-		m.email_verified_at,m.wallet_verified_at,m.stats_opted_in_at,m.created_at,k.key_hash
+		m.email_verified_at,m.wallet_verified_at,m.stats_opted_in_at,m.public_profile_opted_in_at,m.created_at,k.key_hash
 		FROM api_keys k JOIN merchants m ON m.id=k.merchant_id
 		WHERE k.key_prefix=$1 AND k.revoked_at IS NULL`, prefix).Scan(
 		&m.ID, &m.Name, &m.Email, &m.Recipient, &m.Status, &m.Website, &m.Description,
-		&m.EmailVerifiedAt, &m.WalletVerifiedAt, &m.StatsOptedInAt, &m.CreatedAt, &stored)
+		&m.EmailVerifiedAt, &m.WalletVerifiedAt, &m.StatsOptedInAt, &m.PublicProfileOptedInAt, &m.CreatedAt, &stored)
 	if err != nil {
 		return Merchant{}, ErrUnauthorized
 	}

@@ -68,6 +68,7 @@ func New(dep Dependencies) *Server {
 	mux.HandleFunc("GET /health/ready", dep.ready)
 	mux.HandleFunc("GET /stats", dep.stats)
 	mux.HandleFunc("GET /status", dep.status)
+	dep.publicSiteRoutes(mux)
 	if dep.MetricsEnabled {
 		mux.Handle("GET /metrics", dep.Metrics)
 	}
@@ -319,7 +320,8 @@ func knownRoute(path string) string {
 		"/v1/me/recipient-change/verify", "/merchant/api/session",
 		"/merchant/api/logout", "/merchant/api/wallet-challenge",
 		"/merchant/api/verify-wallet", "/merchant/api/stats",
-		"/merchant/api/stats-consent", "/merchant/api/api-keys":
+		"/merchant/api/stats-consent", "/merchant/api/public-profile", "/merchant/api/api-keys",
+		"/", "/explore", "/assets/site.css":
 		return path
 	}
 	// Routes carrying an identifier are reported as their registered pattern so

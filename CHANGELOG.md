@@ -13,6 +13,14 @@ versioned where noted.
 
 ### Added
 
+- An ETH402-branded, responsive public landing page and network activity view,
+  plus a redesigned merchant console with dedicated overview, analytics,
+  API-key, and settings views. Public top-merchant discovery is separately
+  wallet-authorized, begins counting at opt-in, and publishes only business
+  name, declared website, confirmed-payment count, and last activity date.
+  Migration `000012` stores that independent consent and OpenAPI is version
+  `0.11.0`.
+
 - A self-contained merchant admin panel at `/merchant`. Email-link sessions are
   random, hashed, expiring, HttpOnly, and unprivileged until the registered
   recipient signs a fresh `authenticate-admin` SIWE challenge. The panel covers

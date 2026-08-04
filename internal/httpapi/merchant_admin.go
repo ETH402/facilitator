@@ -19,6 +19,7 @@ func (d Dependencies) merchantAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /merchant/api/verify-wallet", d.withAdmin(false, d.adminVerifyWallet))
 	mux.HandleFunc("GET /merchant/api/stats", d.withAdmin(true, d.adminStats))
 	mux.HandleFunc("PUT /merchant/api/stats-consent", d.withAdmin(true, d.adminStatsConsent))
+	mux.HandleFunc("PUT /merchant/api/public-profile", d.withAdmin(true, d.adminPublicProfileConsent))
 	mux.HandleFunc("GET /merchant/api/api-keys", d.withAdmin(true, d.adminListKeys))
 	mux.HandleFunc("POST /merchant/api/api-keys", d.withAdmin(true, d.adminCreateKey))
 	mux.HandleFunc("DELETE /merchant/api/api-keys/{id}", d.withAdmin(true, d.adminRevokeKey))
@@ -168,6 +169,28 @@ func (d Dependencies) adminStatsConsent(w http.ResponseWriter, r *http.Request, 
 		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrForbidden) &&
 			!errors.Is(err, merchant.ErrNotFound) {
 			d.Logger.ErrorContext(r.Context(), "merchant stats consent update failed",
+				"merchant_id", m.ID, "error", err)
+		}
+		writeMerchantError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": *in.Enabled, "opted_in_at": optedInAt})
+}
+
+func (d Dependencies) adminPublicProfileConsent(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+	m := principal.Merchant
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if DecodeStrict(w, r, &in) != nil || in.Enabled == nil {
+		writeMerchantError(w, r, merchant.ErrInvalid)
+		return
+	}
+	optedInAt, err := d.Merchant.SetPublicProfileConsent(r.Context(), m.ID, *in.Enabled, requestIDFrom(r.Context()))
+	if err != nil {
+		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrForbidden) &&
+			!errors.Is(err, merchant.ErrNotFound) {
+			d.Logger.ErrorContext(r.Context(), "merchant public profile consent update failed",
 				"merchant_id", m.ID, "error", err)
 		}
 		writeMerchantError(w, r, err)

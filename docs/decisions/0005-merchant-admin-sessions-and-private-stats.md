@@ -28,3 +28,12 @@ trackers, fonts, or analytics services.
 The admin surface remains in the merchant/authentication module. It does not
 alter `/verify`, `/settle`, x402 schemas, settlement admission, signer policy,
 or the Ethereum-mainnet/native-USDC scope.
+
+Amendment — 2026-08-04: public merchant discovery uses a second, independent
+wallet-authorized consent timestamp. Private analytics consent never implies
+publicity. An opted-in public profile contains only the merchant name, its
+declared website, confirmed-settlement count, and last-confirmed date. Counts
+begin at public opt-in and remain bounded by attributable retained records.
+Emails, recipient and payer addresses, payment amounts, volume, identifiers,
+and pre-consent activity are excluded. Opting out removes the profile from the
+leaderboard immediately without changing private analytics or payment service.

@@ -40,7 +40,12 @@ flowchart LR
   Production email delivery is provider-neutral SMTP with mandatory
   certificate-verified TLS; development logging/file delivery cannot be
   selected in production.
-- `GET /merchant` and `/merchant/api/*`: self-contained merchant administration.
+- `GET /` and `GET /explore`: first-party product and aggregate network pages.
+  They render the cached public stats snapshot and only separately opted-in
+  merchant profiles; they do not alter the versioned `/stats` JSON contract.
+- `GET /merchant` and `/merchant/api/*`: first-party merchant administration
+  with overview, private analytics, API-key management, and independently
+  consented public-profile settings.
   Email creates a short-lived hashed session; a fresh recipient-wallet proof
   elevates that session before key management or private statistics are exposed.
   The browser session is separate from integration API keys and from x402.

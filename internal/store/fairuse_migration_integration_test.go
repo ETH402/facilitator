@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestLatestMigrationsRollBack proves 000008 through 000011 are reversible
+// TestLatestMigrationsRollBack proves 000008 through 000012 are reversible
 // before retention has redacted data. A migration that cannot be undone turns a
 // bad deploy into a database restore; 000009 deliberately refuses rollback after
 // redaction because restoring invented authorization values would be worse.
@@ -32,6 +32,19 @@ func TestFairUseMigrationRollsBack(t *testing.T) {
 	}
 	if _, err := conn.Exec(ctx, "TRUNCATE merchants CASCADE"); err != nil {
 		t.Fatal(err)
+	}
+	if err := migrate.Down(ctx, conn, migrations.Files); err != nil {
+		t.Fatalf("rolling back 000012: %v", err)
+	}
+	var publicProfileColumnExists bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name='merchants' AND column_name='public_profile_opted_in_at'
+	)`).Scan(&publicProfileColumnExists); err != nil {
+		t.Fatal(err)
+	}
+	if publicProfileColumnExists {
+		t.Error("public profile consent survived the 000012 down migration")
 	}
 	if err := migrate.Down(ctx, conn, migrations.Files); err != nil {
 		t.Fatalf("rolling back 000011: %v", err)

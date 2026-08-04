@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.10.0
+  version: 0.11.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -463,6 +463,37 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MerchantStats" }
         "403": { $ref: "#/components/responses/Error" }
+  /merchant/api/public-profile:
+    put:
+      operationId: setMerchantPublicProfileConsent
+      description: >-
+        Separately opts the wallet-authenticated merchant into or out of the
+        public leaderboard. Enabling publishes only its name, declared website,
+        and confirmed-settlement count beginning at the consent timestamp.
+      security: [{ MerchantAdminSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Current public-profile consent state.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [enabled, opted_in_at]
+                properties:
+                  enabled: { type: boolean }
+                  opted_in_at: { type: [string, "null"], format: date-time }
+        "403": { $ref: "#/components/responses/Error" }
   /merchant/api/api-keys:
     get:
       operationId: listPanelAPIKeys
@@ -863,6 +894,7 @@ components:
         email_verified_at: { type: string, format: date-time }
         wallet_verified_at: { type: string, format: date-time }
         stats_opted_in_at: { type: string, format: date-time }
+        public_profile_opted_in_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
     MerchantStats:
       type: object

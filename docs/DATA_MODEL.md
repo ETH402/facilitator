@@ -106,6 +106,13 @@ Migration `000011_merchant_admin_panel` adds:
 - `authenticate_admin` wallet challenges. They remain one-time, expiring, and
   EIP-4361-bound; they do not change the merchant recipient.
 
+Migration `000012_public_merchant_profiles` adds:
+
+- `merchants.public_profile_opted_in_at`: nullable, independent consent for the
+  public merchant leaderboard. Null means private. Confirmed-payment counts
+  begin at this timestamp and use only payment rows whose retained
+  `merchant_id` still attributes them to the merchant.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

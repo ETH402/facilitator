@@ -54,14 +54,15 @@ func TestMerchantPanelIsSelfContainedAndPrivate(t *testing.T) {
 		t.Fatalf("status = %d", response.Code)
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `src="/merchant/app.js"`) || strings.Contains(body, "https://") {
+	if !strings.Contains(body, `src="/merchant/app.js"`) || !strings.Contains(body, `href="/assets/site.css"`) ||
+		strings.Contains(body, "https://") {
 		t.Fatalf("panel is not self-contained: %s", body)
 	}
 	if got := response.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q", got)
 	}
 	csp := response.Header().Get("Content-Security-Policy")
-	for _, required := range []string{"default-src 'none'", "script-src 'self'", "connect-src 'self'", "frame-ancestors 'none'"} {
+	for _, required := range []string{"default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "frame-ancestors 'none'"} {
 		if !strings.Contains(csp, required) {
 			t.Fatalf("CSP %q omitted %q", csp, required)
 		}

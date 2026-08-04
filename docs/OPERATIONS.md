@@ -36,7 +36,7 @@ cannot detect.
 
 ## Merchant panel
 
-`/merchant` is same-origin and self-contained. Production TLS is mandatory
+`/merchant` uses only same-origin application assets. Production TLS is mandatory
 because the admin cookie is `Secure`; it is also HttpOnly, SameSite=Strict, and
 expires after `ETH402_MERCHANT_SESSION_TTL` (12 hours by default). An email link
 creates only an unprivileged session. API-key management and private statistics
@@ -48,6 +48,13 @@ Merchant statistics are not the public `/stats` product. They are private,
 disabled by default, and bounded by both the consent timestamp and payment
 retention. Turning consent off takes effect immediately and does not change the
 protocol/audit records required for correctness.
+
+Public merchant discovery is separately disabled by default and requires the
+same wallet-elevated session. `/` shows at most three profiles and `/explore`
+shows at most 50. The directory query is cached on the public-stats cache
+interval to prevent unauthenticated requests from driving database work;
+consent changes invalidate it immediately. Public rows contain name, declared
+HTTPS website, post-consent confirmed count, and last activity date only.
 
 ## Signer balance
 

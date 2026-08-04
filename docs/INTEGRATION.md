@@ -114,12 +114,14 @@ curl --fail-with-body \
 It does not authorize `/verify` or `/settle`. Those endpoints follow the
 facilitator protocol shape and do not accept merchant credentials.
 
-The same flow is available in the self-contained merchant panel at
+The same flow is available in the first-party merchant panel at
 `/merchant`. The panel does not put integration keys in local or session
 storage. Email sign-in creates an HttpOnly browser session, and sensitive panel
 operations require a fresh signature by the registered recipient wallet.
 Private merchant statistics are disabled by default and begin only when the
-merchant explicitly opts in.
+merchant explicitly opts in. Public discovery at `/` and `/explore` is a
+separate opt-in; it exposes only the merchant's name, declared HTTPS website,
+post-consent confirmed-payment count, and last activity date.
 
 Only EOA recipient proof is supported. ERC-1271 contract-wallet recipient
 proof is not implemented.
