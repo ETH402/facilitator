@@ -117,7 +117,29 @@ func Down(ctx context.Context, conn *pgx.Conn, files fs.FS) error {
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, string(sql)); err == nil {
+		if version == "000004_settlement_recovery" {
+			// The pre-000004 schema cannot represent replacement history: it
+			// requires (payment_id, transaction_nonce) to be unique. Lock the
+			// table so the check and immutable down migration observe one stable
+			// state, then fail with recovery guidance instead of a late constraint
+			// violation. Applied migration files remain byte-for-byte immutable.
+			if _, err = tx.Exec(ctx, "LOCK TABLE ethereum_transactions IN ACCESS EXCLUSIVE MODE"); err == nil {
+				var hasReplacementNonce bool
+				err = tx.QueryRow(ctx, `SELECT EXISTS (
+					SELECT 1 FROM ethereum_transactions
+					WHERE transaction_nonce IS NOT NULL
+					GROUP BY payment_id, transaction_nonce
+					HAVING count(*) > 1
+				)`).Scan(&hasReplacementNonce)
+				if err == nil && hasReplacementNonce {
+					err = fmt.Errorf("downgrade blocked: replacement transaction history cannot be represented before 000004; restore a pre-replacement backup or recover forward")
+				}
+			}
+		}
+		if err == nil {
+			_, err = tx.Exec(ctx, string(sql))
+		}
+		if err == nil {
 			_, err = tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version=$1", version)
 		}
 		if err != nil {
