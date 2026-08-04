@@ -34,3 +34,10 @@ stored only as HMAC-SHA-256 values with non-secret lookup prefixes. Store the
 pepper in a production secret manager and never log it. Changing it immediately
 invalidates every existing merchant API key; coordinated pepper rotation is
 not implemented in Milestone 1 and requires an explicit migration/runbook.
+
+Merchant admin sessions are a separate credential class. Their 256-bit random
+values are stored only as SHA-256 hashes and carried in an HttpOnly, Secure,
+SameSite=Strict cookie. Email creates an unprivileged
+session; API-key management requires that the registered recipient wallet has
+freshly authenticated that same session. Admin session tokens are not API keys,
+cannot authorize x402 calls, and are pruned after expiry/revocation.

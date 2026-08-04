@@ -64,6 +64,7 @@ See [public integration](docs/INTEGRATION.md),
 - `POST /verify`
 - `POST /settle` (requires a settlement signer; otherwise `settlement_unavailable`)
 - merchant registration and email/wallet verification under `/v1/merchants/*`
+- self-contained email-plus-wallet merchant administration at `GET /merchant`
 - authenticated profile, API-key, and recipient-change APIs under `/v1/*`
 - operator suspension and reinstatement under `/v1/admin/*`
 

@@ -75,7 +75,8 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	sender := &httpCaptureSender{}
 	merchantService := merchant.New(pool, sender, merchant.Config{
 		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
-		EmailTTL: time.Hour, Resend: time.Minute, WalletTTL: 10 * time.Minute,
+		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: 10 * time.Minute,
+		AdminSessionTTL: time.Hour, PaymentRetention: 30 * 24 * time.Hour,
 		Pepper: []byte("01234567890123456789012345678901"),
 	})
 	registry := metrics.New()
@@ -174,6 +175,121 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Email verified") {
 		t.Fatalf("browser verification POST: %d %s", page.Code, page.Body.String())
 	}
+	adminCookie := page.Result().Cookies()[0]
+	if adminCookie.Name != merchantAdminCookie || adminCookie.Value == "" ||
+		!adminCookie.HttpOnly || adminCookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("admin cookie is not hardened: %+v", adminCookie)
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/session", adminCookie, nil)
+	var browserSession struct {
+		Merchant merchant.Merchant `json:"merchant"`
+	}
+	decodeResponse(t, response, http.StatusOK, &browserSession)
+	if browserSession.Merchant.Email != "browser@example.com" || browserSession.Merchant.Status != "pending" {
+		t.Fatalf("unexpected browser session: %+v", browserSession.Merchant)
+	}
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/wallet-challenge", adminCookie, map[string]any{})
+	var browserChallenge merchant.Challenge
+	decodeResponse(t, response, http.StatusCreated, &browserChallenge)
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-wallet", adminCookie, map[string]string{
+		"challenge_id": browserChallenge.ID, "message": browserChallenge.Message,
+		"signature": signHTTPMessage(t, browserChallenge.Message, key),
+	})
+	var browserActivated struct {
+		APIKey string `json:"api_key"`
+	}
+	decodeResponse(t, response, http.StatusOK, &browserActivated)
+	if browserActivated.APIKey == "" {
+		t.Fatal("panel activation omitted one-time API key")
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/stats", adminCookie, nil)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("stats available without opt-in: %d %s", response.Code, response.Body.String())
+	}
+	insertMerchantPayment := func(identityChar, nonceChar string, amount int, createdAt time.Time) {
+		t.Helper()
+		_, err := pool.Exec(ctx, `INSERT INTO payment_records
+			(payment_identity,merchant_id,x402_version,scheme,network,asset,payer_address,
+			 recipient_address,amount_atomic,authorization_nonce,valid_after,valid_before,
+			 payload_hash,verification_status,state,confirmed_at,created_at,updated_at)
+			VALUES ($1,$2,2,'exact','eip155:1',
+			 '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+			 '0x2222222222222222222222222222222222222222',
+			 lower($3),$4,$5,now()-interval '2 minutes',now()+interval '1 hour',
+			 $6,'verified','confirmed',$7,$7,$7)`,
+			"pay_"+strings.Repeat(identityChar, 64), browserSession.Merchant.ID, address,
+			amount, "0x"+strings.Repeat(nonceChar, 64), strings.Repeat(identityChar, 64), createdAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertMerchantPayment("a", "b", 999, time.Now().Add(-time.Minute))
+	response = requestAdminJSON(t, handler, http.MethodPut, "/merchant/api/stats-consent", adminCookie, map[string]bool{"enabled": true})
+	if response.Code != http.StatusOK {
+		t.Fatalf("stats opt-in: %d %s", response.Code, response.Body.String())
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/stats", adminCookie, nil)
+	var merchantStats merchant.MerchantStats
+	decodeResponse(t, response, http.StatusOK, &merchantStats)
+	if merchantStats.ConfirmedVolumeAtomic != "0" || merchantStats.ConfirmedVolumeUSDC != "0.000000" {
+		t.Fatalf("pre-opt-in payment leaked into merchant stats: %+v", merchantStats)
+	}
+	insertMerchantPayment("c", "d", 123, time.Now())
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/stats", adminCookie, nil)
+	decodeResponse(t, response, http.StatusOK, &merchantStats)
+	if merchantStats.ConfirmedSettlements != 1 || merchantStats.ConfirmedVolumeAtomic != "123" ||
+		merchantStats.ConfirmedVolumeUSDC != "0.000123" {
+		t.Fatalf("post-opt-in payment missing from merchant stats: %+v", merchantStats)
+	}
+
+	// A later email sign-in is intentionally not enough for sensitive panel
+	// operations. The registered recipient must elevate each new session.
+	response = requestJSON(t, handler, http.MethodPost, "/v1/merchants/admin-link", "", map[string]string{
+		"business_email": "browser@example.com",
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("admin link: %d %s", response.Code, response.Body.String())
+	}
+	link, err = url.Parse(strings.TrimPrefix(sender.message.TextBody, "Sign in to your ETH402 merchant panel: "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = requestForm(t, handler, link.Path, url.Values{"token": {link.Query().Get("token")}})
+	if page.Code != http.StatusOK {
+		t.Fatalf("admin email verification: %d %s", page.Code, page.Body.String())
+	}
+	secondCookie := page.Result().Cookies()[0]
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/session", secondCookie, nil)
+	var signedIn struct {
+		WalletAuthenticated bool `json:"wallet_authenticated"`
+	}
+	decodeResponse(t, response, http.StatusOK, &signedIn)
+	if signedIn.WalletAuthenticated {
+		t.Fatal("email-only session was wallet-authenticated")
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/api-keys", secondCookie, nil)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("email-only session accessed keys: %d", response.Code)
+	}
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/wallet-challenge", secondCookie, map[string]any{})
+	var adminChallenge merchant.Challenge
+	decodeResponse(t, response, http.StatusCreated, &adminChallenge)
+	if adminChallenge.Action != "authenticate-admin" {
+		t.Fatalf("admin challenge action = %q", adminChallenge.Action)
+	}
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-wallet", secondCookie, map[string]string{
+		"challenge_id": adminChallenge.ID, "message": adminChallenge.Message,
+		"signature": signHTTPMessage(t, adminChallenge.Message, key),
+	})
+	var authenticated map[string]string
+	decodeResponse(t, response, http.StatusOK, &authenticated)
+	if authenticated["status"] != "authenticated" || authenticated["api_key"] != "" {
+		t.Fatalf("admin authentication response = %+v", authenticated)
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/api-keys", secondCookie, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("wallet-authenticated session could not access keys: %d %s", response.Code, response.Body.String())
+	}
 	// Tokens remain single-use, and malformed links get the same generic page.
 	if page = requestForm(t, handler, link.Path, url.Values{"token": {link.Query().Get("token")}}); page.Code != http.StatusBadRequest {
 		t.Fatalf("reused token: %d", page.Code)
@@ -181,6 +297,22 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	if page = requestJSON(t, handler, http.MethodGet, "/verify-email?token=wrong", "", nil); page.Code != http.StatusBadRequest {
 		t.Fatalf("garbage token: %d", page.Code)
 	}
+}
+
+func requestAdminJSON(t *testing.T, handler http.Handler, method, path string, cookie *http.Cookie, value any) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	if value != nil {
+		if err := json.NewEncoder(&body).Encode(value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(method, path, &body)
+	request.RemoteAddr = "127.0.0.1:12345"
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
 }
 
 func requestForm(t *testing.T, handler http.Handler, path string, values url.Values) *httptest.ResponseRecorder {

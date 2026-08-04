@@ -68,7 +68,7 @@ func NewChallenge(merchantID, address, action string, now time.Time, ttl time.Du
 	if err != nil {
 		return Challenge{}, err
 	}
-	if merchantID == "" || (action != "verify-recipient" && action != "change-recipient") || ttl <= 0 {
+	if merchantID == "" || (action != "verify-recipient" && action != "change-recipient" && action != "authenticate-admin") || ttl <= 0 {
 		return Challenge{}, errors.New("invalid wallet challenge parameters")
 	}
 	nonceBytes := make([]byte, 32)

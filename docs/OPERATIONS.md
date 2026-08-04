@@ -34,6 +34,21 @@ A metric that never moves is worse than an absent one — an alert on it never f
 however broken the system is, which is precisely the false assurance an operator
 cannot detect.
 
+## Merchant panel
+
+`/merchant` is same-origin and self-contained. Production TLS is mandatory
+because the admin cookie is `Secure`; it is also HttpOnly, SameSite=Strict, and
+expires after `ETH402_MERCHANT_SESSION_TTL` (12 hours by default). An email link
+creates only an unprivileged session. API-key management and private statistics
+remain unavailable until the registered recipient wallet elevates that session
+with a fresh SIWE signature. Session and wallet-authentication events are audit
+events; raw tokens and signatures must never be logged.
+
+Merchant statistics are not the public `/stats` product. They are private,
+disabled by default, and bounded by both the consent timestamp and payment
+retention. Turning consent off takes effect immediately and does not change the
+protocol/audit records required for correctness.
+
 ## Signer balance
 
 The settlement signer address holds a deliberately small working balance, topped

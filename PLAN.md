@@ -140,6 +140,11 @@ Milestone 4 is complete.
 
 ## Milestone 5 — public beta
 
+- [x] self-contained merchant administration — email-link sessions remain
+      unprivileged until a fresh registered-recipient SIWE proof; initial
+      activation, API-key management, and opt-in private retained-window
+      statistics are available without third-party frontend dependencies
+
 - [x] data retention — migration `000009` plus the bounded retention worker
       expire stale un-settled verifications and tombstone terminal payer
       authorizations after 30 days by default, without changing lifetime

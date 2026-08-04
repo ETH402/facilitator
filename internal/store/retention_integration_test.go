@@ -118,6 +118,11 @@ func TestRetentionRedactsWithoutBreakingStatsOrIdempotency(t *testing.T) {
 		merchantID, repeat("0", 64), old); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO merchant_admin_sessions
+		(merchant_id,token_hash,expires_at,created_at)
+		VALUES ($1,$2,$3,$4)`, merchantID, repeat("1", 64), old.Add(time.Hour), old); err != nil {
+		t.Fatal(err)
+	}
 
 	before, err := store.AggregateStats(ctx)
 	if err != nil {
@@ -132,7 +137,8 @@ func TestRetentionRedactsWithoutBreakingStatsOrIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.ExpiredPayments != 1 || result.RedactedPayments != 1 ||
-		result.EmailTokens != 1 || result.WalletChallenges != 1 || result.RevokedAPIKeys != 1 {
+		result.EmailTokens != 1 || result.WalletChallenges != 1 || result.AdminSessions != 1 ||
+		result.RevokedAPIKeys != 1 {
 		t.Fatalf("retention result = %+v", result)
 	}
 	after, err := store.AggregateStats(ctx)

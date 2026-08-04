@@ -27,3 +27,13 @@ default cache reduce abuse.
 
 `/metrics` is operational Prometheus exposition and is not a stable product
 contract. Operators should restrict it at Caddy/firewall level in production.
+
+## Private merchant statistics
+
+The merchant panel's `/merchant/api/stats` is a separate authenticated schema,
+not a filtered form of public `/stats`. It requires an email session freshly
+authenticated by the registered recipient wallet and explicit merchant opt-in.
+The observation window begins at opt-in and is capped by payment retention,
+because older tombstones deliberately remove merchant attribution. It reports
+only counts and exact integer/derived six-decimal USDC totals for that merchant;
+it does not expose payer addresses or individual payments.

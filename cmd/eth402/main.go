@@ -176,6 +176,7 @@ func main() {
 		BaseURL: cfg.PublicBaseURL, TermsVersion: cfg.TermsVersion,
 		EmailTTL: cfg.EmailTokenTTL, Resend: cfg.EmailResend,
 		WalletTTL: cfg.WalletChallengeTTL, RecipientCooldown: cfg.RecipientCooldown,
+		AdminSessionTTL: cfg.MerchantSessionTTL, PaymentRetention: cfg.PaymentRetention,
 		Pepper: []byte(cfg.APIKeyPepper), BlockDisposable: cfg.BlockDisposable,
 		RestrictFree: cfg.RestrictFreeEmail, Allowlist: cfg.EmailAllowlist, Denylist: cfg.EmailDenylist,
 	})

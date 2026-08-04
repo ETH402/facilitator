@@ -7,6 +7,14 @@ versioned where noted.
 
 ### Added
 
+- A self-contained merchant admin panel at `/merchant`. Email-link sessions are
+  random, hashed, expiring, HttpOnly, and unprivileged until the registered
+  recipient signs a fresh `authenticate-admin` SIWE challenge. The panel covers
+  initial wallet activation, one-time API-key display, key rotation/revocation,
+  and private merchant statistics that are explicitly opt-in and begin at the
+  consent timestamp. Migration `000011` adds session state and consent; OpenAPI
+  is version `0.10.0`.
+
 - An independent security-review packet with an immutable-target handoff,
   payment-critical invariants, required adversarial paths, reproducible
   evidence commands, finding expectations, and objective exit criteria. The

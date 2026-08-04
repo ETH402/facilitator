@@ -92,6 +92,7 @@ func (w *Worker) process(ctx context.Context) {
 			"redacted_payments", result.RedactedPayments,
 			"email_tokens", result.EmailTokens,
 			"wallet_challenges", result.WalletChallenges,
+			"admin_sessions", result.AdminSessions,
 			"revoked_api_keys", result.RevokedAPIKeys)
 	}
 }

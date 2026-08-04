@@ -16,6 +16,8 @@ func (d Dependencies) merchantRoutes(mux *http.ServeMux) {
 	}
 	mux.Handle("POST /v1/merchants/register",
 		newRateLimiter(d.RegistrationRate, d.TrustedProxies).middleware(http.HandlerFunc(d.register)))
+	mux.Handle("POST /v1/merchants/admin-link",
+		newRateLimiter(d.RegistrationRate, d.TrustedProxies).middleware(http.HandlerFunc(d.adminLink)))
 	mux.HandleFunc("POST /v1/merchants/verify-email", d.verifyEmail)
 	// GET deliberately does not consume the token: mail scanners and link
 	// previewers follow links automatically. Only the explicit form POST does.
@@ -34,6 +36,7 @@ func (d Dependencies) merchantRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/me/recipient-change/verify", d.withMerchant(d.fairUse(d.recipientVerify)))
 	mux.HandleFunc("POST /v1/admin/merchants/{id}/suspend", d.operator(d.suspend))
 	mux.HandleFunc("POST /v1/admin/merchants/{id}/reinstate", d.operator(d.reinstate))
+	d.merchantAdminRoutes(mux)
 }
 
 func (d Dependencies) register(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +65,21 @@ func (d Dependencies) register(w http.ResponseWriter, r *http.Request) {
 	d.Metrics.IncRegistration()
 	// Deliberately generic for validly-shaped and duplicate registrations.
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "verification_pending"})
+}
+
+func (d Dependencies) adminLink(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"business_email"`
+	}
+	if DecodeStrict(w, r, &in) != nil {
+		writeMerchantError(w, r, merchant.ErrInvalid)
+		return
+	}
+	if err := d.Merchant.RequestAdminLink(r.Context(), in.Email, requestIDFrom(r.Context())); err != nil {
+		writeMerchantError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "email_sent_if_registered"})
 }
 
 func (d Dependencies) verifyEmail(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +116,7 @@ var verifyEmailPageTemplate = template.Must(template.New("verify-email").Parse(`
 body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:2rem auto;max-width:36rem;padding:0 1rem;line-height:1.5}
 h1{font-size:1.25rem}p{color:var(--muted)}code{color:var(--fg)}
 .button{background:var(--fg);border:0;border-radius:.35rem;color:var(--bg);cursor:pointer;font:inherit;padding:.65rem 1rem}
+.link{display:inline-block;text-decoration:none}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 </style></head>
 <body><main>
@@ -111,9 +130,8 @@ h1{font-size:1.25rem}p{color:var(--muted)}code{color:var(--fg)}
 {{else if .Verified}}
 <h1 class="ok">Email verified</h1>
 <p>Your merchant email is confirmed. Merchant ID: <code>{{.MerchantID}}</code></p>
-<p>Next step: prove control of the recipient wallet by signing the wallet
-challenge with it, as described in the integration guide. The merchant ID above
-is required for that call.</p>
+<p>Next step: prove control of the recipient wallet in the merchant panel.</p>
+<a class="button link" href="/merchant">Continue to merchant panel</a>
 {{else}}
 <h1 class="bad">Verification link invalid</h1>
 <p>This link is invalid, was already used, or has expired. Register again with
@@ -136,7 +154,7 @@ func (d Dependencies) verifyEmailPageSubmit(w http.ResponseWriter, r *http.Reque
 		renderVerifyEmailResult(w, http.StatusBadRequest, verifyEmailResult{})
 		return
 	}
-	id, err := d.Merchant.VerifyEmail(r.Context(), r.PostFormValue("token"), requestIDFrom(r.Context()))
+	id, session, err := d.Merchant.VerifyEmailForAdmin(r.Context(), r.PostFormValue("token"), requestIDFrom(r.Context()))
 	if err != nil {
 		status := http.StatusBadRequest
 		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrNotFound) {
@@ -147,6 +165,7 @@ func (d Dependencies) verifyEmailPageSubmit(w http.ResponseWriter, r *http.Reque
 		renderVerifyEmailResult(w, status, verifyEmailResult{})
 		return
 	}
+	setMerchantAdminCookie(w, session)
 	d.Metrics.IncEmailVerification()
 	renderVerifyEmailResult(w, http.StatusOK, verifyEmailResult{Verified: true, MerchantID: id})
 }
@@ -205,6 +224,7 @@ func (d Dependencies) verifyWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Metrics.IncWalletVerification()
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]string{"status": "active", "api_key": key})
 }
 
@@ -243,6 +263,7 @@ func (d Dependencies) createKey(w http.ResponseWriter, r *http.Request, m mercha
 		writeMerchantError(w, r, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 201, map[string]any{"key": k, "api_key": raw})
 }
 func (d Dependencies) listKeys(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {

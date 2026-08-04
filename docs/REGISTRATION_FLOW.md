@@ -19,6 +19,12 @@ sequenceDiagram
   E-->>M: full API key once
 ```
 
+The browser flow continues at `/merchant`. Consuming the emailed token also
+creates an unprivileged admin-session cookie. The initial recipient signature
+activates the merchant and elevates that session. Later email sign-ins require a
+fresh `authenticate-admin` recipient signature before the panel may show private
+statistics or manage API keys. See [ADR-0005](decisions/0005-merchant-admin-sessions-and-private-stats.md).
+
 Email responses are enumeration-resistant. Resends and registrations are
 throttled. Disposable/free-provider and domain lists are operator controls,
 not proof of legitimacy. A determined actor can create multiple accounts.

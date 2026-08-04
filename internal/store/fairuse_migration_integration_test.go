@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestLatestMigrationsRollBack proves 000008 through 000010 are reversible
+// TestLatestMigrationsRollBack proves 000008 through 000011 are reversible
 // before retention has redacted data. A migration that cannot be undone turns a
 // bad deploy into a database restore; 000009 deliberately refuses rollback after
 // redaction because restoring invented authorization values would be worse.
@@ -32,6 +32,22 @@ func TestFairUseMigrationRollsBack(t *testing.T) {
 	}
 	if _, err := conn.Exec(ctx, "TRUNCATE merchants CASCADE"); err != nil {
 		t.Fatal(err)
+	}
+	if err := migrate.Down(ctx, conn, migrations.Files); err != nil {
+		t.Fatalf("rolling back 000011: %v", err)
+	}
+	var adminTableExists, consentColumnExists bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('merchant_admin_sessions') IS NOT NULL`).Scan(&adminTableExists); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name='merchants' AND column_name='stats_opted_in_at'
+	)`).Scan(&consentColumnExists); err != nil {
+		t.Fatal(err)
+	}
+	if adminTableExists || consentColumnExists {
+		t.Error("merchant admin schema survived the 000011 down migration")
 	}
 	if err := migrate.Down(ctx, conn, migrations.Files); err != nil {
 		t.Fatalf("rolling back 000010: %v", err)

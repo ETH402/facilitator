@@ -177,7 +177,8 @@ the migration, but a restarted old instance correctly refuses the newer schema.
 The runtime database role needs `SELECT` on `schema_migrations`; table/sequence
 permissions required by the application; and `DELETE` only on
 `email_verification_tokens`, unreferenced
-`wallet_verification_challenges`, revoked `api_keys`, and `merchant_usage`.
+`wallet_verification_challenges`, expired/revoked `merchant_admin_sessions`,
+revoked `api_keys`, and `merchant_usage`.
 It needs `UPDATE` on payment and transaction rows for state transitions and
 retention tombstones, but no DDL and no ability to disable the append-only
 triggers. The migration role owns schema changes and is not used by the service.

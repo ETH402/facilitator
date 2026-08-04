@@ -50,6 +50,7 @@
 	# make that behavior independent of response-header ordering.
 	header /status Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 	header /verify-email Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'"
+	header /merchant* Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
 	# Set on every response, including Caddy's own 404 above, which never reaches
 	# the application's own header middleware.

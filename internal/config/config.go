@@ -66,6 +66,7 @@ type Config struct {
 	EmailTokenTTL      time.Duration
 	EmailResend        time.Duration
 	WalletChallengeTTL time.Duration
+	MerchantSessionTTL time.Duration
 	RecipientCooldown  time.Duration
 	TermsVersion       string
 	APIKeyPepper       string
@@ -170,6 +171,7 @@ func Load() (Config, error) {
 		EmailTokenTTL:      l.duration("ETH402_EMAIL_TOKEN_TTL", 30*time.Minute),
 		EmailResend:        l.duration("ETH402_EMAIL_RESEND_INTERVAL", 2*time.Minute),
 		WalletChallengeTTL: l.duration("ETH402_WALLET_CHALLENGE_TTL", 10*time.Minute),
+		MerchantSessionTTL: l.duration("ETH402_MERCHANT_SESSION_TTL", 12*time.Hour),
 		RecipientCooldown:  l.duration("ETH402_RECIPIENT_CHANGE_COOLDOWN", 24*time.Hour),
 		TermsVersion:       l.str("ETH402_TERMS_VERSION", "2026-07-27"),
 		APIKeyPepper:       l.str("ETH402_API_KEY_PEPPER", "eth402-development-pepper-change-me"),
@@ -268,7 +270,7 @@ func (c Config) Validate() error {
 	if c.GlobalSettlementQuota > 0 && c.MerchantSettlementQuota > c.GlobalSettlementQuota {
 		errs = append(errs, errors.New("global settlement quota must not be below the per-merchant quota"))
 	}
-	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.RecipientCooldown < 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
+	if c.RPCTimeout <= 0 || c.EmailTokenTTL <= 0 || c.EmailResend <= 0 || c.WalletChallengeTTL <= 0 || c.MerchantSessionTTL <= 0 || c.RecipientCooldown < 0 || c.StatsCacheTTL < 0 || c.WorkerInterval <= 0 {
 		errs = append(errs, errors.New("durations must be positive (stats cache may be zero)"))
 	}
 	if c.SettlementExpiryMargin <= 0 || c.SigningTimeout <= 0 || c.SettlementLeaseDuration <= 0 {

@@ -97,6 +97,15 @@ Migration `000010_ambiguous_retry_backoff` adds:
   backoff from it and `updated_at` — each re-sign is a paid Cloud KMS
   operation, so retries must slow down rather than run every worker tick.
 
+Migration `000011_merchant_admin_panel` adds:
+
+- `merchants.stats_opted_in_at`: nullable, explicit consent timestamp for the
+  private merchant-statistics view. Null means disabled.
+- `merchant_admin_sessions`: random-token hashes, expiry, revocation, and the
+  time the registered recipient wallet elevated this particular session.
+- `authenticate_admin` wallet challenges. They remain one-time, expiring, and
+  EIP-4361-bound; they do not change the merchant recipient.
+
 Money uses `numeric(78,0)` and API integer strings. Addresses are stored
 lowercase for comparisons; display checksum formatting is derived. Database
 constraints enforce v2, exact, `eip155:1`, state domains, time ordering,

@@ -32,6 +32,7 @@ var (
 type Config struct {
 	BaseURL, TermsVersion                          string
 	EmailTTL, Resend, WalletTTL, RecipientCooldown time.Duration
+	AdminSessionTTL, PaymentRetention              time.Duration
 	Pepper                                         []byte
 	BlockDisposable, RestrictFree                  bool
 	Allowlist, Denylist                            []string
@@ -67,6 +68,7 @@ type Merchant struct {
 	Description      *string    `json:"description,omitempty"`
 	EmailVerifiedAt  *time.Time `json:"email_verified_at,omitempty"`
 	WalletVerifiedAt *time.Time `json:"wallet_verified_at,omitempty"`
+	StatsOptedInAt   *time.Time `json:"stats_opted_in_at,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 }
 
@@ -187,38 +189,121 @@ func (s *Service) validateDomain(domain string) error {
 	return nil
 }
 
+// RequestAdminLink sends the same one-time, hashed token used by onboarding to
+// an existing merchant. The response stays deliberately generic so this cannot
+// be used to enumerate merchant email addresses.
+func (s *Service) RequestAdminLink(ctx context.Context, value, requestID string) error {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) > 320 {
+		return ErrInvalid
+	}
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || parsed.Address != value || strings.Count(value, "@") != 1 {
+		return ErrInvalid
+	}
+	if err := s.validateDomain(strings.SplitN(value, "@", 2)[1]); err != nil {
+		return err
+	}
+	raw, hash, err := email.NewVerificationToken()
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var id string
+	err = tx.QueryRow(ctx, `SELECT id FROM merchants WHERE business_email=$1 AND status <> 'rejected'`, value).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var last time.Time
+	if err = tx.QueryRow(ctx, `SELECT coalesce(max(sent_at),'-infinity')
+		FROM email_verification_tokens WHERE merchant_id=$1`, id).Scan(&last); err != nil {
+		return err
+	}
+	if now.Sub(last) < s.cfg.Resend {
+		return nil
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO email_verification_tokens(merchant_id,token_hash,expires_at,sent_at)
+		VALUES ($1,$2,$3,$4)`, id, hash, now.Add(s.cfg.EmailTTL), now); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,request_id)
+		VALUES ('merchant.admin_link_requested',$1,'anonymous',$2)`, id, requestID); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	link := strings.TrimRight(s.cfg.BaseURL, "/") + "/verify-email?token=" + url.QueryEscape(raw)
+	return s.mail.Send(ctx, email.Message{To: value, Subject: "Sign in to ETH402", TextBody: "Sign in to your ETH402 merchant panel: " + link})
+}
+
 func (s *Service) VerifyEmail(ctx context.Context, token, requestID string) (string, error) {
+	id, _, err := s.verifyEmail(ctx, token, requestID, false)
+	return id, err
+}
+
+func (s *Service) VerifyEmailForAdmin(ctx context.Context, token, requestID string) (string, AdminSession, error) {
+	return s.verifyEmail(ctx, token, requestID, true)
+}
+
+func (s *Service) verifyEmail(ctx context.Context, token, requestID string, issueSession bool) (string, AdminSession, error) {
 	if len(token) < 20 {
-		return "", ErrInvalid
+		return "", AdminSession{}, ErrInvalid
+	}
+	var session AdminSession
+	var err error
+	if issueSession {
+		session, err = s.newAdminSession()
+		if err != nil {
+			return "", AdminSession{}, err
+		}
 	}
 	hash := secret.Hash(token)
 	now := s.now().UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return "", AdminSession{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var id string
 	err = tx.QueryRow(ctx, `UPDATE email_verification_tokens SET consumed_at=$2
 		WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING merchant_id`, hash, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrInvalid
+		return "", AdminSession{}, ErrInvalid
 	}
 	if err != nil {
-		return "", err
+		return "", AdminSession{}, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE merchants SET email_verified_at=coalesce(email_verified_at,$2),updated_at=$2 WHERE id=$1`, id, now); err != nil {
-		return "", err
+		return "", AdminSession{}, err
+	}
+	if issueSession {
+		if _, err = tx.Exec(ctx, `INSERT INTO merchant_admin_sessions
+			(merchant_id,token_hash,expires_at,created_at) VALUES ($1,$2,$3,$4)`,
+			id, secret.Hash(session.Token), session.ExpiresAt, now); err != nil {
+			return "", AdminSession{}, err
+		}
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,request_id)
 		VALUES ('email.verification_completed',$1,'anonymous',$2)`, id, requestID); err != nil {
-		return "", err
+		return "", AdminSession{}, err
 	}
-	return id, tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return "", AdminSession{}, err
+	}
+	return id, session, nil
 }
 
 func (s *Service) WalletChallenge(ctx context.Context, merchantID, address, action, requestID string) (Challenge, error) {
-	if !validUUID(merchantID) || (action != "verify-recipient" && action != "change-recipient") {
+	if !validUUID(merchantID) || (action != "verify-recipient" && action != "change-recipient" && action != "authenticate-admin") {
 		return Challenge{}, ErrInvalid
 	}
 	var storedAddress, status string
@@ -233,7 +318,7 @@ func (s *Service) WalletChallenge(ctx context.Context, merchantID, address, acti
 	if emailVerified == nil || status == "suspended" || status == "rejected" {
 		return Challenge{}, ErrForbidden
 	}
-	if action == "verify-recipient" {
+	if action == "verify-recipient" || action == "authenticate-admin" {
 		address = storedAddress
 	}
 	c, err := walletproof.NewChallenge(merchantID, address, action, s.now(), s.cfg.WalletTTL)
@@ -378,11 +463,11 @@ func (s *Service) Authenticate(ctx context.Context, value string) (Merchant, err
 	var m Merchant
 	var stored string
 	err := s.pool.QueryRow(ctx, `SELECT m.id,m.name,m.business_email,m.recipient_address,m.status,m.website,m.description,
-		m.email_verified_at,m.wallet_verified_at,m.created_at,k.key_hash
+		m.email_verified_at,m.wallet_verified_at,m.stats_opted_in_at,m.created_at,k.key_hash
 		FROM api_keys k JOIN merchants m ON m.id=k.merchant_id
 		WHERE k.key_prefix=$1 AND k.revoked_at IS NULL`, prefix).Scan(
 		&m.ID, &m.Name, &m.Email, &m.Recipient, &m.Status, &m.Website, &m.Description,
-		&m.EmailVerifiedAt, &m.WalletVerifiedAt, &m.CreatedAt, &stored)
+		&m.EmailVerifiedAt, &m.WalletVerifiedAt, &m.StatsOptedInAt, &m.CreatedAt, &stored)
 	if err != nil {
 		return Merchant{}, ErrUnauthorized
 	}

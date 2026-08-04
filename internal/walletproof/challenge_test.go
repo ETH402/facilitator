@@ -24,6 +24,21 @@ func TestChallengeBindsSecurityContext(t *testing.T) {
 	}
 }
 
+func TestAdminChallengeUsesDistinctAction(t *testing.T) {
+	t.Parallel()
+	c, err := NewChallenge("merchant-123", "0x1111111111111111111111111111111111111111",
+		"authenticate-admin", time.Now().UTC(), 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.Message(), "urn:eth402:action:authenticate-admin") {
+		t.Fatalf("admin action missing from challenge: %s", c.Message())
+	}
+	if _, err := NewChallenge("merchant-123", c.Address, "admin", time.Now(), time.Minute); err == nil {
+		t.Fatal("unknown challenge action accepted")
+	}
+}
+
 func TestVerifyMessage(t *testing.T) {
 	t.Parallel()
 	key, err := crypto.GenerateKey()

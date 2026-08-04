@@ -35,12 +35,13 @@ type RetentionResult struct {
 	RedactedPayments int64
 	EmailTokens      int64
 	WalletChallenges int64
+	AdminSessions    int64
 	RevokedAPIKeys   int64
 }
 
 func (r RetentionResult) Total() int64 {
 	return r.ExpiredPayments + r.RedactedPayments + r.EmailTokens +
-		r.WalletChallenges + r.RevokedAPIKeys
+		r.WalletChallenges + r.AdminSessions + r.RevokedAPIKeys
 }
 
 // ApplyRetention expires stale verified payments and removes high-sensitivity
@@ -159,6 +160,18 @@ WHERE challenge.ctid IN (
 )`, request.Now.Add(-request.EphemeralAfter), request.BatchSize)
 	if err != nil {
 		return RetentionResult{}, fmt.Errorf("prune wallet challenges: %w", err)
+	}
+	result.AdminSessions, err = deleteBatch(ctx, tx, `
+DELETE FROM merchant_admin_sessions
+WHERE ctid IN (
+    SELECT ctid FROM merchant_admin_sessions
+    WHERE expires_at < $1 OR revoked_at < $1
+    ORDER BY expires_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT $2
+)`, request.Now.Add(-request.EphemeralAfter), request.BatchSize)
+	if err != nil {
+		return RetentionResult{}, fmt.Errorf("prune merchant admin sessions: %w", err)
 	}
 	result.RevokedAPIKeys, err = deleteBatch(ctx, tx, `
 DELETE FROM api_keys

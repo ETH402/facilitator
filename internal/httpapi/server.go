@@ -311,17 +311,22 @@ func observe(registry *metrics.Registry, next http.Handler) http.Handler {
 func knownRoute(path string) string {
 	switch path {
 	case "/health/live", "/health/ready", "/metrics", "/stats",
-		"/supported", "/verify", "/settle", "/verify-email",
+		"/supported", "/verify", "/settle", "/verify-email", "/merchant", "/merchant/app.js",
 		"/v1/merchants/register", "/v1/merchants/verify-email",
+		"/v1/merchants/admin-link",
 		"/v1/merchants/wallet-challenge", "/v1/merchants/verify-wallet",
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",
-		"/v1/me/recipient-change/verify":
+		"/v1/me/recipient-change/verify", "/merchant/api/session",
+		"/merchant/api/logout", "/merchant/api/wallet-challenge",
+		"/merchant/api/verify-wallet", "/merchant/api/stats",
+		"/merchant/api/stats-consent", "/merchant/api/api-keys":
 		return path
 	}
 	// Routes carrying an identifier are reported as their registered pattern so
 	// that per-route metrics stay bounded and do not leak merchant or key IDs.
 	for _, pattern := range []string{
 		"/v1/api-keys/{id}",
+		"/merchant/api/api-keys/{id}",
 		"/v1/admin/merchants/{id}/suspend",
 		"/v1/admin/merchants/{id}/reinstate",
 	} {

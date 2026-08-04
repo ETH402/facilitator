@@ -15,6 +15,12 @@ public on chain and frequently linkable to a person.
 
 Merchant records additionally hold an email address and a recipient address.
 
+The merchant panel can show private per-merchant aggregates only after explicit
+opt-in. Opt-in starts the observation window; the panel does not retroactively
+query earlier payments. Turning it off immediately removes access. This does not
+disable payment and audit records required for verification, settlement,
+idempotency, abuse controls, or incident response.
+
 ## What is published without authentication
 
 `/stats` and `/status` are public. They publish:
@@ -83,6 +89,7 @@ The privacy-first defaults are:
 | expired email tokens | 24 hours after expiry | delete |
 | unreferenced expired wallet challenges | 24 hours after expiry | delete |
 | revoked API keys | 30 days after revocation | delete |
+| expired/revoked merchant admin sessions | 24 hours after expiry/revocation | delete |
 | fair-use counters | two completed windows | delete |
 
 `ETH402_PAYMENT_RETENTION`, `ETH402_EPHEMERAL_RETENTION`,
