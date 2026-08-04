@@ -5,6 +5,12 @@ versioned where noted.
 
 ## [Unreleased]
 
+### Fixed
+
+- Caddy now applies mutually exclusive default and page-specific content
+  security policies, so the merchant panel can load its same-origin script
+  without weakening the policy used by API responses.
+
 ### Added
 
 - A self-contained merchant admin panel at `/merchant`. Email-link sessions are
