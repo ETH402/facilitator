@@ -113,6 +113,19 @@ tool versions, fuzz seeds/corpus, image scan results, and the immutable image
 digest. A green automated suite is evidence, not a substitute for design and
 manual review.
 
+## Recorded review result
+
+John Doo of Pentest Company, with no implementation or operations role,
+reported no unresolved Critical/High findings and dispositioned all lower
+findings for commit `5c30b799c6c5fa1c4f72f31c1a72823d038bae67`. The signed
+report reference supplied by the operator is `082026`, dated 2026-08-04.
+
+That result is scoped to the named commit. The later confirmation-wait change
+(`2ab9526e70398f2dd1c4ef91a425046875d214ac`) and `/supported` signer
+advertisement (`4a60841615d1864ed517e1f93aacdb20e70f2db5`) passed the full
+automated release gates and adversarial agent review, but no separate human
+delta disposition is claimed.
+
 ## Exit criteria
 
 The review is complete only when:
