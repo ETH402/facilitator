@@ -196,8 +196,14 @@ curl --fail-with-body \
 ```
 
 Continue only when the response has `"success": true` and a non-empty
-`transaction`. This means the transaction was broadcast, not finalized.
-Confirmation proceeds asynchronously and defaults to 12 confirmations.
+`transaction`. `/settle` waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m)
+for the transaction to reach full confirmation depth (12 confirmations by
+default). `success: true` therefore means the payment is final at that depth.
+If the window elapses first, `success: false` carries
+`invalid_exact_evm_failed_to_get_receipt` while confirmation continues
+asynchronously; a transaction confirmed as reverted returns `success: false`
+with `invalid_exact_evm_transaction_failed`. As required by the x402 v2 schema,
+`transaction` is empty on either failure; ETH402 retains the hash internally.
 Repeating the same verified payment is idempotent and returns the recorded
 transaction hash; never create a replacement payment merely because the HTTP
 client timed out.
@@ -213,6 +219,8 @@ A policy refusal uses HTTP `200`, `"success": false`, and a stable
 | `merchant_quota_exceeded` | Wait for the merchant quota window; do not retry in a loop. |
 | `facilitator_quota_exceeded` | Wait for operator capacity to reset or use another explicitly trusted facilitator. |
 | `simulation_reverted` | Treat the authorization as unsafe to broadcast and investigate its on-chain state. |
+| `invalid_exact_evm_transaction_failed` | The broadcast transaction reached finality with a failed receipt. Do not create a new authorization for the same resource blindly. |
+| `invalid_exact_evm_failed_to_get_receipt` | Retry the identical payment to observe its durable outcome. Do not create a new authorization while the original transaction remains unresolved. |
 | `broadcast_failed` | Query/retry the same payment; do not generate a second authorization until its state is known. |
 | `settlement_unavailable` | Stop automatic settlement and alert the operator. |
 

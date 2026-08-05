@@ -1,65 +1,55 @@
 # Handoff
 
-Last updated: 2026-08-04. Do not treat a hash written in a handoff as the review
-target: freeze and record the full `origin/main` SHA after the final push and
-require CI and the independent reviewer to approve that exact revision.
+Last updated: 2026-08-05.
 
 ## Read first
 
 1. `AGENTS.md`, `VISION.md`, and `PLAN.md`.
-2. `docs/SECURITY_REVIEW.md` and `docs/SECURITY_REVIEW_FINDINGS.md`.
-3. `docs/ARCHITECTURE.md`, `docs/SETTLEMENT_FLOW.md`, and `docs/DATA_MODEL.md`.
-4. ADRs in `docs/decisions/`; dated amendments supersede original text.
-5. `docs/RELEASES.md`, `docs/SSH_DOCKER_DEPLOYMENT.md`, and
-   `docs/MAINNET_DRY_RUN.md` before any production change.
+2. `docs/ARCHITECTURE.md`, `docs/SETTLEMENT_FLOW.md`, and `docs/DATA_MODEL.md`.
+3. ADRs in `docs/decisions/`; dated amendments supersede original text.
+4. `docs/OPERATIONS.md`, `docs/RUNBOOKS.md`, `docs/RELEASES.md`, and
+   `docs/SSH_DOCKER_DEPLOYMENT.md` before any production change.
 
 ## Current status
 
-Milestones 0–4 are complete. Milestone 5 still has two external gates:
+Milestones 0–4 are complete and the production service is live. Milestone 5's
+review gate is closed; the funded mainnet execution evidence is still pending:
 
-1. **Independent security review.** AI-assisted review is useful input but is
-   not independent approval. The reviewer must approve the exact final commit,
-   production/IAM architecture, and eventual immutable image digests.
-2. **Controlled funded mainnet dry run.** The procedure is complete but has not
-   been executed. It remains blocked until every prerequisite in
-   `docs/MAINNET_DRY_RUN.md` is evidenced.
+1. **Independent security review — done.** All findings were dispositioned and
+   the review updates are applied.
+2. **Controlled funded mainnet dry run — ready, not yet executed.** Signing is
+   enabled in production, but no real USDC settlement has reached the required
+   confirmation depth yet. Enabling the signer is a prerequisite, not evidence
+   that the dry run completed.
 
-The production site and API are healthy on the existing signer-disabled
-deployment. The application host is `toufik@35.232.99.172`; the policy signer
-remains a separate workload. Do not enable signing merely because source CI is
-green. The newer hardening commits are not deployed until the reviewed,
-attested digest and database transition are approved.
+Production is live and healthy:
 
-Repository description/topics are configured. On the current private GitHub
-Free repository, branch protection, native secret scanning/push protection,
-release attestations, and the checked-in public-release workflow cannot all be
-enabled. The intended transition is: private source review, public visibility
-with signer disabled, immediately enable repository controls, publish an
-immutable release, obtain the reviewer's digest addendum, then deploy by digest.
+- Application host: `toufik@35.232.99.172`, Compose project `eth402prod`.
+- Running containers: app (`ghcr.io/eth402/facilitator:v0.1.0-rc.2`),
+  Caddy, PostgreSQL 17, Prometheus, Alertmanager. The policy signer is a
+  separate workload reached at `https://signer.eth402.org`.
+- `ETH402_SIGNER_MODE=policy`; `ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER=false`.
+  Signing goes through the KMS-fronted policy-signer boundary; the
+  facilitator holds no KMS grant.
 
-## 2026-08-04 hardening
+## Open follow-ups
 
-- Dual-provider fail-closed RPC agreement, request/response identity binding,
-  and local signed-transaction hash verification.
-- Strict JSON parsing, including duplicate-key and invalid-UTF-8 rejection.
-- Durable encrypted email outbox with leased/fenced delivery and operational
-  metrics/alerts.
-- PostgreSQL owner/migration/runtime role separation and a real disposable
-  privilege-upgrade integration gate in CI and release.
-- Immutable release workflow, pinned build/scanning inputs, SBOM/provenance
-  evidence, and digest-only deployment documentation.
-- Production backup copied off the VM and successfully restored through schema
-  adoption, migration `000012` to `000013`, runtime grants, and ownership audit.
-- AI-assisted follow-up identified two candidate fixes. The initial versions
-  were withdrawn because one changed suspension semantics without a race-safe
-  address-block design and the other edited an applied migration. The compliant
-  migration preflight now refuses a lossy downgrade across `000004` while
-  leaving historical migration files unchanged. See
-  `docs/SECURITY_REVIEW_FINDINGS.md`.
+- **Deploy by digest, not tag.** Production currently runs the mutable tag
+  `v0.1.0-rc.2`; the release process (`docs/RELEASES.md`) requires
+  digest-pinned deployment tied to the reviewed source. Repin at the next
+  release.
+- **Stray foundry container on the production host** (`zealous_rubin`,
+  `ghcr.io/foundry-rs/foundry:stable`). A development tool that does not
+  belong in production; remove it unless it is serving a documented purpose.
+
+The policy-signer bearer token exposed during inspection was rotated on
+2026-08-05. Secret Manager version 2 is active, version 1 is disabled, the old
+token is rejected, and both the signer and facilitator restarted healthy with
+the unchanged KMS signer identity.
 
 ## Required validation
 
-Run from the final frozen revision:
+Run from the final frozen revision before any release:
 
 ```sh
 test -z "$(gofmt -l .)"
@@ -98,9 +88,9 @@ commit; a previous green run is not transferable.
   instructs the operator to restore a pre-replacement backup or recover forward.
 - Integration tests self-migrate and share a destructive database; run packages
   serially with `-p 1`.
-- Production signer mode remains `disabled` until the controlled procedure
-  explicitly enables `policy`. The facilitator must never receive the KMS
-  signing grant.
+- Production signer mode is `policy`. Direct KMS mode (`external`), raw keys,
+  and unsafe overrides are rejected at startup. The facilitator must never
+  receive the KMS signing grant; the policy signer holds it alone.
 - Different RPC hostnames are only a syntax guard. Deployment evidence must
   prove different operators and authenticated accounts.
 - Commits and release tags are SSH-signed through the configured 1Password
@@ -109,14 +99,11 @@ commit; a previous green run is not transferable.
 
 ## Next actions
 
-1. Push the final signed revision and require exact-commit CI success.
-2. Commission the independent review using `docs/SECURITY_REVIEW.md`; include
-   the AI-assisted findings as untrusted handover material.
-3. Address findings and obtain explicit disposition for every later delta.
-4. Make the repository public with signing still disabled, enable repository
-   controls, and publish a signed immutable prerelease.
-5. Have the reviewer verify both OCI digests and attestations and sign an
-   addendum binding them to the reviewed source.
-6. Deploy the facilitator digest signer-disabled, complete the production/IAM
-   preflight, then execute exactly one controlled funded mainnet payment with
-   the required independent observers.
+1. Complete exactly one controlled funded mainnet settlement and retain the
+   evidence required by `docs/MAINNET_DRY_RUN.md`.
+2. Repin the production deployment to an immutable digest at the next release
+   (see Open follow-ups).
+3. Remove the stray foundry container from the production host.
+4. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
+   agreement in Prometheus/Alertmanager; follow `docs/RUNBOOKS.md` for
+   settlement states.

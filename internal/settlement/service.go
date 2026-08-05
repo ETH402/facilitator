@@ -97,6 +97,11 @@ type Config struct {
 	// ReplacementAfter is how long a broadcast may sit pending before
 	// recovery replaces it with a fee bump.
 	ReplacementAfter time.Duration
+	// ResponseWait bounds how long Settle waits for its transaction to reach
+	// Confirmations depth before responding. Success=true always means the
+	// payment reached that depth. A timeout returns success=false while the
+	// confirmation worker keeps tracking the durable transaction internally.
+	ResponseWait time.Duration
 }
 
 // Service runs settlement: admission, the broadcast pipeline shared by HTTP
@@ -125,6 +130,11 @@ func NewService(store Store, transactionSigner signer.Signer, chain Chain, cfg C
 // durable row is what binds the recipient to a registered merchant (ADR-0004
 // decision 9). Policy rejections return a successful wire response carrying
 // Success=false and a stable reason; only internal failures return an error.
+// Once a transaction hash exists, Settle waits up to Config.ResponseWait for
+// the transaction to reach full confirmation depth before responding, so a
+// success means the payment is final on chain; a timeout is reported as a
+// non-terminal failure, and a canonical revert at the
+// same confirmation depth is reported as an exact-EVM transaction failure.
 func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.SettleResponse, error) {
 	payment, reason := verification.ParseRequest(request)
 	if reason != "" {
@@ -163,12 +173,27 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 		return nil, fmt.Errorf("create settlement intent: %w", err)
 	}
 	if intent.TxHash != "" {
-		return settled(payment, intent.TxHash), nil
+		if intent.Reverted {
+			// The payment's terminal transaction reverted; a duplicate must
+			// observe the same hash as a failure, not as a success.
+			return revertedTx(payment), nil
+		}
+		if intent.Confirmed {
+			return settled(payment, intent.TxHash), nil
+		}
+		if intent.Duplicate {
+			// Do not let replays of one public payment payload create an
+			// unbounded fan-out of long-lived HTTP waiters and consensus RPC
+			// reads. The durable worker owns progress; a later identical retry
+			// observes the terminal outcome idempotently.
+			return receiptUnavailable(payment), nil
+		}
+		return s.respondWithTx(ctx, payment, intent.PaymentID, intent.TransactionID, intent.TxHash), nil
 	}
 
 	txHash, err := s.Broadcast(ctx, intent.PaymentID, "http")
 	if err == nil {
-		return settled(payment, txHash), nil
+		return s.respondWithTx(ctx, payment, intent.PaymentID, intent.TransactionID, txHash), nil
 	}
 	if errors.Is(err, ErrAuthorizationExpiring) {
 		return rejected(WireReasonAuthorizationExpiring, payment), nil
@@ -182,7 +207,7 @@ func (s *Service) Settle(ctx context.Context, request SettleRequest) (*x402.Sett
 	// worker holding the lease, or a race resolved after our send error).
 	work, loadErr := s.store.LoadSettlementWork(ctx, intent.PaymentID)
 	if loadErr == nil && work.TxHash != "" {
-		return settled(payment, work.TxHash), nil
+		return s.respondWithTx(ctx, payment, intent.PaymentID, work.TransactionID, work.TxHash), nil
 	}
 	if errors.Is(err, ErrBroadcastPending) {
 		return &x402.SettleResponse{
@@ -442,11 +467,62 @@ func (s *Service) release(ctx context.Context, paymentID, worker string) {
 	}
 }
 
+// respondWithTx waits for a broadcast transaction's on-chain outcome before
+// answering. Confirmed at full depth means success=true is a settled payment;
+// a canonical revert is reported as invalid_exact_evm_transaction_failed; a
+// wait that outlives ResponseWait returns
+// invalid_exact_evm_failed_to_get_receipt, while the confirmation worker keeps
+// tracking the transaction (ADR-0004 amendment: x402 SettleResponse success
+// means settled, not broadcast). Failure responses keep transaction empty as
+// required by the pinned x402 v2 SettlementResponse schema.
+func (s *Service) respondWithTx(ctx context.Context, payment *verification.Payment, paymentID, transactionID, txHash string) *x402.SettleResponse {
+	observation := s.waitForSettlement(ctx, txHash)
+	switch observation.kind {
+	case observationConfirmed:
+		if err := s.store.MarkTxConfirmed(ctx, paymentID, transactionID,
+			observation.receipt.BlockNumber, observation.receipt.BlockHash,
+			observation.receipt.GasUsed, observation.receipt.EffectiveGasPrice, "http-wait"); err != nil {
+			s.logger.WarnContext(ctx, "persist confirmed settlement observation failed",
+				"payment_identity", payment.Identity, "tx_hash", txHash, "error", err)
+			return receiptUnavailable(payment)
+		}
+		return settled(payment, txHash)
+	case observationReverted:
+		if err := s.store.MarkTxReverted(ctx, paymentID, transactionID,
+			observation.receipt.GasUsed, observation.receipt.EffectiveGasPrice, "http-wait"); err != nil {
+			s.logger.WarnContext(ctx, "persist reverted settlement observation failed",
+				"payment_identity", payment.Identity, "tx_hash", txHash, "error", err)
+			return receiptUnavailable(payment)
+		}
+		return revertedTx(payment)
+	default:
+		s.logger.InfoContext(ctx, "settlement confirmation wait ended without a final receipt; confirmation continues asynchronously",
+			"payment_identity", payment.Identity, "tx_hash", txHash)
+		return receiptUnavailable(payment)
+	}
+}
+
 func settled(payment *verification.Payment, txHash string) *x402.SettleResponse {
 	return &x402.SettleResponse{
 		Success: true, Transaction: txHash,
 		Payer: payment.Payer, Network: config.MainnetNetwork, Amount: payment.Amount,
 	}
+}
+
+// revertedTx reports a broadcast transaction that reached finality with a
+// failed receipt. The public transaction field stays empty on failure per the
+// pinned x402 v2 schema; the hash remains durable for operator diagnostics and
+// duplicate outcome convergence.
+func revertedTx(payment *verification.Payment) *x402.SettleResponse {
+	return rejected(WireReasonTransactionFailed, payment)
+}
+
+// receiptUnavailable is deliberately non-terminal: the durable transaction may
+// still settle. Callers retry the identical authorization to observe its final
+// state and must not create a second payment. Keeping the transaction empty
+// preserves the pinned x402 v2 failure schema.
+func receiptUnavailable(payment *verification.Payment) *x402.SettleResponse {
+	return rejected(WireReasonFailedToGetReceipt, payment)
 }
 
 func rejected(reason string, payment *verification.Payment) *x402.SettleResponse {

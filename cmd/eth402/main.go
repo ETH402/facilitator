@@ -262,6 +262,7 @@ func main() {
 			GasLimit: cfg.MaxGasLimit, MaxFeePerGas: cfg.MaxFeePerGasWei,
 			MaxPriorityFeeGas: cfg.MaxPriorityFeeWei,
 			RecoveryGrace:     cfg.SettlementRecoveryGrace, ReplacementAfter: cfg.SettlementReplacementAfter,
+			ResponseWait: cfg.SettleResponseWait,
 		}, logger)
 		settlementService.Observe(registry)
 		// Tracked so shutdown can wait for an in-flight tick. A broadcast
@@ -312,7 +313,8 @@ func main() {
 		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
 		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
 		Verification: verificationService, Settlement: settlementService, MetricsEnabled: cfg.MetricsEnabled,
-		TrustedProxies: cfg.TrustedProxies,
+		SettleResponseWait: cfg.SettleResponseWait,
+		TrustedProxies:     cfg.TrustedProxies,
 	})
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.Handler(),

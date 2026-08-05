@@ -374,5 +374,39 @@ Resolved since:
   differing re-signature replacement-shaped (decision 4, migration `000006`).
   `TestCloudKMSSigHashStableAcrossSignatures` pins the property live.
 
+## Amendment: `/settle` waits for on-chain confirmation (2026-08)
+
+The original model answered `/settle` as soon as the broadcast was recorded,
+so `success=true` meant "broadcast", and a duplicate of a *reverted* payment
+also returned `success=true` with the reverted hash. The x402 v2 specification
+defines the SettleResponse's `success` as whether the payment settled, with the
+facilitator waiting for confirmation before responding.
+
+`/settle` now waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the
+broadcast transaction to reach `ETH402_REQUIRED_CONFIRMATIONS` depth before
+responding, applying the same canonical-block and depth rules as the
+confirmation worker. The request that observes a final outcome persists it
+before replying, so an immediate duplicate cannot contradict an outcome that
+was already returned. A canonical receipt with
+`status=0` must reach the same depth before returning `success=false` with
+`errorReason=invalid_exact_evm_transaction_failed`; a shallow failed receipt
+can still be removed by a reorg. A window that elapses without a final outcome
+returns `success=false` with
+`errorReason=invalid_exact_evm_failed_to_get_receipt`, with the confirmation
+worker still tracking the durable hash internally. Both failure responses keep
+the public `transaction` field empty per the pinned v2 schema. The HTTP handler and
+bundled reverse proxy allow the default wait to survive their write and
+upstream-read timeouts. Duplicates observe the recorded terminal outcome: the
+confirmed hash as a success or the exact-EVM transaction-failed reason for a
+revert (the audited `duplicate` attempt row is unchanged). Nonterminal
+duplicates do not start another confirmation waiter; they return the receipt
+unavailable reason from durable state, bounding one public authorization to one
+long-lived RPC polling loop.
+
+This changes no state-machine edge, migration, or worker; it changes what the
+HTTP response claims, when it responds, and which actor records a final receipt.
+The additive pinned exact-EVM error values are documented in
+`openapi/eth402.yaml`.
+
 These configuration keys are deliberately **not** added ahead of the code that
 reads them, so that no documented option silently does nothing.

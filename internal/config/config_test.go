@@ -17,7 +17,7 @@ func validConfig() Config {
 		SignerMode: "disabled", EmailBackend: "log", EmailTokenTTL: 1,
 		EmailResend: 1, WalletChallengeTTL: 1, MerchantSessionTTL: time.Hour, WorkerInterval: 1,
 		SettlementExpiryMargin: 1, SigningTimeout: 1, SettlementLeaseDuration: 1,
-		SettlementRecoveryGrace: 1, SettlementReplacementAfter: 1,
+		SettlementRecoveryGrace: 1, SettlementReplacementAfter: 1, SettleResponseWait: 1,
 		PublicRatePerMin: 1, RegistrationRate: 1,
 		MerchantSettlementQuota: 10, GlobalSettlementQuota: 100, MerchantQuotaWindow: time.Hour,
 		PaymentRetention: 30 * 24 * time.Hour, EphemeralRetention: 24 * time.Hour,

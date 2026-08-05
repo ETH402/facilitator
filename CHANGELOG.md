@@ -35,7 +35,28 @@ versioned where noted.
   `www.eth402.org`, redirects duplicate pages away from `api.eth402.org`, and
   keeps merchant authentication and machine APIs isolated on the API origin.
 
+- A duplicate `/settle` for a payment whose transaction reverted on chain no
+  longer reports `success=true` with the reverted hash; it now returns
+  `success=false` with the pinned exact-EVM transaction-failed reason, so a
+  retried response always reflects the true terminal outcome.
+
 ### Added
+
+- `/settle` now waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the
+  settlement transaction to reach full confirmation depth
+  (`ETH402_REQUIRED_CONFIRMATIONS`, default 12) before responding, matching the
+  x402 v2 SettleResponse semantics: `success=true` means the payment reached
+  the configured finality depth, a confirmed revert returns
+  `invalid_exact_evm_transaction_failed`, and an elapsed window returns
+  `invalid_exact_evm_failed_to_get_receipt` while the confirmation worker keeps
+  tracking. Failure responses keep `transaction` empty as required by the
+  pinned schema. Duplicate pending requests read only durable state instead of
+  multiplying long-lived RPC polling loops. A final observation is persisted
+  before returning, keeping immediate duplicates consistent. The HTTP handler
+  disables its global write deadline for this route and the bundled Caddy
+  configuration allows the default confirmation window to complete. The
+  additive errorReason values and behavior are documented in OpenAPI 0.12.0;
+  see the ADR-0004 amendment.
 
 - Reproducible SSH/Docker production manifests and an explicit PostgreSQL
   owner/migration/runtime role model with authoritative least-privilege grants,
@@ -286,7 +307,8 @@ versioned where noted.
   skip work whose ownership has lapsed.
 - Canonical receipt finality checks block hash as well as depth for successful
   and reverted transactions.
-- Terminal `/settle` retries return the original durable transaction hash.
+- Terminal confirmed `/settle` retries return the original durable transaction
+  hash; finalized reverts return the corresponding failure outcome.
 - Nonce-gap fillers wait through authorization expiry plus the safety margin and
   persist exact signed bytes before broadcast (migration `000007`).
 - Durable settlement intent. One transaction locks the payment, applies admission

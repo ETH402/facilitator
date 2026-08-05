@@ -563,3 +563,35 @@ func TestVerifyRejectsUnknownFields(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+type deadlineResponseWriter struct {
+	header   http.Header
+	deadline time.Time
+}
+
+func (w *deadlineResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (*deadlineResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+func (*deadlineResponseWriter) WriteHeader(int)                {}
+func (w *deadlineResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
+}
+
+func TestStatusWriterExposesResponseController(t *testing.T) {
+	t.Parallel()
+	underlying := &deadlineResponseWriter{}
+	wrapper := &statusWriter{ResponseWriter: underlying, status: http.StatusOK}
+	want := time.Now().Add(time.Minute)
+	if err := http.NewResponseController(wrapper).SetWriteDeadline(want); err != nil {
+		t.Fatalf("set write deadline through metrics wrapper: %v", err)
+	}
+	if !underlying.deadline.Equal(want) {
+		t.Fatalf("deadline = %v, want %v", underlying.deadline, want)
+	}
+}

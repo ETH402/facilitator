@@ -103,6 +103,16 @@ type Intent struct {
 	// hash is already durable, including terminal confirmed/reverted payments.
 	TxHash string
 
+	// Reverted reports that a duplicate request targets a payment whose
+	// terminal transaction reverted on chain. The caller must report the
+	// terminal failure, never a success.
+	Reverted bool
+
+	// Confirmed reports that a duplicate request targets a payment whose
+	// transaction already reached the configured finality depth. It can return
+	// success immediately without repeating chain reads.
+	Confirmed bool
+
 	// Duplicate reports that an active transaction already existed for this
 	// payment, so no new nonce was allocated and the existing intent is returned
 	// unchanged. Settlement is idempotent per payment.

@@ -245,6 +245,16 @@ WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'confirming')`,
 		return err
 	}
 	if tag.RowsAffected() != 1 {
+		matching, err := terminalSettlementMatches(ctx, tx, paymentID, transactionID, settlement.StateConfirmed)
+		if err != nil {
+			return err
+		}
+		if matching {
+			// The HTTP waiter and confirmation worker can observe the same
+			// final receipt concurrently. An identical terminal write is a
+			// successful idempotent replay, not a settlement race.
+			return tx.Commit(ctx)
+		}
 		return fmt.Errorf("mark transaction %s confirmed: %w", transactionID, ErrSettlementRace)
 	}
 	if err := transitionPaymentIn(ctx, tx, paymentID,
@@ -273,6 +283,13 @@ WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'confirming')`,
 		return err
 	}
 	if tag.RowsAffected() != 1 {
+		matching, err := terminalSettlementMatches(ctx, tx, paymentID, transactionID, settlement.StateReverted)
+		if err != nil {
+			return err
+		}
+		if matching {
+			return tx.Commit(ctx)
+		}
 		return fmt.Errorf("mark transaction %s reverted: %w", transactionID, ErrSettlementRace)
 	}
 	if err := transitionPaymentIn(ctx, tx, paymentID,
@@ -281,6 +298,22 @@ WHERE id = $2 AND payment_id = $1 AND status IN ('broadcast', 'confirming')`,
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// terminalSettlementMatches distinguishes an identical concurrent finality
+// write from a conflicting or stale transition. It deliberately requires both
+// the transaction and payment to agree on the same terminal state.
+func terminalSettlementMatches(ctx context.Context, tx pgx.Tx, paymentID, transactionID string, state settlement.State) (bool, error) {
+	var matches bool
+	err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM ethereum_transactions t
+  JOIN payment_records p ON p.id = t.payment_id
+  WHERE t.id = $2 AND t.payment_id = $1
+    AND t.status = $3 AND p.state = $3
+)`, paymentID, transactionID, string(state)).Scan(&matches)
+	return matches, err
 }
 
 // transitionPayment moves a payment between exactly two states and audits the

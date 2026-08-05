@@ -58,6 +58,16 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) CreateSettlementIntent(context.Context, IntentRequest) (Intent, error) {
+	if f.confirmed || f.reverted {
+		intent := f.intent
+		intent.Duplicate = true
+		intent.Confirmed = f.confirmed
+		intent.Reverted = f.reverted
+		if intent.TxHash == "" {
+			intent.TxHash = f.broadcastTxHash
+		}
+		return intent, f.intentErr
+	}
 	return f.intent, f.intentErr
 }
 
@@ -229,6 +239,8 @@ type fakeChain struct {
 	blockHash    string
 	baseFee      string
 	callErr      error
+	receiptCalls *int
+	receiptBlock <-chan struct{}
 }
 
 func (f fakeChain) SendRawTransaction(_ context.Context, raw string) (string, error) {
@@ -238,7 +250,17 @@ func (f fakeChain) SendRawTransaction(_ context.Context, raw string) (string, er
 	return f.txHash, f.sendErr
 }
 
-func (f fakeChain) TransactionReceipt(_ context.Context, txHash string) (*ethereum.Receipt, error) {
+func (f fakeChain) TransactionReceipt(ctx context.Context, txHash string) (*ethereum.Receipt, error) {
+	if f.receiptCalls != nil {
+		*f.receiptCalls++
+	}
+	if f.receiptBlock != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-f.receiptBlock:
+		}
+	}
 	if f.receipts != nil {
 		return f.receipts[txHash], nil
 	}
@@ -282,6 +304,9 @@ func testConfig() Config {
 		MaxPriorityFeeGas: "2000000000",
 		RecoveryGrace:     2 * time.Minute,
 		ReplacementAfter:  5 * time.Minute,
+		// Tiny so tests exercise the wait's timeout fallback without stalling;
+		// wait-specific tests override it via the chain fake's receipts.
+		ResponseWait: 50 * time.Millisecond,
 	}
 }
 
@@ -617,7 +642,11 @@ func TestSettleBroadcastsInline(t *testing.T) {
 		work:   work,
 		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
 	}
-	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
+	blockHash := "0x" + strings.Repeat("aa", 32)
+	chain := fakeChain{
+		txHash: "0x" + keccakHex(raw), block: 111, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: blockHash},
+	}
 	service := newTestService(store, fakeSigner{raw: raw}, chain)
 	response, err := service.Settle(context.Background(), settleRequest())
 	if err != nil {
@@ -635,7 +664,7 @@ func TestSettleReturnsTerminalHashIdempotently(t *testing.T) {
 	txHash := "0x" + strings.Repeat("dd", 32)
 	store := &fakeStore{intent: Intent{
 		PaymentID: "payment-1", TransactionID: "tx-1",
-		TxHash: txHash, Duplicate: true,
+		TxHash: txHash, Duplicate: true, Confirmed: true,
 	}}
 	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{
 		sendErr: errors.New("must not broadcast"),
@@ -646,6 +675,211 @@ func TestSettleReturnsTerminalHashIdempotently(t *testing.T) {
 	}
 	if !response.Success || response.Transaction != txHash {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestSettleReportsConfirmedTransaction(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	// Receipt at exactly the required depth: block 111 - 100 + 1 = 12. The
+	// fake's BlockByNumber ignores its argument, so the canonical hash is the
+	// one the receipt carries.
+	blockHash := "0x" + strings.Repeat("cc", 32)
+	chain := fakeChain{
+		txHash: txHash, block: 111, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: blockHash},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if !response.Success || response.Transaction != txHash {
+		t.Fatalf("response = %+v", response)
+	}
+	if elapsed := time.Since(start); elapsed > testConfig().ResponseWait {
+		t.Fatalf("confirmed transaction took %v; the wait should return immediately", elapsed)
+	}
+}
+
+func TestSettlePersistsFinalOutcomeBeforeImmediateDuplicate(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	blockHash := "0x" + strings.Repeat("c1", 32)
+	calls := 0
+	service := newTestService(store, fakeSigner{raw: raw}, fakeChain{
+		txHash: txHash, block: 111, blockHash: blockHash, receiptCalls: &calls,
+		receipt: &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: blockHash},
+	})
+
+	first, err := service.Settle(context.Background(), settleRequest())
+	if err != nil || !first.Success || first.Transaction != txHash {
+		t.Fatalf("first settle = %+v, err %v", first, err)
+	}
+	callsAfterFinality := calls
+	second, err := service.Settle(context.Background(), settleRequest())
+	if err != nil || !second.Success || second.Transaction != txHash {
+		t.Fatalf("duplicate settle = %+v, err %v", second, err)
+	}
+	if calls != callsAfterFinality {
+		t.Fatalf("terminal duplicate made %d additional receipt calls, want 0", calls-callsAfterFinality)
+	}
+}
+
+func TestSettleReportsFinalizedRevertedTransaction(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	// A reverted receipt at exactly the configured depth is a final failure.
+	blockHash := "0x" + strings.Repeat("bb", 32)
+	chain := fakeChain{
+		txHash: txHash, block: 111, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 0, BlockNumber: 100, BlockHash: blockHash},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonTransactionFailed {
+		t.Fatalf("response = %+v", response)
+	}
+	if response.Transaction != "" {
+		t.Fatalf("failure transaction = %q, want empty", response.Transaction)
+	}
+	if elapsed := time.Since(start); elapsed > testConfig().ResponseWait {
+		t.Fatalf("finalized reverted transaction took %v; response should be immediate", elapsed)
+	}
+}
+
+func TestSettleReportsConfirmationTimeout(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	// No receipt at all: the wait outlives ResponseWait and must not claim the
+	// payment settled. The caller can retry the identical authorization while
+	// the hash remains durable internally.
+	service := newTestService(store, fakeSigner{raw: raw}, fakeChain{txHash: txHash})
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonFailedToGetReceipt || response.Transaction != "" {
+		t.Fatalf("response = %+v", response)
+	}
+	if elapsed := time.Since(start); elapsed < testConfig().ResponseWait {
+		t.Fatalf("unmined transaction answered in %v, before the wait elapsed", elapsed)
+	}
+}
+
+func TestSettleDoesNotFinalizeShallowRevert(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	blockHash := "0x" + strings.Repeat("bb", 32)
+	chain := fakeChain{
+		txHash: txHash, block: 100, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 0, BlockNumber: 100, BlockHash: blockHash},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonFailedToGetReceipt || response.Transaction != "" {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestSettleWaitDeadlineInterruptsReceiptRead(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, fakeChain{
+		txHash: txHash, receiptBlock: make(chan struct{}),
+	})
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonFailedToGetReceipt || response.Transaction != "" {
+		t.Fatalf("response = %+v", response)
+	}
+	if elapsed := time.Since(start); elapsed > 5*testConfig().ResponseWait {
+		t.Fatalf("settlement wait exceeded hard deadline: %v", elapsed)
+	}
+}
+
+func TestSettleDuplicateRevertedReturnsFailure(t *testing.T) {
+	txHash := "0x" + strings.Repeat("ee", 32)
+	store := &fakeStore{intent: Intent{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, Duplicate: true, Reverted: true,
+	}}
+	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{
+		sendErr: errors.New("must not broadcast"),
+	})
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonTransactionFailed {
+		t.Fatalf("response = %+v", response)
+	}
+	if response.Transaction != "" {
+		t.Fatalf("failure transaction = %q, want empty", response.Transaction)
+	}
+}
+
+func TestSettleDuplicatePendingDoesNotPollChain(t *testing.T) {
+	txHash := "0x" + strings.Repeat("ef", 32)
+	calls := 0
+	store := &fakeStore{intent: Intent{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, Duplicate: true,
+	}}
+	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{
+		receiptCalls: &calls, sendErr: errors.New("must not broadcast"),
+	})
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonFailedToGetReceipt || response.Transaction != "" {
+		t.Fatalf("response = %+v", response)
+	}
+	if calls != 0 {
+		t.Fatalf("duplicate pending settlement made %d receipt calls, want 0", calls)
 	}
 }
 
