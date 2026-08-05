@@ -107,8 +107,8 @@ type Config struct {
 	// SettleResponseWait bounds how long /settle waits for its transaction to
 	// reach ETH402_REQUIRED_CONFIRMATIONS depth before responding. Within the
 	// window, success=true means the payment is final on chain; when the
-	// window elapses first, the response is confirmation_timed_out and durable
-	// confirmation tracking continues asynchronously.
+	// window elapses first, the response reports that no final receipt was
+	// available and durable confirmation tracking continues asynchronously.
 	SettleResponseWait time.Duration
 	// MerchantSettlementQuota bounds settlement intents per merchant per
 	// MerchantQuotaWindow. Quota × MaxGasLimit × MaxFeePerGasWei is the

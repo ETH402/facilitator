@@ -104,8 +104,8 @@ type Intent struct {
 	TxHash string
 
 	// Reverted reports that a duplicate request targets a payment whose
-	// terminal transaction reverted on chain. The caller must report the same
-	// hash as a failure (transaction_reverted), never as a success.
+	// terminal transaction reverted on chain. The caller must report the
+	// terminal failure, never a success.
 	Reverted bool
 
 	// Confirmed reports that a duplicate request targets a payment whose

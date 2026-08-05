@@ -71,15 +71,21 @@ unknown send outcome and reconciled under the local hash rather than allowing
 provider-controlled identity into durable state. The response then waits up to
 `ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the transaction's on-chain
 outcome: a canonical receipt reaching `ETH402_REQUIRED_CONFIRMATIONS` depth
-means the official `SettleResponse` reports a final, settled payment; a receipt
+is persisted before the official `SettleResponse` reports a final, settled
+payment, so an immediate retry reads the same terminal result; a receipt
 with `status=0` at the same depth returns `success=false` with
-`errorReason=transaction_reverted` and the hash. A window that elapses without
-either returns `success=false`, `errorReason=confirmation_timed_out`, and the
-durable hash while the confirmation worker keeps tracking. The HTTP handler
-and reverse proxy allow the default wait to pass their write and upstream-read
-timeouts. A duplicate call for an already-broadcast
-payment observes the recorded outcome: the confirmed hash as a success, the
-reverted hash as `transaction_reverted`. If the inline attempt cannot finish (signer
+`errorReason=invalid_exact_evm_transaction_failed`. A window that elapses
+without either returns `success=false` with
+`errorReason=invalid_exact_evm_failed_to_get_receipt` while the confirmation
+worker keeps tracking the durable hash internally. Both failures keep the
+public `transaction` field empty. The HTTP handler disables its global
+connection write deadline for this route because bounded validation and
+broadcast work precede the confirmation timer; the reverse proxy allows the
+default wait through its upstream-read timeout. A duplicate call for an already-broadcast
+payment observes the recorded outcome: the confirmed hash as a success or the
+exact-EVM transaction-failed reason for a finalized revert. A nonterminal
+duplicate returns immediately from durable state and does not create another
+RPC polling loop. If the inline attempt cannot finish (signer
 or RPC failure), the durable intent remains and the broadcast worker retries it
 on `ETH402_WORKER_INTERVAL`; a send whose outcome is unknown becomes
 `ambiguous` and moves the payment to `manual_review` for recovery — never a

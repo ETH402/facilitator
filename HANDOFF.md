@@ -41,8 +41,11 @@ Production is live and healthy:
 - **Stray foundry container on the production host** (`zealous_rubin`,
   `ghcr.io/foundry-rs/foundry:stable`). A development tool that does not
   belong in production; remove it unless it is serving a documented purpose.
-- The policy-signer bearer token was printed to a terminal during an
-  inspection on 2026-08-05. Rotate it when convenient.
+
+The policy-signer bearer token exposed during inspection was rotated on
+2026-08-05. Secret Manager version 2 is active, version 1 is disabled, the old
+token is rejected, and both the signer and facilitator restarted healthy with
+the unchanged KMS signer identity.
 
 ## Required validation
 
@@ -101,7 +104,6 @@ commit; a previous green run is not transferable.
 2. Repin the production deployment to an immutable digest at the next release
    (see Open follow-ups).
 3. Remove the stray foundry container from the production host.
-4. Rotate the policy-signer bearer token.
-5. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
+4. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
    agreement in Prometheus/Alertmanager; follow `docs/RUNBOOKS.md` for
    settlement states.

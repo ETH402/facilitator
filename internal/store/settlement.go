@@ -63,7 +63,7 @@ FOR UPDATE`, request.PaymentIdentity).Scan(&paymentID, &state, &merchantID, &val
 
 	// A duplicate /settle must observe the terminal outcome, not a fresh
 	// attempt: confirmed payments return the recorded hash as a success,
-	// reverted payments return the same hash as transaction_reverted. Callers
+	// reverted payments return the corresponding terminal failure. Callers
 	// retrying a lost response therefore always see the true outcome rather
 	// than a misleading payment_not_verified rejection — or a success for a
 	// transaction that reverted.

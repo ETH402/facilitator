@@ -62,12 +62,14 @@ paths:
         default) for the transaction to reach full confirmation depth (12
         confirmations by default). Success means the payment reached that
         finality depth. If the window elapses first, success=false carries
-        errorReason=confirmation_timed_out and the durable transaction hash
-        while confirmation continues asynchronously. A transaction confirmed
-        as reverted returns success=false with
-        errorReason=transaction_reverted and the transaction hash. Calls never settle twice: a repeat returns the
-        recorded outcome — the confirmed hash, transaction_reverted with the
-        reverted hash, or broadcast_failed while it is still in flight.
+        errorReason=invalid_exact_evm_failed_to_get_receipt while durable
+        confirmation continues asynchronously. A transaction confirmed as
+        reverted returns success=false with
+        errorReason=invalid_exact_evm_transaction_failed. The transaction field
+        is empty on failure, as required by x402 v2. Calls never settle twice: a
+        repeat returns the recorded outcome — the confirmed hash, the
+        transaction-failed reason, or a nonterminal failure while it is still
+        in flight.
         Policy rejections return HTTP 200 with success=false and a stable
         errorReason; a payment /verify would have refused is rejected as
         invalid_request with the specific verification reason in errorMessage.
@@ -834,18 +836,15 @@ components:
             - merchant_quota_exceeded
             - facilitator_quota_exceeded
             - simulation_reverted
-            - transaction_reverted
-            - confirmation_timed_out
+            - invalid_exact_evm_transaction_failed
+            - invalid_exact_evm_failed_to_get_receipt
             - broadcast_failed
             - settlement_unavailable
         errorMessage: { type: string }
         payer: { $ref: "#/components/schemas/EthereumAddress" }
         transaction:
           type: string
-          description: >-
-            Settlement transaction hash. Empty when success is false, except
-            for transaction_reverted and confirmation_timed_out, which carry
-            the durable settlement hash.
+          description: Settlement transaction hash; empty when success is false.
           pattern: "^(0x[0-9a-f]{64})?$"
         network: { const: "eip155:1" }
         amount: { type: string, pattern: "^[0-9]+$" }

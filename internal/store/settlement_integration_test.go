@@ -277,8 +277,8 @@ func TestCreateSettlementIntentReturnsRevertedTerminalHash(t *testing.T) {
 	}
 
 	// The duplicate must be told the terminal outcome was a revert, so the
-	// /settle response can report transaction_reverted with the same hash
-	// instead of a false success.
+	// /settle response can report the terminal failure instead of a false
+	// success.
 	retry, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
 	if err != nil {
 		t.Fatal(err)

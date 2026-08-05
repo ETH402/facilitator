@@ -27,15 +27,12 @@ const (
 	WireReasonGlobalQuotaExceeded   = ReasonGlobalQuotaExceeded
 	WireReasonSimulationReverted    = ReasonSimulationReverted
 
-	// WireReasonTransactionReverted means the settlement transaction was
-	// broadcast but executed with a revert on chain. The transaction hash is
-	// included in the response so the caller can inspect the failure.
-	WireReasonTransactionReverted = "transaction_reverted"
-
-	// WireReasonConfirmationTimedOut means the transaction was broadcast but
-	// did not reach the configured confirmation depth before the HTTP response
-	// deadline. The hash is included and the durable worker keeps tracking it.
-	WireReasonConfirmationTimedOut = "confirmation_timed_out"
+	// These values match the pinned x402 exact-EVM facilitator implementation.
+	// TransactionFailed is terminal at the configured confirmation depth;
+	// FailedToGetReceipt is non-terminal and an identical retry may later
+	// observe success. Both keep transaction empty per the v2 failure schema.
+	WireReasonTransactionFailed  = "invalid_exact_evm_transaction_failed"
+	WireReasonFailedToGetReceipt = "invalid_exact_evm_failed_to_get_receipt"
 
 	// WireReasonSettlementUnavailable means the facilitator could not complete
 	// the request itself (database, signer, or RPC unavailable). Retrying is

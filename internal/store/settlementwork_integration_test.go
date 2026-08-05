@@ -199,9 +199,19 @@ WHERE p.id = $1`, paymentID).Scan(&state, &confirmedAt, &fromState); err != nil 
 	if state != "confirmed" || confirmedAt == nil || fromState != "confirming" {
 		t.Fatalf("state=%s confirmed_at=%v from=%s", state, confirmedAt, fromState)
 	}
-	// confirmed is terminal: a late confirmation must lose loudly.
-	if err := store.MarkTxConfirmed(ctx, paymentID, work.TransactionID, 100, blockHash, 1, "1", "worker"); !errors.Is(err, ErrSettlementRace) {
-		t.Fatalf("second confirm = %v, want ErrSettlementRace", err)
+	// The HTTP waiter and confirmation worker may record the same receipt at
+	// once. Repeating the identical terminal outcome is idempotent and must not
+	// overwrite the first observation's accounting fields.
+	if err := store.MarkTxConfirmed(ctx, paymentID, work.TransactionID, 100, blockHash, 1, "1", "http-wait"); err != nil {
+		t.Fatalf("second confirm: %v", err)
+	}
+	var gasUsed string
+	if err := store.Pool.QueryRow(ctx,
+		`SELECT gas_used::text FROM ethereum_transactions WHERE id = $1`, work.TransactionID).Scan(&gasUsed); err != nil {
+		t.Fatal(err)
+	}
+	if gasUsed != "64336" {
+		t.Fatalf("idempotent confirm overwrote gas_used = %s, want 64336", gasUsed)
 	}
 }
 
@@ -228,5 +238,15 @@ JOIN ethereum_transactions t ON t.payment_id = p.id WHERE p.id = $1`, paymentID)
 	}
 	if state != "reverted" || status != "reverted" || gasUsed != "64336" {
 		t.Fatalf("state=%s status=%s gas=%s", state, status, gasUsed)
+	}
+	if err := store.MarkTxReverted(ctx, paymentID, work.TransactionID, 1, "1", "http-wait"); err != nil {
+		t.Fatalf("second revert: %v", err)
+	}
+	if err := store.Pool.QueryRow(ctx,
+		`SELECT gas_used::text FROM ethereum_transactions WHERE id = $1`, work.TransactionID).Scan(&gasUsed); err != nil {
+		t.Fatal(err)
+	}
+	if gasUsed != "64336" {
+		t.Fatalf("idempotent revert overwrote gas_used = %s, want 64336", gasUsed)
 	}
 }
