@@ -449,6 +449,14 @@ func TestAdminSensitiveOperationsRecheckRotatedSession(t *testing.T) {
 	if _, err = service.AdminStats(ctx, merchantID, staleSession.Token); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("stale session read private stats: %v", err)
 	}
+	thirdKey, keyErr := crypto.GenerateKey()
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	if _, err = service.AdminWalletChallenge(ctx, merchantID, staleSession.Token,
+		crypto.PubkeyToAddress(thirdKey.PublicKey).Hex(), "change-recipient", "stale-challenge"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session created recipient challenge: %v", err)
+	}
 
 	keys, err = service.ListAPIKeys(ctx, merchantID)
 	if err != nil {

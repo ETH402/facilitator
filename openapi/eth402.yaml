@@ -275,6 +275,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/APIKey" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
     post:
       operationId: createAPIKey
@@ -301,6 +302,8 @@ paths:
                   key: { $ref: "#/components/schemas/APIKey" }
                   api_key: { type: string }
         "401": { $ref: "#/components/responses/Error" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
   /v1/api-keys/{id}:
     delete:
@@ -313,7 +316,9 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "204": { description: Key revoked. }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
   /v1/me/recipient-change:
     post:
@@ -336,6 +341,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/WalletChallenge" }
         "401": { $ref: "#/components/responses/Error" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
   /v1/me/recipient-change/verify:
     post:
@@ -364,6 +372,9 @@ paths:
                 properties:
                   status: { const: recipient_changed }
         "401": { $ref: "#/components/responses/Error" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
   /merchant/api/session:

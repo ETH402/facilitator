@@ -454,6 +454,44 @@ func (s *Service) AuthenticatedWalletChallenge(ctx context.Context, merchantID, 
 	return Challenge{ID: id, Message: message, Address: c.Address, Action: action, ExpiresAt: c.ExpiresAt}, nil
 }
 
+// AdminWalletChallenge creates an active-recipient change challenge in the same
+// transaction that revalidates the current wallet-elevated panel session. The
+// middleware check remains an early rejection only; this lock is the durable
+// authorization boundary when recipient rotation or session revocation races.
+func (s *Service) AdminWalletChallenge(ctx context.Context, merchantID, sessionToken, address, action, requestID string) (Challenge, error) {
+	if !validUUID(merchantID) || action != "change-recipient" {
+		return Challenge{}, ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Challenge{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+		return Challenge{}, err
+	}
+	var storedAddress string
+	if err = tx.QueryRow(ctx, `SELECT recipient_address FROM merchants WHERE id=$1`, merchantID).Scan(&storedAddress); err != nil {
+		return Challenge{}, err
+	}
+	if strings.EqualFold(address, storedAddress) {
+		return Challenge{}, ErrConflict
+	}
+	challenge, err := walletproof.NewChallenge(merchantID, address, action, s.now(), s.cfg.WalletTTL)
+	if err != nil {
+		return Challenge{}, ErrInvalid
+	}
+	message := challenge.Message()
+	id, err := persistWalletChallenge(ctx, tx, merchantID, challenge, message, "change_recipient", requestID)
+	if err != nil {
+		return Challenge{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Challenge{}, err
+	}
+	return Challenge{ID: id, Message: message, Address: challenge.Address, Action: action, ExpiresAt: challenge.ExpiresAt}, nil
+}
+
 // PendingRecipientChallenge lets an email-authenticated merchant replace an
 // unverified recipient before activation. Updating the pending record first is
 // safe because pending merchants cannot receive settlements, and it makes every

@@ -101,10 +101,17 @@ func TestMerchantPanelClearsSecretsAndDoesNotClaimFailedLogout(t *testing.T) {
 		"await api('/merchant/api/logout',{method:'POST'});showSignedOut()",
 		"Sign-out failed. Your session is still active",
 		"response.status===401&&path.startsWith('/merchant/api/')",
+		"showSecret(activated.api_key,load)",
+		"showSecret(data.api_key,loadKeys)",
+		"const refresh=secretRefresh;clearSecret();if(refresh)",
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("merchant session hardening omitted %q", required)
 		}
+	}
+	if strings.Contains(script, "showSecret(activated.api_key);notice") ||
+		strings.Contains(script, "showSecret(data.api_key);$('key-name').value='';await loadKeys()") {
+		t.Fatal("one-time API key is followed by an authenticated refresh before acknowledgement")
 	}
 }
 

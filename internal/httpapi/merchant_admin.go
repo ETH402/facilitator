@@ -164,7 +164,7 @@ func (d Dependencies) adminVerifyWallet(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (d Dependencies) adminRecipientChallenge(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminRecipientChallenge(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	var in struct {
 		Address string `json:"new_address"`
 	}
@@ -172,7 +172,7 @@ func (d Dependencies) adminRecipientChallenge(w http.ResponseWriter, r *http.Req
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	challenge, err := d.Merchant.WalletChallenge(r.Context(), principal.Merchant.ID, in.Address,
+	challenge, err := d.Merchant.AdminWalletChallenge(r.Context(), principal.Merchant.ID, sessionToken, in.Address,
 		"change-recipient", requestIDFrom(r.Context()))
 	if err != nil {
 		writeMerchantError(w, r, err)

@@ -40,7 +40,7 @@ const merchantPanelHTML = `<!doctype html>
 
 const merchantPanelScript = `'use strict';
 const $=id=>document.getElementById(id);
-let merchant=null,walletAuthenticated=false,latestSecret='',activeView='overview';
+let merchant=null,walletAuthenticated=false,latestSecret='',secretRefresh=null,activeView='overview';
 
 function notice(message,bad=false,auth=false){
   const el=$(auth?'notice-auth':'notice');
@@ -49,7 +49,7 @@ function notice(message,bad=false,auth=false){
   el.setAttribute('aria-live',bad?'assertive':'polite');
   if(bad)el.setAttribute('role','alert');else el.removeAttribute('role');
 }
-function clearSecret(){latestSecret='';$('new-secret').textContent='';$('key-once').classList.add('hidden')}
+function clearSecret(){latestSecret='';secretRefresh=null;$('new-secret').textContent='';$('key-once').classList.add('hidden')}
 function showSignedOut(message=''){
   merchant=null;walletAuthenticated=false;clearSecret();
   $('welcome').classList.remove('hidden');$('account').classList.add('hidden');$('logout').classList.add('hidden');
@@ -175,8 +175,9 @@ $('verify-wallet').addEventListener('click',event=>withBusy(event.currentTarget,
     if(account.toLowerCase()!==challenge.address.toLowerCase())throw new Error('Connected wallet does not match the current recipient. Switch accounts in your wallet and try again.');
     const signature=await window.ethereum.request({method:'personal_sign',params:[utf8Hex(challenge.message),account]});
     const activated=await api('/merchant/api/verify-wallet',{method:'POST',body:JSON.stringify({challenge_id:challenge.id,message:challenge.message,signature})});
-    if(activated.api_key){showSecret(activated.api_key);notice('Recipient verified. Save the API key before leaving this page.',false,true)}else notice('Wallet authentication complete.',false,true);
-    await load();
+    if(activated.api_key){
+      showSecret(activated.api_key,load);notice('Recipient verified. Save the API key before leaving this page.',false,true);
+    }else{notice('Wallet authentication complete.',false,true);await load()}
   }catch(error){if(error.status!==401)notice(error.message,true,true)}
 }));
 $('change-recipient').addEventListener('click',event=>withBusy(event.currentTarget,async()=>{
@@ -191,7 +192,7 @@ $('change-recipient').addEventListener('click',event=>withBusy(event.currentTarg
   }catch(error){if(error.status!==401)notice(error.message,true,true)}
 }));
 
-function showSecret(secret){latestSecret=secret;$('new-secret').textContent=secret;$('key-once').classList.remove('hidden')}
+function showSecret(secret,refresh){latestSecret=secret;secretRefresh=refresh;$('new-secret').textContent=secret;$('key-once').classList.remove('hidden')}
 async function loadKeys(){
   const data=await api('/merchant/api/api-keys'),list=$('keys');list.replaceChildren();$('keys-empty').classList.toggle('hidden',data.keys.length!==0);
   for(const key of data.keys){
@@ -203,7 +204,7 @@ async function loadKeys(){
   }
 }
 $('new-key').addEventListener('submit',event=>{event.preventDefault();withBusy(event.currentTarget,async()=>{
-  try{const data=await api('/merchant/api/api-keys',{method:'POST',body:JSON.stringify({name:$('key-name').value})});showSecret(data.api_key);$('key-name').value='';await loadKeys()}catch(error){if(error.status!==401)notice(error.message,true,true)}
+  try{const data=await api('/merchant/api/api-keys',{method:'POST',body:JSON.stringify({name:$('key-name').value})});showSecret(data.api_key,loadKeys);$('key-name').value='';notice('API key created. Save it before continuing.',false,true)}catch(error){if(error.status!==401)notice(error.message,true,true)}
 })});
 async function loadStats(){
   const enabled=!!merchant.stats_opted_in_at;toggleState($('stats-toggle'),enabled);toggleState($('settings-stats-toggle'),enabled);
@@ -225,7 +226,7 @@ $('copy-secret').addEventListener('click',event=>withBusy(event.currentTarget,as
   try{if(!latestSecret)throw new Error('No API key is available to copy.');await navigator.clipboard.writeText(latestSecret);notice('API key copied.',false,true)}catch{notice('Copy was blocked by the browser. Select the key above and copy it manually.',true,true)}
 }));
 $('download-secret').addEventListener('click',()=>{if(!latestSecret)return;const blob=new Blob([latestSecret+'\n'],{type:'text/plain'}),link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download='eth402-api-key.txt';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)});
-$('dismiss-secret').addEventListener('click',clearSecret);
+$('dismiss-secret').addEventListener('click',event=>withBusy(event.currentTarget,async()=>{const refresh=secretRefresh;clearSecret();if(refresh)try{await refresh()}catch(error){if(error.status!==401)notice(error.message,true,true)}}));
 setView(activeView);load();`
 
 func (d Dependencies) merchantPanel(w http.ResponseWriter, _ *http.Request) {
