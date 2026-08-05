@@ -349,7 +349,8 @@ func knownRoute(path string) string {
 		"/v1/me", "/v1/api-keys", "/v1/me/recipient-change",
 		"/v1/me/recipient-change/verify", "/merchant/api/session",
 		"/merchant/api/logout", "/merchant/api/wallet-challenge",
-		"/merchant/api/verify-wallet", "/merchant/api/stats",
+		"/merchant/api/verify-wallet", "/merchant/api/recipient-challenge",
+		"/merchant/api/verify-recipient-change", "/merchant/api/stats",
 		"/merchant/api/stats-consent", "/merchant/api/public-profile", "/merchant/api/api-keys",
 		"/", "/explore", "/assets/site.css":
 		return path

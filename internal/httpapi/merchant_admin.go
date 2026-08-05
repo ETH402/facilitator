@@ -17,6 +17,8 @@ func (d Dependencies) merchantAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /merchant/api/logout", d.adminLogout)
 	mux.HandleFunc("POST /merchant/api/wallet-challenge", d.withAdmin(false, d.adminWalletChallenge))
 	mux.HandleFunc("POST /merchant/api/verify-wallet", d.withAdmin(false, d.adminVerifyWallet))
+	mux.HandleFunc("POST /merchant/api/recipient-challenge", d.withAdmin(true, d.adminRecipientChallenge))
+	mux.HandleFunc("POST /merchant/api/verify-recipient-change", d.withAdmin(true, d.adminVerifyRecipientChange))
 	mux.HandleFunc("GET /merchant/api/stats", d.withAdmin(true, d.adminStats))
 	mux.HandleFunc("PUT /merchant/api/stats-consent", d.withAdmin(true, d.adminStatsConsent))
 	mux.HandleFunc("PUT /merchant/api/public-profile", d.withAdmin(true, d.adminPublicProfileConsent))
@@ -83,14 +85,32 @@ func (d Dependencies) adminLogout(w http.ResponseWriter, r *http.Request) {
 
 func (d Dependencies) adminWalletChallenge(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
 	m := principal.Merchant
+	var in struct {
+		Address string `json:"address"`
+	}
+	if DecodeStrict(w, r, &in) != nil {
+		writeMerchantError(w, r, merchant.ErrInvalid)
+		return
+	}
 	action := "authenticate-admin"
+	var challenge merchant.Challenge
+	var err error
 	if m.Status == "pending" && m.EmailVerifiedAt != nil && m.WalletVerifiedAt == nil {
-		action = "verify-recipient"
+		if in.Address == "" {
+			challenge, err = d.Merchant.WalletChallenge(r.Context(), m.ID, "", "verify-recipient", requestIDFrom(r.Context()))
+		} else {
+			challenge, err = d.Merchant.PendingRecipientChallenge(r.Context(), m.ID, in.Address, requestIDFrom(r.Context()))
+		}
 	} else if m.Status != "active" || m.WalletVerifiedAt == nil {
 		writeMerchantError(w, r, merchant.ErrConflict)
 		return
+	} else {
+		if in.Address != "" {
+			writeMerchantError(w, r, merchant.ErrInvalid)
+			return
+		}
+		challenge, err = d.Merchant.WalletChallenge(r.Context(), m.ID, "", action, requestIDFrom(r.Context()))
 	}
-	challenge, err := d.Merchant.WalletChallenge(r.Context(), m.ID, "", action, requestIDFrom(r.Context()))
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
@@ -142,6 +162,45 @@ func (d Dependencies) adminVerifyWallet(w http.ResponseWriter, r *http.Request, 
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (d Dependencies) adminRecipientChallenge(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+	var in struct {
+		Address string `json:"new_address"`
+	}
+	if DecodeStrict(w, r, &in) != nil {
+		writeMerchantError(w, r, merchant.ErrInvalid)
+		return
+	}
+	challenge, err := d.Merchant.WalletChallenge(r.Context(), principal.Merchant.ID, in.Address,
+		"change-recipient", requestIDFrom(r.Context()))
+	if err != nil {
+		writeMerchantError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, challenge)
+}
+
+func (d Dependencies) adminVerifyRecipientChange(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
+	var in struct {
+		ChallengeID string `json:"challenge_id"`
+		Message     string `json:"message"`
+		Signature   string `json:"signature"`
+	}
+	if DecodeStrict(w, r, &in) != nil {
+		writeMerchantError(w, r, merchant.ErrInvalid)
+		return
+	}
+	err := d.Merchant.VerifyAdminRecipientChange(r.Context(), principal.Merchant.ID, sessionToken,
+		in.ChallengeID, in.Message, in.Signature, requestIDFrom(r.Context()))
+	if err != nil {
+		d.Metrics.IncWalletVerificationFailure()
+		writeMerchantError(w, r, err)
+		return
+	}
+	d.Metrics.IncWalletVerification()
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "recipient_changed"})
 }
 
 func (d Dependencies) adminStats(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {

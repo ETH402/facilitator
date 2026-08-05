@@ -196,12 +196,40 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	if browserSession.Merchant.Email != "browser@example.com" || browserSession.Merchant.Status != "pending" {
 		t.Fatalf("unexpected browser session: %+v", browserSession.Merchant)
 	}
+	// An email-authenticated pending merchant can replace an unverified
+	// recipient, but the new wallet must still sign before activation. Creating
+	// the replacement challenge makes every older recipient challenge stale.
 	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/wallet-challenge", adminCookie, map[string]any{})
+	var staleBrowserChallenge merchant.Challenge
+	decodeResponse(t, response, http.StatusCreated, &staleBrowserChallenge)
+	browserRecipientKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	browserRecipient := crypto.PubkeyToAddress(browserRecipientKey.PublicKey).Hex()
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/wallet-challenge", adminCookie,
+		map[string]string{"address": browserRecipient})
 	var browserChallenge merchant.Challenge
 	decodeResponse(t, response, http.StatusCreated, &browserChallenge)
+	if !strings.EqualFold(browserChallenge.Address, browserRecipient) || browserChallenge.Action != "verify-recipient" {
+		t.Fatalf("replacement challenge = %+v", browserChallenge)
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/session", adminCookie, nil)
+	decodeResponse(t, response, http.StatusOK, &browserSession)
+	if browserSession.Merchant.Status != "pending" ||
+		!strings.EqualFold(browserSession.Merchant.Recipient, browserRecipient) {
+		t.Fatalf("pending recipient was not replaced: %+v", browserSession.Merchant)
+	}
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-wallet", adminCookie, map[string]string{
+		"challenge_id": staleBrowserChallenge.ID, "message": staleBrowserChallenge.Message,
+		"signature": signHTTPMessage(t, staleBrowserChallenge.Message, key),
+	})
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("stale pending challenge activated merchant: %d %s", response.Code, response.Body.String())
+	}
 	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-wallet", adminCookie, map[string]string{
 		"challenge_id": browserChallenge.ID, "message": browserChallenge.Message,
-		"signature": signHTTPMessage(t, browserChallenge.Message, key),
+		"signature": signHTTPMessage(t, browserChallenge.Message, browserRecipientKey),
 	})
 	var browserActivated struct {
 		APIKey string `json:"api_key"`
@@ -225,7 +253,7 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 			 '0x2222222222222222222222222222222222222222',
 			 lower($3),$4,$5,now()-interval '2 minutes',now()+interval '1 hour',
 			 $6,'verified','confirmed',$7,$7,$7)`,
-			"pay_"+strings.Repeat(identityChar, 64), browserSession.Merchant.ID, address,
+			"pay_"+strings.Repeat(identityChar, 64), browserSession.Merchant.ID, browserRecipient,
 			amount, "0x"+strings.Repeat(nonceChar, 64), strings.Repeat(identityChar, 64), createdAt)
 		if err != nil {
 			t.Fatal(err)
@@ -325,6 +353,11 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("email-only session accessed keys: %d", response.Code)
 	}
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/recipient-challenge", secondCookie,
+		map[string]string{"new_address": address})
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("email-only session started recipient change: %d", response.Code)
+	}
 	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/wallet-challenge", secondCookie, map[string]any{})
 	var adminChallenge merchant.Challenge
 	decodeResponse(t, response, http.StatusCreated, &adminChallenge)
@@ -333,7 +366,7 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	}
 	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-wallet", secondCookie, map[string]string{
 		"challenge_id": adminChallenge.ID, "message": adminChallenge.Message,
-		"signature": signHTTPMessage(t, adminChallenge.Message, key),
+		"signature": signHTTPMessage(t, adminChallenge.Message, browserRecipientKey),
 	})
 	var authenticated map[string]string
 	decodeResponse(t, response, http.StatusOK, &authenticated)
@@ -343,6 +376,37 @@ func TestMerchantHTTPOnboarding(t *testing.T) {
 	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/api-keys", secondCookie, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("wallet-authenticated session could not access keys: %d %s", response.Code, response.Body.String())
+	}
+	newRecipientKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRecipient := crypto.PubkeyToAddress(newRecipientKey.PublicKey).Hex()
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/recipient-challenge", secondCookie,
+		map[string]string{"new_address": newRecipient})
+	var recipientChange merchant.Challenge
+	decodeResponse(t, response, http.StatusCreated, &recipientChange)
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-recipient-change", secondCookie,
+		map[string]string{"challenge_id": recipientChange.ID, "message": recipientChange.Message,
+			"signature": signHTTPMessage(t, recipientChange.Message, newRecipientKey)})
+	decodeResponse(t, response, http.StatusOK, &authenticated)
+	if authenticated["status"] != "recipient_changed" {
+		t.Fatalf("recipient change response = %+v", authenticated)
+	}
+	response = requestAdminJSON(t, handler, http.MethodGet, "/merchant/api/session", secondCookie, nil)
+	var changedSession struct {
+		Merchant            merchant.Merchant `json:"merchant"`
+		WalletAuthenticated bool              `json:"wallet_authenticated"`
+	}
+	decodeResponse(t, response, http.StatusOK, &changedSession)
+	if !changedSession.WalletAuthenticated || !strings.EqualFold(changedSession.Merchant.Recipient, newRecipient) {
+		t.Fatalf("recipient change did not atomically re-elevate session: %+v", changedSession)
+	}
+	response = requestAdminJSON(t, handler, http.MethodPost, "/merchant/api/verify-recipient-change", secondCookie,
+		map[string]string{"challenge_id": recipientChange.ID, "message": recipientChange.Message,
+			"signature": signHTTPMessage(t, recipientChange.Message, newRecipientKey)})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("recipient change challenge replay returned %d", response.Code)
 	}
 	// Tokens remain single-use, and malformed links get the same generic page.
 	if page = requestForm(t, handler, link.Path, url.Values{"token": {link.Query().Get("token")}}); page.Code != http.StatusBadRequest {

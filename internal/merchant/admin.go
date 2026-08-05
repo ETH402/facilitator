@@ -2,6 +2,7 @@ package merchant
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -90,31 +91,21 @@ func (s *Service) VerifyAdminWallet(ctx context.Context, merchantID, sessionToke
 		!validUUID(challengeID) || len(message) == 0 || len(message) > 4096 || len(signature) != 132 {
 		return ErrInvalid
 	}
-	var address, action, messageHash string
-	var expires time.Time
-	var consumed *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT address,action,message_hash,expires_at,consumed_at
-		FROM wallet_verification_challenges WHERE id=$1 AND merchant_id=$2`, challengeID, merchantID).
-		Scan(&address, &action, &messageHash, &expires, &consumed)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	if action != "authenticate_admin" || consumed != nil || !s.now().Before(expires) ||
-		!strings.EqualFold(messageHash, secret.Hash(message)) {
-		return ErrInvalid
-	}
-	if err := walletproof.VerifyMessage(message, signature, merchantID, address, "authenticate-admin", s.now()); err != nil {
-		return ErrInvalid
-	}
-	now := s.now().UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var address, action, messageHash string
+	var expires time.Time
+	var consumed *time.Time
+	if err = tx.QueryRow(ctx, `SELECT address,action,message_hash,expires_at,consumed_at
+		FROM wallet_verification_challenges WHERE id=$1 AND merchant_id=$2 FOR UPDATE`, challengeID, merchantID).
+		Scan(&address, &action, &messageHash, &expires, &consumed); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
 	var currentAddress, merchantStatus string
 	if err = tx.QueryRow(ctx, `SELECT recipient_address,status FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
 		Scan(&currentAddress, &merchantStatus); errors.Is(err, pgx.ErrNoRows) {
@@ -124,6 +115,14 @@ func (s *Service) VerifyAdminWallet(ctx context.Context, merchantID, sessionToke
 	}
 	if merchantStatus != "active" || !strings.EqualFold(currentAddress, address) {
 		return ErrForbidden
+	}
+	now := s.now().UTC()
+	if action != "authenticate_admin" || consumed != nil || !now.Before(expires) ||
+		!hmac.Equal([]byte(messageHash), []byte(secret.Hash(message))) {
+		return ErrInvalid
+	}
+	if err = walletproof.VerifyMessage(message, signature, merchantID, address, "authenticate-admin", now); err != nil {
+		return ErrInvalid
 	}
 	tag, err := tx.Exec(ctx, `UPDATE wallet_verification_challenges SET consumed_at=$2
 		WHERE id=$1 AND consumed_at IS NULL`, challengeID, now)
@@ -138,6 +137,110 @@ func (s *Service) VerifyAdminWallet(ctx context.Context, merchantID, sessionToke
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,actor_id,request_id)
 		VALUES ('merchant.admin_wallet_authenticated',$1,'merchant',$2,$3)`, merchantID, merchantID, requestID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// VerifyAdminRecipientChange atomically proves the new recipient, changes the
+// active merchant, and elevates only the initiating admin session for that new
+// recipient. Keeping these writes in one transaction prevents a concurrent
+// A-to-B change from making a post-hoc session elevation valid for B without a
+// B signature.
+func (s *Service) VerifyAdminRecipientChange(ctx context.Context, merchantID, sessionToken, challengeID, message, signature, requestID string) error {
+	if !validUUID(merchantID) || !strings.HasPrefix(sessionToken, adminSessionPrefix) ||
+		!validUUID(challengeID) || len(message) == 0 || len(message) > 4096 || len(signature) != 132 {
+		return ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var address, action, messageHash string
+	var expires, requested time.Time
+	var consumed *time.Time
+	if err = tx.QueryRow(ctx, `SELECT address,action,message_hash,expires_at,created_at,consumed_at
+		FROM wallet_verification_challenges WHERE id=$1 AND merchant_id=$2 FOR UPDATE`, challengeID, merchantID).
+		Scan(&address, &action, &messageHash, &expires, &requested, &consumed); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	var currentAddress, status string
+	var merchantWalletVerified *time.Time
+	if err = tx.QueryRow(ctx, `SELECT recipient_address,status,wallet_verified_at
+		FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
+		Scan(&currentAddress, &status, &merchantWalletVerified); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	var sessionWalletVerified *time.Time
+	var sessionExpires time.Time
+	err = tx.QueryRow(ctx, `SELECT wallet_verified_at,expires_at FROM merchant_admin_sessions
+		WHERE merchant_id=$1 AND token_hash=$2 AND revoked_at IS NULL FOR UPDATE`,
+		merchantID, secret.Hash(sessionToken)).Scan(&sessionWalletVerified, &sessionExpires)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC()
+	if !now.Before(sessionExpires) {
+		return ErrUnauthorized
+	}
+	if action != "change_recipient" || consumed != nil || !now.Before(expires) ||
+		!hmac.Equal([]byte(messageHash), []byte(secret.Hash(message))) {
+		return ErrInvalid
+	}
+	if err = walletproof.VerifyMessage(message, signature, merchantID, address, "change-recipient", now); err != nil {
+		return ErrInvalid
+	}
+	if status != "active" || merchantWalletVerified == nil || sessionWalletVerified == nil ||
+		sessionWalletVerified.Before(*merchantWalletVerified) {
+		return ErrForbidden
+	}
+	if strings.EqualFold(currentAddress, address) {
+		return ErrConflict
+	}
+	var lastChange time.Time
+	if err = tx.QueryRow(ctx,
+		`SELECT coalesce(max(verified_at),'-infinity') FROM recipient_address_history WHERE merchant_id=$1`,
+		merchantID).Scan(&lastChange); err != nil {
+		return err
+	}
+	if now.Sub(lastChange) < s.cfg.RecipientCooldown {
+		return ErrThrottled
+	}
+	tag, err := tx.Exec(ctx, `UPDATE wallet_verification_challenges SET consumed_at=$2
+		WHERE id=$1 AND consumed_at IS NULL`, challengeID, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,wallet_verified_at=$3,updated_at=$3
+		WHERE id=$1`, merchantID, strings.ToLower(address), now); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO recipient_address_history
+		(merchant_id,previous_address,new_address,requested_at,verified_at,actor_type,actor_id,wallet_challenge_id)
+		VALUES ($1,$2,$3,$4,$5,'merchant',$6,$7)`, merchantID, currentAddress,
+		strings.ToLower(address), requested, now, merchantID, challengeID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE merchant_admin_sessions SET wallet_verified_at=NULL
+		WHERE merchant_id=$1 AND wallet_verified_at IS NOT NULL`, merchantID); err != nil {
+		return err
+	}
+	tag, err = tx.Exec(ctx, `UPDATE merchant_admin_sessions SET wallet_verified_at=$3
+		WHERE merchant_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND expires_at>$3`,
+		merchantID, secret.Hash(sessionToken), now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrUnauthorized
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,actor_id,request_id)
+		VALUES ('recipient.changed',$1,'merchant',$2,$3)`, merchantID, merchantID, requestID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

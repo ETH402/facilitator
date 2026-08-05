@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.13.0
+  version: 0.14.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -394,12 +394,28 @@ paths:
     post:
       operationId: createPanelWalletChallenge
       security: [{ MerchantAdminSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                address:
+                  allOf: [{ $ref: "#/components/schemas/EthereumAddress" }]
+                  description: >-
+                    For an email-verified pending merchant only, replaces the
+                    unverified recipient before creating the challenge. Omit
+                    for active-session authentication.
       responses:
         "201":
-          description: EIP-4361 challenge bound to the session merchant and registered recipient.
+          description: EIP-4361 challenge bound to the session merchant and current pending recipient.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WalletChallenge" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
   /merchant/api/verify-wallet:
     post:
@@ -432,7 +448,64 @@ paths:
                     type: string
                     description: Present only during initial activation and returned exactly once.
         "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /merchant/api/recipient-challenge:
+    post:
+      operationId: createPanelRecipientChangeChallenge
+      security: [{ MerchantAdminSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [new_address]
+              properties:
+                new_address: { $ref: "#/components/schemas/EthereumAddress" }
+      responses:
+        "201":
+          description: EIP-4361 challenge requiring proof by the proposed new recipient.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletChallenge" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /merchant/api/verify-recipient-change:
+    post:
+      operationId: verifyPanelRecipientChange
+      security: [{ MerchantAdminSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id, message, signature]
+              properties:
+                challenge_id: { type: string, format: uuid }
+                message: { type: string }
+                signature: { type: string }
+      responses:
+        "200":
+          description: Recipient changed atomically and the initiating session elevated for it.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { const: recipient_changed }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/stats-consent:
     put:
       operationId: setMerchantStatsConsent

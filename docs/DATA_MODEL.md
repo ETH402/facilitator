@@ -105,6 +105,13 @@ Migration `000011_merchant_admin_panel` adds:
   time the registered recipient wallet elevated this particular session.
 - `authenticate_admin` wallet challenges. They remain one-time, expiring, and
   EIP-4361-bound; they do not change the merchant recipient.
+- Pending recipient replacement reuses `verify_recipient` challenges and needs
+  no new schema: the unverified merchant address and its challenge are written
+  in one transaction, and activation checks they still match. Active panel
+  changes reuse `change_recipient`, recipient history, and admin-session proof
+  timestamps; all prior session proofs are cleared and only the initiating
+  panel session is advanced to the new proof time. API-key recipient changes
+  clear every panel-session proof.
 
 Migration `000012_public_merchant_profiles` adds:
 

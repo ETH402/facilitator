@@ -137,6 +137,10 @@ security-audit events remain append-only. They retain reason codes and
 irreversible payment identities, not raw authorizations or payer addresses.
 Used wallet challenges referenced by recipient-address history also remain as
 hashes because that append-only proof history protects merchant funds.
+Pending recipient replacements add a `recipient.pending_changed` audit event
+without putting either wallet address in audit metadata. The merchant row keeps
+only the latest pending address; expired, unreferenced challenges follow the
+normal challenge-retention policy.
 
 Active merchant identity data is retained for the account's lifetime; ETH402
 does not yet expose self-service account erasure. Backups and replicas retain

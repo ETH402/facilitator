@@ -37,3 +37,19 @@ begin at public opt-in and remain bounded by attributable retained records.
 Emails, recipient and payer addresses, payment amounts, volume, identifiers,
 and pre-consent activity are excluded. Opting out removes the profile from the
 leaderboard immediately without changing private analytics or payment service.
+
+Amendment — 2026-08-05: a merchant may replace an unverified recipient from
+the email-authenticated pending panel. The replacement and its new
+`verify-recipient` challenge are committed atomically; activation still requires
+the replacement wallet's signature, and challenges for every earlier address
+become unusable. This intentionally treats mailbox control as sufficient to
+edit an account that has never established wallet authority. A compromised
+mailbox can therefore redirect an unactivated registration to an attacker wallet,
+but cannot change an active merchant, access API keys, or view private stats.
+
+An active merchant may change its recipient from Settings only through a
+wallet-elevated session and a fresh `change-recipient` signature by the proposed
+new wallet. Live session authority, cooldown, challenge consumption, recipient
+history, audit evidence, the merchant update, and elevation of only the
+initiating session are revalidated and committed in one transaction. All other
+sessions become stale against the new wallet proof.

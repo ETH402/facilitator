@@ -378,6 +378,8 @@ func (s *Service) WalletChallenge(ctx context.Context, merchantID, address, acti
 	}
 	if action == "verify-recipient" || action == "authenticate-admin" {
 		address = storedAddress
+	} else if strings.EqualFold(address, storedAddress) {
+		return Challenge{}, ErrConflict
 	}
 	c, err := walletproof.NewChallenge(merchantID, address, action, s.now(), s.cfg.WalletTTL)
 	if err != nil {
@@ -390,16 +392,7 @@ func (s *Service) WalletChallenge(ctx context.Context, merchantID, address, acti
 		return Challenge{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var id string
-	err = tx.QueryRow(ctx, `INSERT INTO wallet_verification_challenges
-		(merchant_id,address,nonce,message_hash,action,issued_at,expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		merchantID, strings.ToLower(c.Address), c.Nonce, secret.Hash(message), dbAction, c.IssuedAt, c.ExpiresAt).Scan(&id)
-	if err != nil {
-		return Challenge{}, err
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,request_id,metadata)
-		VALUES ('wallet.challenge_created',$1,'merchant',$2,jsonb_build_object('action',$3::text))`, merchantID, requestID, dbAction)
+	id, err := persistWalletChallenge(ctx, tx, merchantID, c, message, dbAction, requestID)
 	if err != nil {
 		return Challenge{}, err
 	}
@@ -409,16 +402,102 @@ func (s *Service) WalletChallenge(ctx context.Context, merchantID, address, acti
 	return Challenge{ID: id, Message: message, Address: c.Address, Action: action, ExpiresAt: c.ExpiresAt}, nil
 }
 
+// PendingRecipientChallenge lets an email-authenticated merchant replace an
+// unverified recipient before activation. Updating the pending record first is
+// safe because pending merchants cannot receive settlements, and it makes every
+// older verify-recipient challenge fail the address equality check in
+// VerifyWallet. Activation still requires a valid signature by the new wallet.
+func (s *Service) PendingRecipientChallenge(ctx context.Context, merchantID, address, requestID string) (Challenge, error) {
+	if !validUUID(merchantID) {
+		return Challenge{}, ErrInvalid
+	}
+	normalized, err := walletproof.NormalizeAddress(address)
+	if err != nil {
+		return Challenge{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Challenge{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var storedAddress, status string
+	var emailVerified, walletVerified *time.Time
+	if err = tx.QueryRow(ctx, `SELECT recipient_address,status,email_verified_at,wallet_verified_at
+		FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
+		Scan(&storedAddress, &status, &emailVerified, &walletVerified); errors.Is(err, pgx.ErrNoRows) {
+		return Challenge{}, ErrNotFound
+	} else if err != nil {
+		return Challenge{}, err
+	}
+	if status != "pending" || emailVerified == nil || walletVerified != nil {
+		return Challenge{}, ErrForbidden
+	}
+	c, err := walletproof.NewChallenge(merchantID, normalized, "verify-recipient", now, s.cfg.WalletTTL)
+	if err != nil {
+		return Challenge{}, ErrInvalid
+	}
+	if !strings.EqualFold(storedAddress, normalized) {
+		tag, updateErr := tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,updated_at=$3
+			WHERE id=$1 AND status='pending' AND email_verified_at IS NOT NULL AND wallet_verified_at IS NULL`,
+			merchantID, normalized, now)
+		if updateErr != nil {
+			return Challenge{}, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return Challenge{}, ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,actor_id,request_id)
+			VALUES ('recipient.pending_changed',$1,'merchant',$2,$3)`, merchantID, merchantID, requestID); err != nil {
+			return Challenge{}, err
+		}
+	}
+	message := c.Message()
+	id, err := persistWalletChallenge(ctx, tx, merchantID, c, message, "verify_recipient", requestID)
+	if err != nil {
+		return Challenge{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Challenge{}, err
+	}
+	return Challenge{ID: id, Message: message, Address: c.Address, Action: c.Action, ExpiresAt: c.ExpiresAt}, nil
+}
+
+func persistWalletChallenge(ctx context.Context, tx pgx.Tx, merchantID string, c walletproof.Challenge, message, dbAction, requestID string) (string, error) {
+	var id string
+	err := tx.QueryRow(ctx, `INSERT INTO wallet_verification_challenges
+		(merchant_id,address,nonce,message_hash,action,issued_at,expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		merchantID, strings.ToLower(c.Address), c.Nonce, secret.Hash(message), dbAction, c.IssuedAt, c.ExpiresAt).Scan(&id)
+	if err != nil {
+		return "", err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(event_type,merchant_id,actor_type,request_id,metadata)
+		VALUES ('wallet.challenge_created',$1,'merchant',$2,jsonb_build_object('action',$3::text))`, merchantID, requestID, dbAction); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, message, signature, expectedAction, requestID string) (string, error) {
 	if !validUUID(merchantID) || !validUUID(challengeID) || len(message) == 0 ||
 		len(message) > 4096 || len(signature) != 132 {
 		return "", ErrInvalid
 	}
+	generated, err := auth.GenerateAPIKey(s.cfg.Pepper)
+	if err != nil {
+		return "", err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var address, action, messageHash string
 	var expires, requested time.Time
 	var consumed *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT address,action,message_hash,expires_at,created_at,consumed_at
-		FROM wallet_verification_challenges WHERE id=$1 AND merchant_id=$2`, challengeID, merchantID).
+	err = tx.QueryRow(ctx, `SELECT address,action,message_hash,expires_at,created_at,consumed_at
+		FROM wallet_verification_challenges WHERE id=$1 AND merchant_id=$2 FOR UPDATE`, challengeID, merchantID).
 		Scan(&address, &action, &messageHash, &expires, &requested, &consumed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
@@ -426,33 +505,64 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 	if err != nil {
 		return "", err
 	}
-	if consumed != nil || !s.now().Before(expires) || !hmac.Equal([]byte(messageHash), []byte(secret.Hash(message))) {
+	if consumed != nil || !hmac.Equal([]byte(messageHash), []byte(secret.Hash(message))) {
 		return "", ErrInvalid
 	}
 	actionWire := strings.ReplaceAll(action, "_", "-")
-	if actionWire != expectedAction {
+	if actionWire != expectedAction || (action != "verify_recipient" && action != "change_recipient") {
 		return "", ErrForbidden
 	}
-	if err := walletproof.VerifyMessage(message, signature, merchantID, address, actionWire, s.now()); err != nil {
-		return "", ErrInvalid
-	}
-	generated, err := auth.GenerateAPIKey(s.cfg.Pepper)
-	if err != nil {
+	var currentAddress, merchantStatus string
+	var emailVerified, merchantWalletVerified *time.Time
+	if err = tx.QueryRow(ctx, `SELECT recipient_address,status,email_verified_at,wallet_verified_at
+		FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
+		Scan(&currentAddress, &merchantStatus, &emailVerified, &merchantWalletVerified); errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	} else if err != nil {
 		return "", err
 	}
 	now := s.now().UTC()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return "", err
+	if !now.Before(expires) {
+		return "", ErrInvalid
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `UPDATE wallet_verification_challenges SET consumed_at=$2 WHERE id=$1 AND consumed_at IS NULL`, challengeID, now)
+	if err = walletproof.VerifyMessage(message, signature, merchantID, address, actionWire, now); err != nil {
+		return "", ErrInvalid
+	}
+	if action == "verify_recipient" {
+		if merchantStatus != "pending" || emailVerified == nil || merchantWalletVerified != nil ||
+			!strings.EqualFold(currentAddress, address) {
+			return "", ErrForbidden
+		}
+	} else {
+		if merchantStatus != "active" || merchantWalletVerified == nil {
+			return "", ErrForbidden
+		}
+		if strings.EqualFold(currentAddress, address) {
+			return "", ErrConflict
+		}
+		// The cooldown is anchored to the last recipient proof rather than to
+		// merchants.updated_at, which unrelated writes such as operator
+		// reinstatement would otherwise push forward.
+		var lastChange time.Time
+		if err = tx.QueryRow(ctx,
+			`SELECT coalesce(max(verified_at),'-infinity') FROM recipient_address_history WHERE merchant_id=$1`,
+			merchantID).Scan(&lastChange); err != nil {
+			return "", err
+		}
+		if now.Sub(lastChange) < s.cfg.RecipientCooldown {
+			return "", ErrThrottled
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE wallet_verification_challenges SET consumed_at=$2
+		WHERE id=$1 AND consumed_at IS NULL`, challengeID, now)
 	if err != nil || tag.RowsAffected() != 1 {
 		return "", ErrConflict
 	}
 	if action == "verify_recipient" {
 		if tag, err = tx.Exec(ctx, `UPDATE merchants SET wallet_verified_at=$2,status='active',updated_at=$2
-			WHERE id=$1 AND email_verified_at IS NOT NULL AND status='pending'`, merchantID, now); err != nil {
+			WHERE id=$1 AND email_verified_at IS NOT NULL AND wallet_verified_at IS NULL
+			  AND status='pending' AND recipient_address=$3`,
+			merchantID, now, strings.ToLower(address)); err != nil {
 			return "", err
 		}
 		if tag.RowsAffected() != 1 {
@@ -472,28 +582,16 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 			return "", err
 		}
 	} else {
-		var previous string
-		if err = tx.QueryRow(ctx, `SELECT recipient_address FROM merchants WHERE id=$1 AND status='active' FOR UPDATE`, merchantID).Scan(&previous); err != nil {
-			return "", ErrForbidden
-		}
-		// The cooldown is anchored to the last recipient proof rather than to
-		// merchants.updated_at, which unrelated writes such as operator
-		// reinstatement would otherwise push forward.
-		var lastChange time.Time
-		if err = tx.QueryRow(ctx,
-			`SELECT coalesce(max(verified_at),'-infinity') FROM recipient_address_history WHERE merchant_id=$1`,
-			merchantID).Scan(&lastChange); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,wallet_verified_at=$3,updated_at=$3 WHERE id=$1`, merchantID, strings.ToLower(address), now); err != nil {
 			return "", err
 		}
-		if now.Sub(lastChange) < s.cfg.RecipientCooldown {
-			return "", ErrThrottled
-		}
-		if _, err = tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,wallet_verified_at=$3,updated_at=$3 WHERE id=$1`, merchantID, strings.ToLower(address), now); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE merchant_admin_sessions SET wallet_verified_at=NULL
+			WHERE merchant_id=$1 AND wallet_verified_at IS NOT NULL`, merchantID); err != nil {
 			return "", err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO recipient_address_history
 			(merchant_id,previous_address,new_address,requested_at,verified_at,actor_type,actor_id,wallet_challenge_id)
-			VALUES ($1,$2,$3,$4,$5,'merchant',$6,$7)`, merchantID, previous, strings.ToLower(address), requested, now, merchantID, challengeID); err != nil {
+			VALUES ($1,$2,$3,$4,$5,'merchant',$6,$7)`, merchantID, currentAddress, strings.ToLower(address), requested, now, merchantID, challengeID); err != nil {
 			return "", err
 		}
 		generated.FullValue = ""

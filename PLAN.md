@@ -142,8 +142,9 @@ Milestone 4 is complete.
 
 - [x] self-contained merchant administration — email-link sessions remain
       unprivileged until a fresh registered-recipient SIWE proof; initial
-      activation, API-key management, and opt-in private retained-window
-      statistics are available without third-party frontend dependencies
+      activation, pending and active recipient replacement, API-key management,
+      and opt-in private retained-window statistics are available without
+      third-party frontend dependencies
 
 - [x] first-party product surface — an ETH402-branded landing page, aggregate
       network view, and redesigned merchant dashboard share same-origin assets;

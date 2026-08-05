@@ -121,6 +121,12 @@ The same flow is available in the first-party merchant panel at
 `/merchant`. The panel does not put integration keys in local or session
 storage. Email sign-in creates an HttpOnly browser session, and sensitive panel
 operations require a fresh signature by the registered recipient wallet.
+Before initial activation, the panel can replace an unverified recipient after
+an explicit old/new-address confirmation; activation always requires the newly
+selected wallet's signature. Active merchants can use Settings to change the
+recipient with a fresh signature by the new wallet. Existing API keys remain
+valid, the recipient cooldown applies, and other browser sessions must prove the
+new current wallet again.
 Private merchant statistics are disabled by default and begin only when the
 merchant explicitly opts in. Public discovery at `/` and `/explore` is a
 separate opt-in; it exposes only the merchant's name, declared HTTPS website,
