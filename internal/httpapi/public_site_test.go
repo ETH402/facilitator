@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,5 +40,32 @@ func TestSiteCSSIsServedAsAStaticFirstPartyAsset(t *testing.T) {
 	}
 	if recorder.Body.Len() < 10_000 {
 		t.Fatalf("stylesheet unexpectedly small: %d bytes", recorder.Body.Len())
+	}
+}
+
+func TestPublicSiteDoesNotPresentUnavailableStatsAsZero(t *testing.T) {
+	t.Parallel()
+	for name, page := range map[string]*template.Template{"/": landingPage, "/explore": explorePage} {
+		recorder := httptest.NewRecorder()
+		renderPublicPage(recorder, page, publicSiteData{Year: 2026})
+		body := recorder.Body.String()
+		if !strings.Contains(body, "Stats unavailable") || !strings.Contains(body, "Merchant directory temporarily unavailable") {
+			t.Fatalf("GET %s did not distinguish unavailable data: %s", name, body)
+		}
+		if strings.Contains(body, ">0</strong><small>Stats unavailable") {
+			t.Fatalf("GET %s presented unavailable data as zero", name)
+		}
+	}
+}
+
+func TestPublicSiteHasMobileAndKeyboardNavigation(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	testServer(nil, nil, 1).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := recorder.Body.String()
+	for _, required := range []string{`class="skip-link"`, `class="mobile-nav"`, `aria-current="page"`} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("landing navigation omitted %q", required)
+		}
 	}
 }

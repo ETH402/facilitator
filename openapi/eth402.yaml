@@ -384,6 +384,7 @@ paths:
                     type: boolean
                     description: True only after this session proves the current recipient wallet.
         "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/logout:
     post:
       operationId: revokeMerchantAdminSession
@@ -415,8 +416,11 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/WalletChallenge" }
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/verify-wallet:
     post:
       operationId: verifyPanelWallet
@@ -448,8 +452,11 @@ paths:
                     type: string
                     description: Present only during initial activation and returned exactly once.
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/recipient-challenge:
     post:
       operationId: createPanelRecipientChangeChallenge
@@ -471,7 +478,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/WalletChallenge" }
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
   /merchant/api/verify-recipient-change:
@@ -504,6 +513,7 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
   /merchant/api/stats-consent:
@@ -532,7 +542,11 @@ paths:
                 properties:
                   enabled: { type: boolean }
                   opted_in_at: { type: [string, "null"], format: date-time }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/stats:
     get:
       operationId: getPrivateMerchantStats
@@ -543,7 +557,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MerchantStats" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/public-profile:
     put:
       operationId: setMerchantPublicProfileConsent
@@ -574,7 +591,11 @@ paths:
                 properties:
                   enabled: { type: boolean }
                   opted_in_at: { type: [string, "null"], format: date-time }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/api-keys:
     get:
       operationId: listPanelAPIKeys
@@ -592,6 +613,10 @@ paths:
                   keys:
                     type: array
                     items: { $ref: "#/components/schemas/APIKey" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
     post:
       operationId: createPanelAPIKey
       security: [{ MerchantAdminSession: [] }]
@@ -617,6 +642,11 @@ paths:
                 properties:
                   key: { $ref: "#/components/schemas/APIKey" }
                   api_key: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /merchant/api/api-keys/{id}:
     delete:
       operationId: revokePanelAPIKey
@@ -628,6 +658,11 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "204": { description: API key revoked. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/admin/merchants/{id}/suspend:
     post:
       operationId: suspendMerchant

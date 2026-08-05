@@ -41,13 +41,13 @@ func fairUseDeps(accountant FairUseAccountant, limit int64, window time.Duration
 func runFairUse(t *testing.T, deps Dependencies) (*httptest.ResponseRecorder, bool) {
 	t.Helper()
 	served := false
-	handler := deps.fairUse(func(w http.ResponseWriter, _ *http.Request, _ merchant.Merchant) {
+	handler := deps.fairUse(func(w http.ResponseWriter, _ *http.Request, _ merchant.Merchant, _ string) {
 		served = true
 		w.WriteHeader(http.StatusOK)
 	})
 	recorder := httptest.NewRecorder()
 	handler(recorder, httptest.NewRequest(http.MethodGet, "/v1/me", nil),
-		merchant.Merchant{ID: "11111111-1111-1111-1111-111111111111"})
+		merchant.Merchant{ID: "11111111-1111-1111-1111-111111111111"}, "test-token")
 	return recorder, served
 }
 

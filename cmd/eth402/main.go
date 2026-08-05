@@ -184,6 +184,7 @@ func main() {
 		RestrictFree: cfg.RestrictFreeEmail, Allowlist: cfg.EmailAllowlist, Denylist: cfg.EmailDenylist,
 		Logger:             logger,
 		EmailObserver:      registry,
+		RecipientObserver:  registry,
 		EmailDeliveryLease: max(2*cfg.SMTPTimeout, time.Minute),
 		EmailOutboxKey: func() []byte {
 			key, _ := hex.DecodeString(cfg.EmailOutboxKey) // validated by config.Load

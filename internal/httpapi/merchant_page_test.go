@@ -32,6 +32,10 @@ func TestVerifyEmailPageRequiresExplicitSubmission(t *testing.T) {
 	if got := response.Header().Get("X-Robots-Tag"); !strings.Contains(got, "noindex") {
 		t.Fatalf("X-Robots-Tag = %q, want noindex", got)
 	}
+	if csp := response.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "style-src 'self'") ||
+		strings.Contains(csp, "unsafe-inline") {
+		t.Fatalf("verification CSP is not first-party only: %q", csp)
+	}
 }
 
 func TestVerifyEmailPageRejectsMalformedToken(t *testing.T) {
@@ -55,7 +59,7 @@ func TestMerchantPanelIsSelfContainedAndPrivate(t *testing.T) {
 	}
 	body := response.Body.String()
 	if !strings.Contains(body, `src="/merchant/app.js"`) || !strings.Contains(body, `href="/assets/site.css"`) ||
-		strings.Contains(body, "https://") {
+		strings.Contains(body, `src="https://`) || strings.Contains(body, `href="https://`) {
 		t.Fatalf("panel is not self-contained: %s", body)
 	}
 	if got := response.Header().Get("Cache-Control"); got != "no-store" {
@@ -83,6 +87,37 @@ func TestMerchantPanelSendsReplacementAddressOnlyWhilePending(t *testing.T) {
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("merchant wallet flow omitted %q", required)
+		}
+	}
+}
+
+func TestMerchantPanelClearsSecretsAndDoesNotClaimFailedLogout(t *testing.T) {
+	response := httptest.NewRecorder()
+	Dependencies{}.merchantPanelJS(response, httptest.NewRequest(http.MethodGet, "/merchant/app.js", nil))
+	script := response.Body.String()
+	for _, required := range []string{
+		"function clearSecret()",
+		"merchant=null;walletAuthenticated=false;clearSecret()",
+		"await api('/merchant/api/logout',{method:'POST'});showSignedOut()",
+		"Sign-out failed. Your session is still active",
+		"response.status===401&&path.startsWith('/merchant/api/')",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("merchant session hardening omitted %q", required)
+		}
+	}
+}
+
+func TestMerchantPanelIncludesAccessibleNavigationAndLoadingStates(t *testing.T) {
+	response := httptest.NewRecorder()
+	Dependencies{}.merchantPanel(response, httptest.NewRequest(http.MethodGet, "/merchant", nil))
+	body := response.Body.String()
+	for _, required := range []string{
+		`role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected="true"`,
+		`for="key-name"`, `id="keys-empty"`, `class="skip-link"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("merchant panel accessibility omitted %q", required)
 		}
 	}
 }

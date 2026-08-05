@@ -14,17 +14,19 @@ import (
 )
 
 type Registry struct {
-	httpRequests   atomic.Uint64
-	httpDuration   atomic.Int64
-	panicCount     atomic.Uint64
-	registrations  atomic.Uint64
-	emailVerified  atomic.Uint64
-	walletVerified atomic.Uint64
-	walletFailures atomic.Uint64
-	verifications  atomic.Uint64
-	verifyFailures atomic.Uint64
-	settlements    atomic.Uint64
-	settleFailures atomic.Uint64
+	httpRequests            atomic.Uint64
+	httpDuration            atomic.Int64
+	panicCount              atomic.Uint64
+	registrations           atomic.Uint64
+	emailVerified           atomic.Uint64
+	walletVerified          atomic.Uint64
+	walletFailures          atomic.Uint64
+	verifications           atomic.Uint64
+	verifyFailures          atomic.Uint64
+	settlements             atomic.Uint64
+	settleFailures          atomic.Uint64
+	recipientPendingChanges atomic.Uint64
+	recipientActiveChanges  atomic.Uint64
 	// Signer balance is stored as a string so an arbitrarily large wei value
 	// survives; it is converted only at exposition, where Prometheus requires a
 	// float anyway.
@@ -72,6 +74,17 @@ func (r *Registry) IncVerification()              { r.verifications.Add(1) }
 func (r *Registry) IncVerificationFailure()       { r.verifyFailures.Add(1) }
 func (r *Registry) IncSettlement()                { r.settlements.Add(1) }
 func (r *Registry) IncSettlementFailure()         { r.settleFailures.Add(1) }
+
+// ObserveRecipientChange counts security-relevant recipient updates without
+// attaching merchant or wallet labels. Pending changes are separate because
+// they can indicate mailbox takeover before the first wallet proof.
+func (r *Registry) ObserveRecipientChange(pending bool) {
+	if pending {
+		r.recipientPendingChanges.Add(1)
+		return
+	}
+	r.recipientActiveChanges.Add(1)
+}
 
 // SetSignerBalance records the settlement signer's ether balance and when it was
 // read. The timestamp matters as much as the value: if a balance read starts
@@ -186,6 +199,8 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		"settlement_requests_total":          r.settlements.Load(),
 		"settlement_failures_total":          r.settleFailures.Load(),
 		"fair_use_refusals_total":            r.fairUseRefusals.Load(),
+		"recipient_pending_changes_total":    r.recipientPendingChanges.Load(),
+		"recipient_active_changes_total":     r.recipientActiveChanges.Load(),
 	} {
 		_, _ = fmt.Fprintf(w, "# TYPE eth402_%s counter\neth402_%s %d\n", name, name, value)
 	}

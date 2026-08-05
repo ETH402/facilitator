@@ -62,9 +62,9 @@ func (d Dependencies) withAdmin(requireWallet bool, next adminHandler) http.Hand
 			writeMerchantError(w, r, merchant.ErrForbidden)
 			return
 		}
-		d.fairUse(func(w http.ResponseWriter, r *http.Request, _ merchant.Merchant) {
+		d.fairUse(func(w http.ResponseWriter, r *http.Request, _ merchant.Merchant, _ string) {
 			next(w, r, principal, cookie.Value)
-		})(w, r, principal.Merchant)
+		})(w, r, principal.Merchant, "")
 	}
 }
 
@@ -203,9 +203,9 @@ func (d Dependencies) adminVerifyRecipientChange(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recipient_changed"})
 }
 
-func (d Dependencies) adminStats(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminStats(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	m := principal.Merchant
-	result, err := d.Merchant.Stats(r.Context(), m.ID)
+	result, err := d.Merchant.AdminStats(r.Context(), m.ID, sessionToken)
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
@@ -214,7 +214,7 @@ func (d Dependencies) adminStats(w http.ResponseWriter, r *http.Request, princip
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (d Dependencies) adminStatsConsent(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminStatsConsent(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	m := principal.Merchant
 	var in struct {
 		Enabled *bool `json:"enabled"`
@@ -223,7 +223,7 @@ func (d Dependencies) adminStatsConsent(w http.ResponseWriter, r *http.Request, 
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	optedInAt, err := d.Merchant.SetStatsConsent(r.Context(), m.ID, *in.Enabled, requestIDFrom(r.Context()))
+	optedInAt, err := d.Merchant.SetAdminStatsConsent(r.Context(), m.ID, sessionToken, *in.Enabled, requestIDFrom(r.Context()))
 	if err != nil {
 		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrForbidden) &&
 			!errors.Is(err, merchant.ErrNotFound) {
@@ -236,7 +236,7 @@ func (d Dependencies) adminStatsConsent(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": *in.Enabled, "opted_in_at": optedInAt})
 }
 
-func (d Dependencies) adminPublicProfileConsent(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminPublicProfileConsent(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	m := principal.Merchant
 	var in struct {
 		Enabled *bool `json:"enabled"`
@@ -245,7 +245,7 @@ func (d Dependencies) adminPublicProfileConsent(w http.ResponseWriter, r *http.R
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	optedInAt, err := d.Merchant.SetPublicProfileConsent(r.Context(), m.ID, *in.Enabled, requestIDFrom(r.Context()))
+	optedInAt, err := d.Merchant.SetAdminPublicProfileConsent(r.Context(), m.ID, sessionToken, *in.Enabled, requestIDFrom(r.Context()))
 	if err != nil {
 		if !errors.Is(err, merchant.ErrInvalid) && !errors.Is(err, merchant.ErrForbidden) &&
 			!errors.Is(err, merchant.ErrNotFound) {
@@ -258,9 +258,9 @@ func (d Dependencies) adminPublicProfileConsent(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": *in.Enabled, "opted_in_at": optedInAt})
 }
 
-func (d Dependencies) adminListKeys(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminListKeys(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	m := principal.Merchant
-	keys, err := d.Merchant.ListAPIKeys(r.Context(), m.ID)
+	keys, err := d.Merchant.ListAdminAPIKeys(r.Context(), m.ID, sessionToken)
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
@@ -269,7 +269,7 @@ func (d Dependencies) adminListKeys(w http.ResponseWriter, r *http.Request, prin
 	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
 }
 
-func (d Dependencies) adminCreateKey(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminCreateKey(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	m := principal.Merchant
 	var in struct {
 		Name string `json:"name"`
@@ -278,7 +278,7 @@ func (d Dependencies) adminCreateKey(w http.ResponseWriter, r *http.Request, pri
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	key, raw, err := d.Merchant.CreateAPIKey(r.Context(), m.ID, in.Name, requestIDFrom(r.Context()))
+	key, raw, err := d.Merchant.CreateAdminAPIKey(r.Context(), m.ID, sessionToken, in.Name, requestIDFrom(r.Context()))
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
@@ -287,9 +287,9 @@ func (d Dependencies) adminCreateKey(w http.ResponseWriter, r *http.Request, pri
 	writeJSON(w, http.StatusCreated, map[string]any{"key": key, "api_key": raw})
 }
 
-func (d Dependencies) adminRevokeKey(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, _ string) {
+func (d Dependencies) adminRevokeKey(w http.ResponseWriter, r *http.Request, principal merchant.AdminPrincipal, sessionToken string) {
 	m := principal.Merchant
-	if err := d.Merchant.RevokeAPIKey(r.Context(), m.ID, r.PathValue("id"), requestIDFrom(r.Context())); err != nil {
+	if err := d.Merchant.RevokeAdminAPIKey(r.Context(), m.ID, sessionToken, r.PathValue("id"), requestIDFrom(r.Context())); err != nil {
 		writeMerchantError(w, r, err)
 		return
 	}

@@ -31,9 +31,9 @@ type FairUseAccountant interface {
 // bounded by the per-IP limiter and, for the resource the facilitator actually
 // pays for, by the settlement quotas.
 func (d Dependencies) fairUse(next merchantHandler) merchantHandler {
-	return func(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
+	return func(w http.ResponseWriter, r *http.Request, m merchant.Merchant, token string) {
 		if d.FairUse == nil || d.MerchantRequestsPerWindow <= 0 || d.FairUseWindow <= 0 {
-			next(w, r, m)
+			next(w, r, m, token)
 			return
 		}
 		usage, err := d.FairUse.CountMerchantRequest(r.Context(), m.ID,
@@ -45,7 +45,7 @@ func (d Dependencies) fairUse(next merchantHandler) merchantHandler {
 			// outage for every paying merchant.
 			d.Logger.ErrorContext(r.Context(), "fair-use accounting failed; allowing the request",
 				"merchant_id", m.ID, "error", err)
-			next(w, r, m)
+			next(w, r, m, token)
 			return
 		}
 		w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(usage.Limit, 10))
@@ -63,6 +63,6 @@ func (d Dependencies) fairUse(next merchantHandler) merchantHandler {
 				"merchant request allowance exceeded for the current window", requestIDFrom(r.Context()))
 			return
 		}
-		next(w, r, m)
+		next(w, r, m, token)
 	}
 }
