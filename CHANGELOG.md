@@ -29,6 +29,9 @@ versioned where noted.
   authorization, fair-use, validation, conflict, and not-found responses their
   middleware and handlers can return.
 
+- Release-candidate tags now publish as GitHub prereleases while stable SemVer
+  tags continue to publish as ordinary releases.
+
 - `/supported` now advertises the configured facilitator transaction signer
   under the x402 v2 `eip155:*` CAIP-family key instead of always returning an
   empty signer map. Disabled settlement still returns an empty map. The
