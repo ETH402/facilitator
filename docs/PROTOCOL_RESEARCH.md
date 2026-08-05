@@ -40,6 +40,9 @@ optional extension/extra data as supported by the pinned SDK.
 `SettleResponse`: `success`, optional `errorReason`, optional `payer`,
 required `transaction` (empty on failure), `network`, optional `amount` and
 extension data. `SupportedResponse`: `kinds`, `extensions`, and `signers`.
+The signer map is required and groups facilitator transaction signers by CAIP
+family; the official EVM mechanism reports them under `eip155:*` even when the
+advertised supported kind is one exact EVM network.
 
 Official v2.20.0 exact-EVM error reason examples include
 `invalid_exact_evm_insufficient_balance`,
@@ -62,7 +65,8 @@ error message in the protocol response.
 
 The buyer signs only the USDC authorization. The facilitator's Ethereum signer
 signs the outer contract-call transaction, broadcasts it, pays native ETH gas,
-and waits for a receipt in the official reference implementation. Merchant
+and waits for a receipt in the official reference implementation. That
+facilitator signer is advertised by `/supported`; merchant authorization
 signers are not required. USDC moves from `authorization.from` directly to
 `authorization.to`.
 

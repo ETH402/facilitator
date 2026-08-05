@@ -83,7 +83,14 @@ func New(scheme Scheme, code CodeReader, recorder Recorder, timeout time.Duratio
 	return &Service{scheme: scheme, code: code, recorder: recorder, timeout: timeout}
 }
 
-func Supported() types.SupportedResponse {
+func Supported(signerAddress string) types.SupportedResponse {
+	signers := map[string][]string{}
+	if signerAddress != "" {
+		// The pinned x402 v2 schema groups facilitator transaction signers by
+		// CAIP family. This is the outer Ethereum transaction signer, not a
+		// merchant or payer authorization signer.
+		signers["eip155:*"] = []string{signerAddress}
+	}
 	return types.SupportedResponse{
 		Kinds: []types.SupportedKind{{
 			X402Version: 2,
@@ -95,7 +102,7 @@ func Supported() types.SupportedResponse {
 			},
 		}},
 		Extensions: []string{},
-		Signers:    map[string][]string{},
+		Signers:    signers,
 	}
 }
 

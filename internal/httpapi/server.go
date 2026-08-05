@@ -54,7 +54,10 @@ type Dependencies struct {
 	OperatorToken             string
 	Verification              *verification.Service
 	Settlement                *settlement.Service
-	MetricsEnabled            bool
+	// SettlementSignerAddress is advertised by /supported under the x402 v2
+	// EVM CAIP-family key. Empty is valid only when settlement is disabled.
+	SettlementSignerAddress string
+	MetricsEnabled          bool
 	// SettleResponseWait is how long the settle service may hold a response
 	// while waiting for on-chain confirmation. The handler disables the
 	// connection's global write deadline so the long response is not cut off
@@ -96,7 +99,7 @@ func New(dep Dependencies) *Server {
 }
 
 func (d Dependencies) supported(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, verification.Supported())
+	writeJSON(w, http.StatusOK, verification.Supported(d.SettlementSignerAddress))
 }
 
 func (d Dependencies) verify(w http.ResponseWriter, r *http.Request) {
