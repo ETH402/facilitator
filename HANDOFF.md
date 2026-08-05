@@ -19,9 +19,9 @@ funded mainnet execution evidence is still pending:
    with no implementation or operations role, reported no unresolved
    Critical/High findings and dispositioned all lower findings for commit
    `5c30b799c6c5fa1c4f72f31c1a72823d038bae67` under signed report reference
-   `082026` on 2026-08-04. The later confirmation-wait and `/supported` deltas
-   passed the full release gates and adversarial agent review, but no separate
-   human delta disposition is claimed.
+   `082026` on 2026-08-04. The later confirmation-wait, `/supported`, and
+   merchant recipient self-service deltas passed the full release gates and
+   adversarial agent review, but no separate human delta disposition is claimed.
 2. **Controlled funded mainnet dry run — ready, not yet executed.** Signing is
    enabled in production, but no real USDC settlement has reached the required
    confirmation depth yet. Enabling the signer is a prerequisite, not evidence
@@ -30,10 +30,10 @@ funded mainnet execution evidence is still pending:
 Production is live and healthy:
 
 - Application host: `toufik@35.232.99.172`, Compose project `eth402prod`.
-- Release `v0.1.0-rc.4`, source commit
-  `4a60841615d1864ed517e1f93aacdb20e70f2db5`, is signed and GitHub-verified.
+- Facilitator release `v0.1.0-rc.5`, source commit
+  `71e03a9c0084005dff33b3a14445e32dba01100e`, is signed and GitHub-verified.
 - App image:
-  `ghcr.io/eth402/facilitator@sha256:482a31427e4796a34d561d815db7aecdeaa58eab7cfa0e8cce0eb1c87a87af71`.
+  `ghcr.io/eth402/facilitator@sha256:80cbeb69c6aaa88a5351d5e2741c0d42396fe93608bdcec3c883d79f09534e44`.
 - Policy-signer image:
   `ghcr.io/eth402/policysigner@sha256:859af4e82401a65896c3621f98ff198d5f24b66be1c28bd041e9a6eabc39f3c5`.
 - Running services are app, Caddy, PostgreSQL 17, Prometheus, and Alertmanager.
@@ -43,14 +43,15 @@ Production is live and healthy:
   Signing goes through the KMS-fronted policy-signer boundary; the
   facilitator holds no KMS grant.
 
-The rc4 rollout completed on 2026-08-05. Both workloads run the immutable
-digests above, `/supported` advertises the signer under `signers["eip155:*"]`,
-schema remains `000013_email_delivery_outbox`, and the signer nonce, payment
-count, and transaction count remain zero. Release evidence is stored read-only
-at `/opt/eth402/releases/v0.1.0-rc.4` on the application host. The verified
-pre-rc3 database backup is
-`/opt/eth402/backups/pre-rc3-20260805T0215Z.dump` with SHA-256
-`c9b223920d7177143ee8eccdc9d0f6867b070718d37f611a6fe2d07555ded10a`.
+The app-only rc5 rollout completed on 2026-08-05. It adds pending and active
+self-service recipient replacement to the merchant panel. The facilitator runs
+the immutable rc5 digest above; the unchanged policy signer remains on its rc4
+digest. `/supported` advertises the signer under `signers["eip155:*"]`, schema
+remains `000013_email_delivery_outbox`, and payment and transaction counts
+remain zero. Release evidence is stored read-only at
+`/opt/eth402/releases/v0.1.0-rc.5` on the application host. The pre-rc5 backup is
+`/opt/eth402/backups/eth402-20260805T195524Z.dump.gz` with SHA-256
+`0dca99ff59e456011dbef04495788ea9da509ae80482755b255d07ee205a39a7`.
 
 ## Open follow-ups
 
