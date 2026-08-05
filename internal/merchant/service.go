@@ -44,6 +44,7 @@ type Config struct {
 	Allowlist, Denylist                            []string
 	Logger                                         *slog.Logger
 	EmailObserver                                  EmailDeliveryObserver
+	RecipientObserver                              RecipientChangeObserver
 }
 
 // EmailDeliveryObserver keeps operational telemetry outside the merchant
@@ -54,19 +55,26 @@ type EmailDeliveryObserver interface {
 	ObserveEmailDeliveryFailure()
 }
 
+// RecipientChangeObserver exposes only low-cardinality security event classes.
+// It deliberately receives no merchant, wallet, session, or request identifiers.
+type RecipientChangeObserver interface {
+	ObserveRecipientChange(pending bool)
+}
+
 type Service struct {
-	pool           *pgxpool.Pool
-	mail           email.Sender
-	cfg            Config
-	now            func() time.Time
-	logger         *slog.Logger
-	emailOutboxKey [32]byte
-	emailClaim     time.Duration
-	emailWake      chan struct{}
-	emailObserver  EmailDeliveryObserver
-	publicMu       sync.Mutex
-	publicCached   []PublicMerchant
-	publicExpires  time.Time
+	pool              *pgxpool.Pool
+	mail              email.Sender
+	cfg               Config
+	now               func() time.Time
+	logger            *slog.Logger
+	emailOutboxKey    [32]byte
+	emailClaim        time.Duration
+	emailWake         chan struct{}
+	emailObserver     EmailDeliveryObserver
+	recipientObserver RecipientChangeObserver
+	publicMu          sync.Mutex
+	publicCached      []PublicMerchant
+	publicExpires     time.Time
 }
 
 type Registration struct {
@@ -121,10 +129,11 @@ func New(pool *pgxpool.Pool, sender email.Sender, cfg Config) *Service {
 	}
 	return &Service{
 		pool: pool, mail: sender, cfg: cfg, now: time.Now, logger: logger,
-		emailOutboxKey: emailOutboxKey,
-		emailClaim:     cfg.EmailDeliveryLease,
-		emailWake:      make(chan struct{}, 1),
-		emailObserver:  cfg.EmailObserver,
+		emailOutboxKey:    emailOutboxKey,
+		emailClaim:        cfg.EmailDeliveryLease,
+		emailWake:         make(chan struct{}, 1),
+		emailObserver:     cfg.EmailObserver,
+		recipientObserver: cfg.RecipientObserver,
 	}
 }
 
@@ -402,6 +411,87 @@ func (s *Service) WalletChallenge(ctx context.Context, merchantID, address, acti
 	return Challenge{ID: id, Message: message, Address: c.Address, Action: action, ExpiresAt: c.ExpiresAt}, nil
 }
 
+// AuthenticatedWalletChallenge creates an API-key recipient-change challenge
+// in the same transaction that revalidates the key and current active status.
+// This prevents a request admitted before suspension from leaving new durable
+// challenge/audit state after suspension.
+func (s *Service) AuthenticatedWalletChallenge(ctx context.Context, merchantID, apiKey, address, action, requestID string) (Challenge, error) {
+	if !validUUID(merchantID) || action != "change-recipient" {
+		return Challenge{}, ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Challenge{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = s.lockAuthenticatedAPIKey(ctx, tx, merchantID, apiKey); err != nil {
+		return Challenge{}, err
+	}
+	var storedAddress, status string
+	var emailVerified *time.Time
+	if err = tx.QueryRow(ctx, `SELECT recipient_address,status,email_verified_at FROM merchants WHERE id=$1`, merchantID).
+		Scan(&storedAddress, &status, &emailVerified); err != nil {
+		return Challenge{}, err
+	}
+	if status != "active" || emailVerified == nil {
+		return Challenge{}, ErrForbidden
+	}
+	if strings.EqualFold(address, storedAddress) {
+		return Challenge{}, ErrConflict
+	}
+	c, err := walletproof.NewChallenge(merchantID, address, action, s.now(), s.cfg.WalletTTL)
+	if err != nil {
+		return Challenge{}, ErrInvalid
+	}
+	message := c.Message()
+	id, err := persistWalletChallenge(ctx, tx, merchantID, c, message, "change_recipient", requestID)
+	if err != nil {
+		return Challenge{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Challenge{}, err
+	}
+	return Challenge{ID: id, Message: message, Address: c.Address, Action: action, ExpiresAt: c.ExpiresAt}, nil
+}
+
+// AdminWalletChallenge creates an active-recipient change challenge in the same
+// transaction that revalidates the current wallet-elevated panel session. The
+// middleware check remains an early rejection only; this lock is the durable
+// authorization boundary when recipient rotation or session revocation races.
+func (s *Service) AdminWalletChallenge(ctx context.Context, merchantID, sessionToken, address, action, requestID string) (Challenge, error) {
+	if !validUUID(merchantID) || action != "change-recipient" {
+		return Challenge{}, ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Challenge{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+		return Challenge{}, err
+	}
+	var storedAddress string
+	if err = tx.QueryRow(ctx, `SELECT recipient_address FROM merchants WHERE id=$1`, merchantID).Scan(&storedAddress); err != nil {
+		return Challenge{}, err
+	}
+	if strings.EqualFold(address, storedAddress) {
+		return Challenge{}, ErrConflict
+	}
+	challenge, err := walletproof.NewChallenge(merchantID, address, action, s.now(), s.cfg.WalletTTL)
+	if err != nil {
+		return Challenge{}, ErrInvalid
+	}
+	message := challenge.Message()
+	id, err := persistWalletChallenge(ctx, tx, merchantID, challenge, message, "change_recipient", requestID)
+	if err != nil {
+		return Challenge{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Challenge{}, err
+	}
+	return Challenge{ID: id, Message: message, Address: challenge.Address, Action: action, ExpiresAt: challenge.ExpiresAt}, nil
+}
+
 // PendingRecipientChallenge lets an email-authenticated merchant replace an
 // unverified recipient before activation. Updating the pending record first is
 // safe because pending merchants cannot receive settlements, and it makes every
@@ -437,7 +527,8 @@ func (s *Service) PendingRecipientChallenge(ctx context.Context, merchantID, add
 	if err != nil {
 		return Challenge{}, ErrInvalid
 	}
-	if !strings.EqualFold(storedAddress, normalized) {
+	changed := !strings.EqualFold(storedAddress, normalized)
+	if changed {
 		tag, updateErr := tx.Exec(ctx, `UPDATE merchants SET recipient_address=$2,updated_at=$3
 			WHERE id=$1 AND status='pending' AND email_verified_at IS NOT NULL AND wallet_verified_at IS NULL`,
 			merchantID, normalized, now)
@@ -460,6 +551,9 @@ func (s *Service) PendingRecipientChallenge(ctx context.Context, merchantID, add
 	if err = tx.Commit(ctx); err != nil {
 		return Challenge{}, err
 	}
+	if changed && s.recipientObserver != nil {
+		s.recipientObserver.ObserveRecipientChange(true)
+	}
 	return Challenge{ID: id, Message: message, Address: c.Address, Action: c.Action, ExpiresAt: c.ExpiresAt}, nil
 }
 
@@ -480,6 +574,14 @@ func persistWalletChallenge(ctx context.Context, tx pgx.Tx, merchantID string, c
 }
 
 func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, message, signature, expectedAction, requestID string) (string, error) {
+	return s.verifyWallet(ctx, merchantID, "", challengeID, message, signature, expectedAction, requestID)
+}
+
+func (s *Service) VerifyAuthenticatedWallet(ctx context.Context, merchantID, apiKey, challengeID, message, signature, expectedAction, requestID string) (string, error) {
+	return s.verifyWallet(ctx, merchantID, apiKey, challengeID, message, signature, expectedAction, requestID)
+}
+
+func (s *Service) verifyWallet(ctx context.Context, merchantID, apiKey, challengeID, message, signature, expectedAction, requestID string) (string, error) {
 	if !validUUID(merchantID) || !validUUID(challengeID) || len(message) == 0 ||
 		len(message) > 4096 || len(signature) != 132 {
 		return "", ErrInvalid
@@ -520,6 +622,14 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 		return "", ErrNotFound
 	} else if err != nil {
 		return "", err
+	}
+	if apiKey != "" {
+		if expectedAction != "change-recipient" {
+			return "", ErrForbidden
+		}
+		if err = s.lockAuthenticatedAPIKey(ctx, tx, merchantID, apiKey); err != nil {
+			return "", err
+		}
 	}
 	now := s.now().UTC()
 	if !now.Before(expires) {
@@ -607,6 +717,9 @@ func (s *Service) VerifyWallet(ctx context.Context, merchantID, challengeID, mes
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
+	if action == "change_recipient" && s.recipientObserver != nil {
+		s.recipientObserver.ObserveRecipientChange(false)
+	}
 	return generated.FullValue, nil
 }
 
@@ -639,7 +752,56 @@ func (s *Service) Authenticate(ctx context.Context, value string) (Merchant, err
 	return m, nil
 }
 
+// lockAuthenticatedAPIKey serializes an API-key-authorized operation with
+// suspension. Callers must hold the transaction through the protected work.
+// Keys remain stored while suspended and work again after reinstatement, but no
+// request admitted against an earlier active snapshot can commit after the
+// suspension update.
+func (s *Service) lockAuthenticatedAPIKey(ctx context.Context, tx pgx.Tx, merchantID, value string) error {
+	if !validUUID(merchantID) || !strings.HasPrefix(value, "eth402_live_") || len(value) > 256 {
+		return ErrUnauthorized
+	}
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthorized
+	} else if err != nil {
+		return err
+	}
+	if status != "active" {
+		return ErrForbidden
+	}
+	prefix := auth.LookupPrefix(value)
+	computed := secret.KeyedHash(s.cfg.Pepper, value)
+	var stored string
+	err := tx.QueryRow(ctx, `SELECT key_hash FROM api_keys
+		WHERE merchant_id=$1 AND key_prefix=$2 AND revoked_at IS NULL FOR UPDATE`, merchantID, prefix).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	a, err1 := hex.DecodeString(stored)
+	b, err2 := hex.DecodeString(computed)
+	if err1 != nil || err2 != nil || !hmac.Equal(a, b) {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
 func (s *Service) CreateAPIKey(ctx context.Context, merchantID, name, requestID string) (APIKey, string, error) {
+	return s.createAPIKey(ctx, merchantID, "", "", name, requestID)
+}
+
+func (s *Service) CreateAdminAPIKey(ctx context.Context, merchantID, sessionToken, name, requestID string) (APIKey, string, error) {
+	return s.createAPIKey(ctx, merchantID, sessionToken, "", name, requestID)
+}
+
+func (s *Service) CreateAuthenticatedAPIKey(ctx context.Context, merchantID, apiKey, name, requestID string) (APIKey, string, error) {
+	return s.createAPIKey(ctx, merchantID, "", apiKey, name, requestID)
+}
+
+func (s *Service) createAPIKey(ctx context.Context, merchantID, sessionToken, apiKey, name, requestID string) (APIKey, string, error) {
 	name = strings.TrimSpace(name)
 	if len(name) < 1 || len(name) > 100 {
 		return APIKey{}, "", ErrInvalid
@@ -653,6 +815,15 @@ func (s *Service) CreateAPIKey(ctx context.Context, merchantID, name, requestID 
 		return APIKey{}, "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if sessionToken != "" {
+		if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+			return APIKey{}, "", err
+		}
+	} else if apiKey != "" {
+		if err = s.lockAuthenticatedAPIKey(ctx, tx, merchantID, apiKey); err != nil {
+			return APIKey{}, "", err
+		}
+	}
 	var key APIKey
 	err = tx.QueryRow(ctx, `INSERT INTO api_keys(merchant_id,name,key_prefix,key_hash) VALUES ($1,$2,$3,$4)
 		RETURNING id,name,key_prefix,created_at,last_used_at,revoked_at`, merchantID, name, g.Prefix, g.Hash).
@@ -671,7 +842,49 @@ func (s *Service) CreateAPIKey(ctx context.Context, merchantID, name, requestID 
 }
 
 func (s *Service) ListAPIKeys(ctx context.Context, merchantID string) ([]APIKey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,key_prefix,created_at,last_used_at,revoked_at FROM api_keys
+	return listAPIKeys(ctx, s.pool, merchantID)
+}
+
+func (s *Service) ListAdminAPIKeys(ctx context.Context, merchantID, sessionToken string) ([]APIKey, error) {
+	return s.listProtectedAPIKeys(ctx, merchantID, sessionToken, "")
+}
+
+func (s *Service) ListAuthenticatedAPIKeys(ctx context.Context, merchantID, apiKey string) ([]APIKey, error) {
+	return s.listProtectedAPIKeys(ctx, merchantID, "", apiKey)
+}
+
+func (s *Service) listProtectedAPIKeys(ctx context.Context, merchantID, sessionToken, apiKey string) ([]APIKey, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if sessionToken != "" {
+		if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+			return nil, err
+		}
+	}
+	if apiKey != "" {
+		if err = s.lockAuthenticatedAPIKey(ctx, tx, merchantID, apiKey); err != nil {
+			return nil, err
+		}
+	}
+	result, err := listAPIKeys(ctx, tx, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+type apiKeyQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func listAPIKeys(ctx context.Context, queries apiKeyQuerier, merchantID string) ([]APIKey, error) {
+	rows, err := queries.Query(ctx, `SELECT id,name,key_prefix,created_at,last_used_at,revoked_at FROM api_keys
 		WHERE merchant_id=$1 ORDER BY created_at DESC`, merchantID)
 	if err != nil {
 		return nil, err
@@ -689,6 +902,18 @@ func (s *Service) ListAPIKeys(ctx context.Context, merchantID string) ([]APIKey,
 }
 
 func (s *Service) RevokeAPIKey(ctx context.Context, merchantID, keyID, requestID string) error {
+	return s.revokeAPIKey(ctx, merchantID, "", "", keyID, requestID)
+}
+
+func (s *Service) RevokeAdminAPIKey(ctx context.Context, merchantID, sessionToken, keyID, requestID string) error {
+	return s.revokeAPIKey(ctx, merchantID, sessionToken, "", keyID, requestID)
+}
+
+func (s *Service) RevokeAuthenticatedAPIKey(ctx context.Context, merchantID, apiKey, keyID, requestID string) error {
+	return s.revokeAPIKey(ctx, merchantID, "", apiKey, keyID, requestID)
+}
+
+func (s *Service) revokeAPIKey(ctx context.Context, merchantID, sessionToken, apiKey, keyID, requestID string) error {
 	if !validUUID(merchantID) || !validUUID(keyID) {
 		return ErrInvalid
 	}
@@ -697,6 +922,15 @@ func (s *Service) RevokeAPIKey(ctx context.Context, merchantID, keyID, requestID
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if sessionToken != "" {
+		if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+			return err
+		}
+	} else if apiKey != "" {
+		if err = s.lockAuthenticatedAPIKey(ctx, tx, merchantID, apiKey); err != nil {
+			return err
+		}
+	}
 	tag, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE id=$1 AND merchant_id=$2 AND revoked_at IS NULL`, keyID, merchantID)
 	if err != nil {
 		return err

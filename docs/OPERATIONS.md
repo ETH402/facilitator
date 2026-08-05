@@ -54,6 +54,7 @@ What `/metrics` actually publishes, and therefore what can be alerted on today:
 | `eth402_retention_last_tick_timestamp_seconds`, `eth402_retention_errors_total`, `eth402_retention_redacted_payments_total` | privacy-worker liveness, failures, and completed tombstones |
 | `eth402_email_outbox_pending`, `eth402_email_outbox_oldest_pending_age_seconds` | current mail backlog and its oldest age, without merchant/recipient labels |
 | `eth402_email_delivery_last_tick_timestamp_seconds`, `eth402_email_delivery_failures_total` | last successful outbox observation and SMTP/authenticated-decryption failures |
+| `eth402_recipient_pending_changes_total`, `eth402_recipient_active_changes_total` | low-cardinality recipient-change security events; pending changes have an example alert |
 
 Example rules are in `deploy/alerts.yml`.
 
@@ -82,8 +83,18 @@ remain unavailable until the registered recipient wallet elevates that session
 with a fresh SIWE signature. Session and wallet-authentication events are audit
 events; raw tokens and signatures must never be logged.
 
+Wallet-gated panel operations revalidate the current session proof inside the
+same database transaction as key, consent, statistics, and recipient mutations.
+API-key mutations and recipient-change operations likewise revalidate the key
+and active merchant status under the merchant lock. Middleware authentication is
+only early rejection; it is not the final authorization boundary. This ordering
+serializes recipient rotation or suspension with already-admitted requests.
+
 An email-verified but unactivated merchant may replace its pending recipient in
-the panel; monitor `recipient.pending_changed` as a mailbox-security signal.
+the panel; monitor `recipient.pending_changed` as a mailbox-security signal. The
+low-cardinality `eth402_recipient_pending_changes_total` counter and
+`MerchantPendingRecipientChanged` example rule surface it without putting
+merchant, email, or wallet identifiers in Prometheus labels.
 Active recipient changes require a wallet-elevated session and append
 `recipient.changed` plus recipient history. They invalidate wallet elevation in
 all other sessions by clearing their proof timestamps, while the initiating

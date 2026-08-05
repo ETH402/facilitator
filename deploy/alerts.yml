@@ -67,6 +67,21 @@ groups:
         annotations:
           summary: "Signer balance reads are failing"
 
+  - name: eth402-merchant-security
+    rules:
+      - alert: MerchantPendingRecipientChanged
+        expr: increase(eth402_recipient_pending_changes_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A pending merchant changed its recipient"
+          description: >-
+            This may be legitimate onboarding, but it is also the mailbox-takeover
+            signal documented in the threat model. Correlate the timestamp with
+            sanitized recipient.pending_changed audit events; never put a wallet,
+            email, or merchant identifier into metric labels.
+
   - name: eth402-liveness
     rules:
       - alert: SettlementWorkerStalled

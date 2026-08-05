@@ -120,6 +120,25 @@ func TestEmailDeliveryMetricsClampInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestRecipientChangeMetricsAreLowCardinality(t *testing.T) {
+	t.Parallel()
+	r := New()
+	r.ObserveRecipientChange(true)
+	r.ObserveRecipientChange(false)
+	body := scrape(t, r)
+	for _, want := range []string{
+		"eth402_recipient_pending_changes_total 1",
+		"eth402_recipient_active_changes_total 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "merchant_id=") || strings.Contains(body, "address=") {
+		t.Fatal("recipient metrics exposed a dynamic merchant or address label")
+	}
+}
+
 func TestWorkerHealthAbsentUntilAWorkerTicks(t *testing.T) {
 	// Settlement disabled means no workers. Zero would look like every worker had
 	// stalled, so nothing is published at all.

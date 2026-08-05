@@ -426,6 +426,9 @@ jobs:
             echo "release $RELEASE_TAG already exists; release identifiers are never overwritten" >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" release-assets/* \
-            --draft --verify-tag --generate-notes --title "$RELEASE_TAG"
+          release_args=(--draft --verify-tag --generate-notes --title "$RELEASE_TAG")
+          case "$RELEASE_TAG" in
+            *-*) release_args+=(--prerelease) ;;
+          esac
+          gh release create "$RELEASE_TAG" release-assets/* "${release_args[@]}"
           gh release edit "$RELEASE_TAG" --draft=false

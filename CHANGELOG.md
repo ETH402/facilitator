@@ -7,6 +7,31 @@ versioned where noted.
 
 ### Fixed
 
+- Wallet-gated merchant-panel operations and API-key-authenticated mutations now
+  revalidate the current proof, key, and merchant status under database locks in
+  the same transaction as protected work. Recipient rotation, suspension, or key
+  revocation can no longer race a request admitted against stale middleware
+  state and leave durable keys, consent, challenges, or recipient changes.
+
+- The merchant panel now clears one-time API keys on every signed-out transition,
+  reports failed logout without pretending the server session ended, handles
+  expired sessions centrally, prevents duplicate sensitive actions, distinguishes
+  pending activation from active-wallet unlock, and provides intentional empty
+  and non-active account states.
+
+- Public pages distinguish unavailable statistics and merchant-directory data
+  from real zero activity. Mobile navigation, keyboard tab semantics, visible
+  focus, reduced-motion behavior, responsive settings, accessible merchant links,
+  and a branded email-verification flow improve the first-party UI without adding
+  third-party assets or script.
+
+- Merchant admin OpenAPI operations now document the authentication, wallet
+  authorization, fair-use, validation, conflict, and not-found responses their
+  middleware and handlers can return.
+
+- Release-candidate tags now publish as GitHub prereleases while stable SemVer
+  tags continue to publish as ordinary releases.
+
 - `/supported` now advertises the configured facilitator transaction signer
   under the x402 v2 `eip155:*` CAIP-family key instead of always returning an
   empty signer map. Disabled settlement still returns an empty map. The
@@ -46,6 +71,10 @@ versioned where noted.
   retried response always reflects the true terminal outcome.
 
 ### Added
+
+- Low-cardinality pending and active recipient-change counters, plus a pending
+  change alert, expose the documented mailbox-takeover signal without placing
+  merchant, email, or wallet identifiers in Prometheus labels.
 
 - The merchant panel now lets an email-verified pending merchant replace an
   unverified recipient before activation, while requiring the newly selected

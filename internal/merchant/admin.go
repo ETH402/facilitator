@@ -86,6 +86,44 @@ func (s *Service) AuthenticateAdmin(ctx context.Context, token string) (AdminPri
 	return AdminPrincipal{Merchant: m, WalletAuthenticated: walletAuthenticated}, nil
 }
 
+// lockWalletAuthenticatedAdmin serializes a wallet-gated panel operation with
+// recipient rotation. Callers must keep the transaction open through the
+// protected read or write. Locking the merchant before its session matches the
+// order used by recipient changes, so a proof that was valid before a rotation
+// cannot authorize work that commits after the rotation.
+func (s *Service) lockWalletAuthenticatedAdmin(ctx context.Context, tx pgx.Tx, merchantID, sessionToken string) error {
+	if !validUUID(merchantID) || !strings.HasPrefix(sessionToken, adminSessionPrefix) || len(sessionToken) > 128 {
+		return ErrUnauthorized
+	}
+	var status string
+	var merchantWalletVerified *time.Time
+	if err := tx.QueryRow(ctx, `SELECT status,wallet_verified_at FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
+		Scan(&status, &merchantWalletVerified); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	var sessionWalletVerified *time.Time
+	var sessionExpires time.Time
+	err := tx.QueryRow(ctx, `SELECT wallet_verified_at,expires_at FROM merchant_admin_sessions
+		WHERE merchant_id=$1 AND token_hash=$2 AND revoked_at IS NULL FOR UPDATE`,
+		merchantID, secret.Hash(sessionToken)).Scan(&sessionWalletVerified, &sessionExpires)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	if !s.now().UTC().Before(sessionExpires) {
+		return ErrUnauthorized
+	}
+	if status != "active" || merchantWalletVerified == nil || sessionWalletVerified == nil ||
+		sessionWalletVerified.Before(*merchantWalletVerified) {
+		return ErrForbidden
+	}
+	return nil
+}
+
 func (s *Service) VerifyAdminWallet(ctx context.Context, merchantID, sessionToken, challengeID, message, signature, requestID string) error {
 	if !validUUID(merchantID) || !strings.HasPrefix(sessionToken, adminSessionPrefix) ||
 		!validUUID(challengeID) || len(message) == 0 || len(message) > 4096 || len(signature) != 132 {
@@ -139,7 +177,10 @@ func (s *Service) VerifyAdminWallet(ctx context.Context, merchantID, sessionToke
 		VALUES ('merchant.admin_wallet_authenticated',$1,'merchant',$2,$3)`, merchantID, merchantID, requestID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 // VerifyAdminRecipientChange atomically proves the new recipient, changes the
@@ -243,7 +284,13 @@ func (s *Service) VerifyAdminRecipientChange(ctx context.Context, merchantID, se
 		VALUES ('recipient.changed',$1,'merchant',$2,$3)`, merchantID, merchantID, requestID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	if s.recipientObserver != nil {
+		s.recipientObserver.ObserveRecipientChange(false)
+	}
+	return nil
 }
 
 func (s *Service) MarkAdminSessionWalletVerified(ctx context.Context, merchantID, sessionToken string) error {
@@ -273,6 +320,14 @@ func (s *Service) RevokeAdminSession(ctx context.Context, token string) error {
 }
 
 func (s *Service) SetStatsConsent(ctx context.Context, merchantID string, enabled bool, requestID string) (*time.Time, error) {
+	return s.setStatsConsent(ctx, merchantID, "", enabled, requestID)
+}
+
+func (s *Service) SetAdminStatsConsent(ctx context.Context, merchantID, sessionToken string, enabled bool, requestID string) (*time.Time, error) {
+	return s.setStatsConsent(ctx, merchantID, sessionToken, enabled, requestID)
+}
+
+func (s *Service) setStatsConsent(ctx context.Context, merchantID, sessionToken string, enabled bool, requestID string) (*time.Time, error) {
 	if !validUUID(merchantID) {
 		return nil, ErrInvalid
 	}
@@ -282,6 +337,11 @@ func (s *Service) SetStatsConsent(ctx context.Context, merchantID string, enable
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if sessionToken != "" {
+		if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+			return nil, err
+		}
+	}
 	var status string
 	var existing *time.Time
 	if err = tx.QueryRow(ctx, `SELECT status,stats_opted_in_at FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
@@ -317,6 +377,14 @@ func (s *Service) SetStatsConsent(ctx context.Context, merchantID string, enable
 }
 
 func (s *Service) SetPublicProfileConsent(ctx context.Context, merchantID string, enabled bool, requestID string) (*time.Time, error) {
+	return s.setPublicProfileConsent(ctx, merchantID, "", enabled, requestID)
+}
+
+func (s *Service) SetAdminPublicProfileConsent(ctx context.Context, merchantID, sessionToken string, enabled bool, requestID string) (*time.Time, error) {
+	return s.setPublicProfileConsent(ctx, merchantID, sessionToken, enabled, requestID)
+}
+
+func (s *Service) setPublicProfileConsent(ctx context.Context, merchantID, sessionToken string, enabled bool, requestID string) (*time.Time, error) {
 	if !validUUID(merchantID) {
 		return nil, ErrInvalid
 	}
@@ -326,6 +394,11 @@ func (s *Service) SetPublicProfileConsent(ctx context.Context, merchantID string
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if sessionToken != "" {
+		if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+			return nil, err
+		}
+	}
 	var status string
 	var existing *time.Time
 	if err = tx.QueryRow(ctx, `SELECT status,public_profile_opted_in_at FROM merchants WHERE id=$1 FOR UPDATE`, merchantID).
@@ -415,11 +488,38 @@ func (s *Service) invalidatePublicLeaderboard() {
 }
 
 func (s *Service) Stats(ctx context.Context, merchantID string) (MerchantStats, error) {
+	return s.stats(ctx, s.pool, merchantID)
+}
+
+func (s *Service) AdminStats(ctx context.Context, merchantID, sessionToken string) (MerchantStats, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return MerchantStats{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = s.lockWalletAuthenticatedAdmin(ctx, tx, merchantID, sessionToken); err != nil {
+		return MerchantStats{}, err
+	}
+	result, err := s.stats(ctx, tx, merchantID)
+	if err != nil {
+		return MerchantStats{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return MerchantStats{}, err
+	}
+	return result, nil
+}
+
+type statsQueryRower interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (s *Service) stats(ctx context.Context, queries statsQueryRower, merchantID string) (MerchantStats, error) {
 	if !validUUID(merchantID) {
 		return MerchantStats{}, ErrInvalid
 	}
 	var optedIn time.Time
-	err := s.pool.QueryRow(ctx, `SELECT stats_opted_in_at FROM merchants
+	err := queries.QueryRow(ctx, `SELECT stats_opted_in_at FROM merchants
 		WHERE id=$1 AND status='active' AND stats_opted_in_at IS NOT NULL`, merchantID).Scan(&optedIn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MerchantStats{}, ErrForbidden
@@ -434,7 +534,7 @@ func (s *Service) Stats(ctx context.Context, merchantID string) (MerchantStats, 
 	}
 	var result MerchantStats
 	result.ObservedSince = observedSince
-	err = s.pool.QueryRow(ctx, `SELECT
+	err = queries.QueryRow(ctx, `SELECT
 		count(*) FILTER (WHERE verification_status='verified'),
 		count(*) FILTER (WHERE state IN ('broadcasting','broadcast','confirming','replaced','manual_review')),
 		count(*) FILTER (WHERE state='confirmed'),

@@ -127,6 +127,11 @@ func testPool(t *testing.T) *pgxpool.Pool {
 // activate drives a merchant through registration, email proof, and recipient
 // proof, returning its identifier and the key controlling the recipient.
 func activate(t *testing.T, service *Service, sender *captureSender, address string, key *ecdsa.PrivateKey) string {
+	merchantID, _ := activateWithAPIKey(t, service, sender, address, key)
+	return merchantID
+}
+
+func activateWithAPIKey(t *testing.T, service *Service, sender *captureSender, address string, key *ecdsa.PrivateKey) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := service.Register(ctx, Registration{
@@ -150,11 +155,12 @@ func activate(t *testing.T, service *Service, sender *captureSender, address str
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.VerifyWallet(ctx, merchantID, challenge.ID, challenge.Message,
-		signMessage(t, challenge.Message, key), "verify-recipient", "request-4"); err != nil {
+	apiKey, err := service.VerifyWallet(ctx, merchantID, challenge.ID, challenge.Message,
+		signMessage(t, challenge.Message, key), "verify-recipient", "request-4")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return merchantID
+	return merchantID, apiKey
 }
 
 func elevatedAdminSession(t *testing.T, service *Service, sender *captureSender, emailAddress, merchantID string, key *ecdsa.PrivateKey) AdminSession {
@@ -376,6 +382,175 @@ func TestAdminRecipientChangeSerializesSessionsAndElevation(t *testing.T) {
 	}
 	if history != 2 {
 		t.Fatalf("concurrent recipient changes wrote %d history rows", history)
+	}
+}
+
+// TestAdminSensitiveOperationsRecheckRotatedSession pins the authorization
+// boundary below HTTP middleware. The first AuthenticateAdmin call models a
+// request admitted with the old recipient proof; rotating the recipient before
+// its service operation must still prevent every wallet-gated read and write.
+func TestAdminSensitiveOperationsRecheckRotatedSession(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sender := &captureSender{}
+	service := New(pool, sender, Config{
+		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
+		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: time.Hour,
+		AdminSessionTTL: time.Hour, RecipientCooldown: 0, PaymentRetention: 24 * time.Hour,
+		Pepper:         []byte("01234567890123456789012345678901"),
+		EmailOutboxKey: bytes.Repeat([]byte{0x42}, 32),
+	})
+	originalKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchantID := activate(t, service, sender, crypto.PubkeyToAddress(originalKey.PublicKey).Hex(), originalKey)
+	staleSession := elevatedAdminSession(t, service, sender, "cooldown@example.com", merchantID, originalKey)
+	changingSession := elevatedAdminSession(t, service, sender, "cooldown@example.com", merchantID, originalKey)
+	if principal, authErr := service.AuthenticateAdmin(ctx, staleSession.Token); authErr != nil || !principal.WalletAuthenticated {
+		t.Fatalf("pre-rotation middleware authentication failed: %+v %v", principal, authErr)
+	}
+	keys, err := service.ListAPIKeys(ctx, merchantID)
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("initial API key missing: %+v %v", keys, err)
+	}
+	if _, err = service.SetAdminStatsConsent(ctx, merchantID, staleSession.Token, true, "stats-before-rotation"); err != nil {
+		t.Fatal(err)
+	}
+
+	newKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := service.WalletChallenge(ctx, merchantID, crypto.PubkeyToAddress(newKey.PublicKey).Hex(), "change-recipient", "rotate-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.VerifyAdminRecipientChange(ctx, merchantID, changingSession.Token, challenge.ID,
+		challenge.Message, signMessage(t, challenge.Message, newKey), "rotate-recipient"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err = service.CreateAdminAPIKey(ctx, merchantID, staleSession.Token, "must-not-exist", "stale-create"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session created API key: %v", err)
+	}
+	if _, err = service.ListAdminAPIKeys(ctx, merchantID, staleSession.Token); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session listed API keys: %v", err)
+	}
+	if err = service.RevokeAdminAPIKey(ctx, merchantID, staleSession.Token, keys[0].ID, "stale-revoke"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session revoked API key: %v", err)
+	}
+	if _, err = service.SetAdminStatsConsent(ctx, merchantID, staleSession.Token, false, "stale-stats-consent"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session changed stats consent: %v", err)
+	}
+	if _, err = service.SetAdminPublicProfileConsent(ctx, merchantID, staleSession.Token, true, "stale-public-consent"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session changed public consent: %v", err)
+	}
+	if _, err = service.AdminStats(ctx, merchantID, staleSession.Token); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session read private stats: %v", err)
+	}
+	thirdKey, keyErr := crypto.GenerateKey()
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	if _, err = service.AdminWalletChallenge(ctx, merchantID, staleSession.Token,
+		crypto.PubkeyToAddress(thirdKey.PublicKey).Hex(), "change-recipient", "stale-challenge"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale session created recipient challenge: %v", err)
+	}
+
+	keys, err = service.ListAPIKeys(ctx, merchantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].RevokedAt != nil {
+		t.Fatalf("stale operations changed API keys: %+v", keys)
+	}
+}
+
+// TestAPIKeyOperationsRecheckSuspension models a bearer token accepted by HTTP
+// middleware immediately before an operator suspends the merchant. Protected
+// service work must observe the committed suspension, leave no durable writes,
+// and preserve the same key for an explicit later reinstatement.
+func TestAPIKeyOperationsRecheckSuspension(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sender := &captureSender{}
+	service := New(pool, sender, Config{
+		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
+		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: time.Hour,
+		AdminSessionTTL: time.Hour, RecipientCooldown: 0,
+		Pepper:         []byte("01234567890123456789012345678901"),
+		EmailOutboxKey: bytes.Repeat([]byte{0x42}, 32),
+	})
+	originalKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalAddress := crypto.PubkeyToAddress(originalKey.PublicKey).Hex()
+	merchantID, apiKey := activateWithAPIKey(t, service, sender, originalAddress, originalKey)
+	keys, err := service.ListAuthenticatedAPIKeys(ctx, merchantID, apiKey)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("initial authenticated keys = %+v %v", keys, err)
+	}
+	newRecipientKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRecipient := crypto.PubkeyToAddress(newRecipientKey.PublicKey).Hex()
+	challenge, err := service.AuthenticatedWalletChallenge(ctx, merchantID, apiKey, newRecipient,
+		"change-recipient", "before-suspension-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal, authErr := service.Authenticate(ctx, apiKey); authErr != nil || principal.ID != merchantID {
+		t.Fatalf("pre-suspension middleware authentication failed: %+v %v", principal, authErr)
+	}
+	if err = service.Suspend(ctx, merchantID, "security-review", "operator", false, "suspend"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err = service.CreateAuthenticatedAPIKey(ctx, merchantID, apiKey, "must-not-exist", "suspended-create"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("suspended merchant created API key: %v", err)
+	}
+	if _, err = service.ListAuthenticatedAPIKeys(ctx, merchantID, apiKey); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("suspended merchant listed API keys: %v", err)
+	}
+	if err = service.RevokeAuthenticatedAPIKey(ctx, merchantID, apiKey, keys[0].ID, "suspended-revoke"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("suspended merchant revoked API key: %v", err)
+	}
+	if _, err = service.AuthenticatedWalletChallenge(ctx, merchantID, apiKey, newRecipient,
+		"change-recipient", "suspended-challenge"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("suspended merchant created recipient challenge: %v", err)
+	}
+	if _, err = service.VerifyAuthenticatedWallet(ctx, merchantID, apiKey, challenge.ID, challenge.Message,
+		signMessage(t, challenge.Message, newRecipientKey), "change-recipient", "suspended-verify"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("suspended merchant changed recipient: %v", err)
+	}
+
+	var storedRecipient string
+	var consumedAt *time.Time
+	if err = pool.QueryRow(ctx, `SELECT recipient_address FROM merchants WHERE id=$1`, merchantID).Scan(&storedRecipient); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT consumed_at FROM wallet_verification_challenges WHERE id=$1`, challenge.ID).Scan(&consumedAt); err != nil {
+		t.Fatal(err)
+	}
+	allKeys, err := service.ListAPIKeys(ctx, merchantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(storedRecipient, originalAddress) || consumedAt != nil || len(allKeys) != 1 || allKeys[0].RevokedAt != nil {
+		t.Fatalf("suspended operations changed state: recipient=%s consumed=%v keys=%+v", storedRecipient, consumedAt, allKeys)
+	}
+
+	if err = service.Suspend(ctx, merchantID, "", "operator", true, "reinstate"); err != nil {
+		t.Fatal(err)
+	}
+	if principal, authErr := service.Authenticate(ctx, apiKey); authErr != nil || principal.ID != merchantID {
+		t.Fatalf("preserved API key did not work after reinstatement: %+v %v", principal, authErr)
+	}
+	if keys, err = service.ListAuthenticatedAPIKeys(ctx, merchantID, apiKey); err != nil || len(keys) != 1 {
+		t.Fatalf("reinstated authenticated keys = %+v %v", keys, err)
 	}
 }
 

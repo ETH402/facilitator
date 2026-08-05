@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -110,32 +111,26 @@ var verifyEmailPageTemplate = template.Must(template.New("verify-email").Parse(`
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETH402 email verification</title>
-<style>
-:root{color-scheme:light dark;--fg:#111;--muted:#666;--bg:#fff;--ok:#1a7f37;--bad:#cf222e}
-@media(prefers-color-scheme:dark){:root{--fg:#e6e6e6;--muted:#9aa0a6;--bg:#0d1117}}
-body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:2rem auto;max-width:36rem;padding:0 1rem;line-height:1.5}
-h1{font-size:1.25rem}p{color:var(--muted)}code{color:var(--fg)}
-.button{background:var(--fg);border:0;border-radius:.35rem;color:var(--bg);cursor:pointer;font:inherit;padding:.65rem 1rem}
-.link{display:inline-block;text-decoration:none}
-.ok{color:var(--ok)}.bad{color:var(--bad)}
-</style></head>
-<body><main>
+<link rel="stylesheet" href="/assets/site.css"></head>
+<body class="app-shell verify-page"><main class="verify-card app-card">
+<a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>ETH<span>402</span></span></a>
 {{if .Confirm}}
-<h1>Confirm your email</h1>
+<span class="overline">MERCHANT VERIFICATION</span><h1>Confirm your email</h1>
 <p>Select the button below to finish verifying your merchant email address.</p>
 <form method="post" action="/verify-email">
 <input type="hidden" name="token" value="{{.Token}}">
 <button class="button" type="submit">Verify email</button>
 </form>
 {{else if .Verified}}
-<h1 class="ok">Email verified</h1>
+<span class="verify-symbol ok" aria-hidden="true">✓</span><span class="overline">VERIFICATION COMPLETE</span><h1>Email verified</h1>
 <p>Your merchant email is confirmed. Merchant ID: <code>{{.MerchantID}}</code></p>
 <p>Next step: prove control of the recipient wallet in the merchant panel.</p>
-<a class="button link" href="/merchant">Continue to merchant panel</a>
+<a class="button" href="/merchant">Continue to merchant panel <span aria-hidden="true">→</span></a>
 {{else}}
-<h1 class="bad">Verification link invalid</h1>
+<span class="verify-symbol bad" aria-hidden="true">!</span><span class="overline">LINK UNAVAILABLE</span><h1>Verification link invalid</h1>
 <p>This link is invalid, was already used, or has expired. Register again with
 the same email address to receive a fresh verification link.</p>
+<a class="button button-secondary" href="/merchant">Return to merchant panel</a>
 {{end}}
 </main></body></html>
 `))
@@ -182,10 +177,10 @@ func renderVerifyEmailResult(w http.ResponseWriter, status int, result verifyEma
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
-	// Self-contained: the only permitted action is the same-origin confirmation
-	// form, and the token page loads no scripts, images, fonts, or remote styles.
+	// The only permitted action and asset are same-origin. The token page loads no
+	// scripts, images, fonts, or remote styles.
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'")
+		"default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.WriteHeader(status)
 	_ = verifyEmailPageTemplate.Execute(w, result)
 }
@@ -228,7 +223,7 @@ func (d Dependencies) verifyWallet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "active", "api_key": key})
 }
 
-type merchantHandler func(http.ResponseWriter, *http.Request, merchant.Merchant)
+type merchantHandler func(http.ResponseWriter, *http.Request, merchant.Merchant, string)
 
 func (d Dependencies) withMerchant(next merchantHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -237,20 +232,21 @@ func (d Dependencies) withMerchant(next merchantHandler) http.HandlerFunc {
 			writeMerchantError(w, r, merchant.ErrUnauthorized)
 			return
 		}
-		m, err := d.Merchant.Authenticate(r.Context(), strings.TrimPrefix(header, "Bearer "))
+		token := strings.TrimPrefix(header, "Bearer ")
+		m, err := d.Merchant.Authenticate(r.Context(), token)
 		if err != nil {
 			writeMerchantError(w, r, err)
 			return
 		}
-		next(w, r, m)
+		next(w, r, m, token)
 	}
 }
 
-func (d Dependencies) me(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
+func (d Dependencies) me(w http.ResponseWriter, r *http.Request, m merchant.Merchant, _ string) {
 	writeJSON(w, 200, m)
 }
 
-func (d Dependencies) createKey(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
+func (d Dependencies) createKey(w http.ResponseWriter, r *http.Request, m merchant.Merchant, token string) {
 	var in struct {
 		Name string `json:"name"`
 	}
@@ -258,7 +254,7 @@ func (d Dependencies) createKey(w http.ResponseWriter, r *http.Request, m mercha
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	k, raw, err := d.Merchant.CreateAPIKey(r.Context(), m.ID, in.Name, requestIDFrom(r.Context()))
+	k, raw, err := d.Merchant.CreateAuthenticatedAPIKey(r.Context(), m.ID, token, in.Name, requestIDFrom(r.Context()))
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
@@ -266,22 +262,22 @@ func (d Dependencies) createKey(w http.ResponseWriter, r *http.Request, m mercha
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 201, map[string]any{"key": k, "api_key": raw})
 }
-func (d Dependencies) listKeys(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
-	keys, err := d.Merchant.ListAPIKeys(r.Context(), m.ID)
+func (d Dependencies) listKeys(w http.ResponseWriter, r *http.Request, m merchant.Merchant, token string) {
+	keys, err := d.Merchant.ListAuthenticatedAPIKeys(r.Context(), m.ID, token)
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"keys": keys})
 }
-func (d Dependencies) revokeKey(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
-	if err := d.Merchant.RevokeAPIKey(r.Context(), m.ID, r.PathValue("id"), requestIDFrom(r.Context())); err != nil {
+func (d Dependencies) revokeKey(w http.ResponseWriter, r *http.Request, m merchant.Merchant, token string) {
+	if err := d.Merchant.RevokeAuthenticatedAPIKey(r.Context(), m.ID, token, r.PathValue("id"), requestIDFrom(r.Context())); err != nil {
 		writeMerchantError(w, r, err)
 		return
 	}
 	w.WriteHeader(204)
 }
-func (d Dependencies) recipientChallenge(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
+func (d Dependencies) recipientChallenge(w http.ResponseWriter, r *http.Request, m merchant.Merchant, token string) {
 	var in struct {
 		Address string `json:"new_address"`
 	}
@@ -289,14 +285,14 @@ func (d Dependencies) recipientChallenge(w http.ResponseWriter, r *http.Request,
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	c, err := d.Merchant.WalletChallenge(r.Context(), m.ID, in.Address, "change-recipient", requestIDFrom(r.Context()))
+	c, err := d.Merchant.AuthenticatedWalletChallenge(r.Context(), m.ID, token, in.Address, "change-recipient", requestIDFrom(r.Context()))
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
 	}
 	writeJSON(w, 201, c)
 }
-func (d Dependencies) recipientVerify(w http.ResponseWriter, r *http.Request, m merchant.Merchant) {
+func (d Dependencies) recipientVerify(w http.ResponseWriter, r *http.Request, m merchant.Merchant, token string) {
 	var in struct {
 		ChallengeID string `json:"challenge_id"`
 		Message     string `json:"message"`
@@ -306,7 +302,7 @@ func (d Dependencies) recipientVerify(w http.ResponseWriter, r *http.Request, m 
 		writeMerchantError(w, r, merchant.ErrInvalid)
 		return
 	}
-	_, err := d.Merchant.VerifyWallet(r.Context(), m.ID, in.ChallengeID, in.Message, in.Signature, "change-recipient", requestIDFrom(r.Context()))
+	_, err := d.Merchant.VerifyAuthenticatedWallet(r.Context(), m.ID, token, in.ChallengeID, in.Message, in.Signature, "change-recipient", requestIDFrom(r.Context()))
 	if err != nil {
 		writeMerchantError(w, r, err)
 		return
@@ -363,6 +359,11 @@ func writeMerchantError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, message = 409, "conflict", "request conflicts with current state"
 	case errors.Is(err, merchant.ErrThrottled):
 		status, code, message = 429, "rate_limited", "request is temporarily restricted"
+	}
+	if status == http.StatusInternalServerError {
+		slog.Default().ErrorContext(r.Context(), "merchant request failed",
+			"method", r.Method, "route", r.Pattern,
+			"request_id", requestIDFrom(r.Context()), "error", err)
 	}
 	writeError(w, status, code, message, requestIDFrom(r.Context()))
 }
