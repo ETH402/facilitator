@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.12.0
+  version: 0.13.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -744,7 +744,18 @@ components:
           maxItems: 0
         signers:
           type: object
-          maxProperties: 0
+          additionalProperties: false
+          maxProperties: 1
+          description: >-
+            Configured facilitator transaction signer grouped by CAIP family;
+            empty only when settlement is disabled. This signer pays gas and
+            does not sign payer authorizations or hold merchant USDC.
+          properties:
+            "eip155:*":
+              type: array
+              minItems: 1
+              maxItems: 1
+              items: { $ref: "#/components/schemas/EthereumAddress" }
     X402PaymentRequirements:
       type: object
       additionalProperties: false

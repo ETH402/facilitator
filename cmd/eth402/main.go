@@ -199,6 +199,7 @@ func main() {
 	// Settlement is wired only when a signer is enabled; with the signer
 	// disabled /settle reports settlement_unavailable and no workers run.
 	var settlementService *settlement.Service
+	var settlementSignerAddress string
 	if cfg.SignerMode != "disabled" {
 		var transactionSigner signer.Signer
 		switch cfg.SignerMode {
@@ -254,6 +255,7 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("settlement signer enabled", "address", signerAddress, "next_nonce", seeded)
+		settlementSignerAddress = signerAddress
 		settlementService = settlement.NewService(database, transactionSigner, rpc, settlement.Config{
 			SignerAddress: signerAddress, ExpiryMargin: cfg.SettlementExpiryMargin,
 			MerchantQuota: cfg.MerchantSettlementQuota, GlobalQuota: cfg.GlobalSettlementQuota, QuotaWindow: cfg.MerchantQuotaWindow,
@@ -313,8 +315,9 @@ func main() {
 		RegistrationRate: cfg.RegistrationRate, Merchant: merchantService,
 		AllowedOrigin: cfg.PublicBaseURL, OperatorToken: cfg.OperatorToken,
 		Verification: verificationService, Settlement: settlementService, MetricsEnabled: cfg.MetricsEnabled,
-		SettleResponseWait: cfg.SettleResponseWait,
-		TrustedProxies:     cfg.TrustedProxies,
+		SettlementSignerAddress: settlementSignerAddress,
+		SettleResponseWait:      cfg.SettleResponseWait,
+		TrustedProxies:          cfg.TrustedProxies,
 	})
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.Handler(),

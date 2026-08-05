@@ -197,11 +197,20 @@ func TestVerifyMapsConcurrentNonceConflictToReplay(t *testing.T) {
 }
 
 func TestSupportedIsNarrow(t *testing.T) {
-	response := Supported()
+	response := Supported("")
 	if len(response.Kinds) != 1 || response.Kinds[0].Network != config.MainnetNetwork ||
 		response.Kinds[0].Scheme != "exact" || len(response.Extensions) != 0 ||
 		len(response.Signers) != 0 {
 		t.Fatalf("unexpected supported response: %#v", response)
+	}
+}
+
+func TestSupportedAdvertisesConfiguredFacilitatorSigner(t *testing.T) {
+	const address = "0xc6927a70468bd4ea24ca4beb7ff433122b877383"
+	response := Supported(address)
+	if len(response.Signers) != 1 || len(response.Signers["eip155:*"]) != 1 ||
+		response.Signers["eip155:*"][0] != address {
+		t.Fatalf("unexpected supported signers: %#v", response.Signers)
 	}
 }
 

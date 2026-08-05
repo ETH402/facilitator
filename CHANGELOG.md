@@ -7,6 +7,11 @@ versioned where noted.
 
 ### Fixed
 
+- `/supported` now advertises the configured facilitator transaction signer
+  under the x402 v2 `eip155:*` CAIP-family key instead of always returning an
+  empty signer map. Disabled settlement still returns an empty map. The
+  additive response schema is documented in OpenAPI 0.13.0.
+
 - Payment-critical Ethereum reads now require concurrent agreement from both
   configured providers, report and alert on disagreement, bind receipts and
   transaction responses to the requested hashes/blocks, and compare every

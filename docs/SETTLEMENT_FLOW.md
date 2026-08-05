@@ -173,7 +173,9 @@ enforcement.
 
 The facilitator signer signs the outer Ethereum transaction and pays gas. It
 does not sign buyer authorization and never holds USDC. Merchant-specific
-signers are not required. Production is designed for the KMS-fronted policy
+signers are not required. When settlement is enabled, `/supported` advertises
+this facilitator transaction signer under the x402 EVM CAIP-family key
+`eip155:*`. Production is designed for the KMS-fronted policy
 signer (`ETH402_SIGNER_MODE=policy`): the boundary holds the KMS grant, builds
 the only permitted transaction from authorization fields, and returns a
 transaction the facilitator verifies before trusting. Direct KMS mode

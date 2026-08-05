@@ -93,7 +93,8 @@ Two people independently record the result of each check:
    signer balance, and the signer's pending nonce. Stop on any disagreement.
 4. Confirm `/health/ready`, `/supported`, `/status`, Prometheus scrape health,
    worker heartbeats, signer-balance freshness, and alert delivery. `/supported`
-   must advertise only v2/exact/`eip155:1`/native USDC/EIP-3009.
+   must advertise only v2/exact/`eip155:1`/native USDC/EIP-3009 and the expected
+   facilitator transaction signer under `signers["eip155:*"]`.
 5. Confirm there are no non-terminal or manual-review payments and no
    unreconciled signer nonces:
 

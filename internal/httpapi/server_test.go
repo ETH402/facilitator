@@ -431,17 +431,39 @@ func TestUserActivatedCrossOriginEmailVerificationPOSTRendersWithoutCORSGrant(t 
 
 func TestSupportedEndpoint(t *testing.T) {
 	t.Parallel()
-	recorder := httptest.NewRecorder()
-	testServer(nil, nil, 1).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/supported", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d", recorder.Code)
-	}
-	var response types.SupportedResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Kinds) != 1 || response.Kinds[0].Network != config.MainnetNetwork {
-		t.Fatalf("response = %#v", response)
+	const signerAddress = "0xc6927a70468bd4ea24ca4beb7ff433122b877383"
+	for _, test := range []struct {
+		name    string
+		signer  string
+		wantLen int
+	}{
+		{name: "settlement enabled", signer: signerAddress, wantLen: 1},
+		{name: "settlement disabled", wantLen: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server := New(Dependencies{
+				Logger: slog.Default(), Metrics: metrics.New(), PublicRatePerMinute: 100,
+				SettlementSignerAddress: test.signer,
+			})
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/supported", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d", recorder.Code)
+			}
+			var response types.SupportedResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Kinds) != 1 || response.Kinds[0].Network != config.MainnetNetwork {
+				t.Fatalf("response = %#v", response)
+			}
+			if len(response.Signers) != test.wantLen {
+				t.Fatalf("signers = %#v, want %d entries", response.Signers, test.wantLen)
+			}
+			if test.signer != "" && (len(response.Signers["eip155:*"]) != 1 || response.Signers["eip155:*"][0] != test.signer) {
+				t.Fatalf("signers = %#v", response.Signers)
+			}
+		})
 	}
 }
 
