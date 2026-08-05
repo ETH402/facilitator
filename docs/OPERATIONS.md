@@ -82,6 +82,14 @@ remain unavailable until the registered recipient wallet elevates that session
 with a fresh SIWE signature. Session and wallet-authentication events are audit
 events; raw tokens and signatures must never be logged.
 
+An email-verified but unactivated merchant may replace its pending recipient in
+the panel; monitor `recipient.pending_changed` as a mailbox-security signal.
+Active recipient changes require a wallet-elevated session and append
+`recipient.changed` plus recipient history. They invalidate wallet elevation in
+all other sessions by clearing their proof timestamps, while the initiating
+panel session remains elevated atomically. An API-key recipient change clears
+every panel-session proof.
+
 Merchant statistics are not the public `/stats` product. They are private,
 disabled by default, and bounded by both the consent timestamp and payment
 retention. Turning consent off takes effect immediately and does not change the

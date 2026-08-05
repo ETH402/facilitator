@@ -47,6 +47,14 @@ versioned where noted.
 
 ### Added
 
+- The merchant panel now lets an email-verified pending merchant replace an
+  unverified recipient before activation, while requiring the newly selected
+  wallet to sign and invalidating older challenges. Active merchants can change
+  recipients from Settings using a wallet-elevated session and a fresh proof by
+  the new wallet; the change, cooldown/history/audit records, and initiating
+  session elevation are committed atomically. OpenAPI 0.14.0 documents the new
+  panel request fields and recipient-change endpoints.
+
 - `/settle` now waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the
   settlement transaction to reach full confirmation depth
   (`ETH402_REQUIRED_CONFIRMATIONS`, default 12) before responding, matching the

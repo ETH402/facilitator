@@ -14,14 +14,17 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ETH402/facilitator/internal/email"
 	"github.com/ETH402/facilitator/internal/migrate"
+	"github.com/ETH402/facilitator/internal/secret"
 	"github.com/ETH402/facilitator/migrations"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	siwe "github.com/signinwithethereum/siwe-go"
 )
@@ -152,6 +155,389 @@ func activate(t *testing.T, service *Service, sender *captureSender, address str
 		t.Fatal(err)
 	}
 	return merchantID
+}
+
+func elevatedAdminSession(t *testing.T, service *Service, sender *captureSender, emailAddress, merchantID string, key *ecdsa.PrivateKey) AdminSession {
+	t.Helper()
+	ctx := context.Background()
+	if err := service.RequestAdminLink(ctx, emailAddress, "admin-link-"+strings.ReplaceAll(emailAddress, "@", "-")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DeliverPendingEmail(ctx); err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(strings.TrimPrefix(sender.message.TextBody, "Sign in to your ETH402 merchant panel: "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, session, err := service.VerifyEmailForAdmin(ctx, link.Query().Get("token"), "admin-email-verified")
+	if err != nil || id != merchantID {
+		t.Fatalf("admin email verification = %q %+v %v", id, session, err)
+	}
+	challenge, err := service.WalletChallenge(ctx, merchantID, "", "authenticate-admin", "admin-wallet-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.VerifyAdminWallet(ctx, merchantID, session.Token, challenge.ID, challenge.Message,
+		signMessage(t, challenge.Message, key), "admin-wallet-verified"); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func waitForChallengeLock(t *testing.T, pool *pgxpool.Pool, challengeID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tx, err := pool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		err = tx.QueryRow(context.Background(), `SELECT id FROM wallet_verification_challenges
+			WHERE id=$1 FOR UPDATE NOWAIT`, challengeID).Scan(&id)
+		_ = tx.Rollback(context.Background())
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("recipient change did not acquire its challenge lock")
+}
+
+func TestPendingRecipientReplacementRequiresCurrentWalletProof(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sender := &captureSender{}
+	service := New(pool, sender, Config{
+		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
+		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: time.Hour,
+		AdminSessionTTL: time.Hour,
+		Pepper:          []byte("01234567890123456789012345678901"),
+		EmailOutboxKey:  bytes.Repeat([]byte{0x42}, 32),
+	})
+	originalKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalAddress := crypto.PubkeyToAddress(originalKey.PublicKey).Hex()
+	if err = service.Register(ctx, Registration{Name: "Pending replacement", Email: "pending-replace@example.com",
+		Recipient: originalAddress, AcceptTerms: true}, "pending-register"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.DeliverPendingEmail(ctx); err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(strings.TrimPrefix(sender.message.TextBody, "Verify your email: "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchantID, err := service.VerifyEmail(ctx, link.Query().Get("token"), "pending-email")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := service.WalletChallenge(ctx, merchantID, "", "verify-recipient", "pending-old-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAddress := crypto.PubkeyToAddress(firstKey.PublicKey).Hex()
+	first, err := service.PendingRecipientChallenge(ctx, merchantID, firstAddress, "pending-first-replacement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAddress := crypto.PubkeyToAddress(secondKey.PublicKey).Hex()
+	second, err := service.PendingRecipientChallenge(ctx, merchantID, secondAddress, "pending-second-replacement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, attempt := range map[string]struct {
+		challenge Challenge
+		key       *ecdsa.PrivateKey
+	}{"original": {stale, originalKey}, "first replacement": {first, firstKey}} {
+		if _, verifyErr := service.VerifyWallet(ctx, merchantID, attempt.challenge.ID, attempt.challenge.Message,
+			signMessage(t, attempt.challenge.Message, attempt.key), "verify-recipient", "pending-stale-"+name); !errors.Is(verifyErr, ErrForbidden) {
+			t.Fatalf("%s challenge returned %v", name, verifyErr)
+		}
+	}
+	apiKey, err := service.VerifyWallet(ctx, merchantID, second.ID, second.Message,
+		signMessage(t, second.Message, secondKey), "verify-recipient", "pending-current")
+	if err != nil || apiKey == "" {
+		t.Fatalf("current replacement activation = %q %v", apiKey, err)
+	}
+	principal, err := service.Authenticate(ctx, apiKey)
+	if err != nil || !strings.EqualFold(principal.Recipient, secondAddress) || principal.Status != "active" {
+		t.Fatalf("activated replacement = %+v %v", principal, err)
+	}
+	var keys, history int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE merchant_id=$1`, merchantID).Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM recipient_address_history WHERE merchant_id=$1`, merchantID).Scan(&history); err != nil {
+		t.Fatal(err)
+	}
+	if keys != 1 || history != 1 {
+		t.Fatalf("activation artifacts keys=%d history=%d", keys, history)
+	}
+	if _, err = service.PendingRecipientChallenge(ctx, merchantID, originalAddress, "pending-after-active"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("active merchant replaced through pending flow: %v", err)
+	}
+	if _, err = service.PendingRecipientChallenge(ctx, merchantID, "0x0000000000000000000000000000000000000000", "pending-zero"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("zero recipient returned %v", err)
+	}
+}
+
+func TestAdminRecipientChangeSerializesSessionsAndElevation(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sender := &captureSender{}
+	service := New(pool, sender, Config{
+		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
+		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: time.Hour,
+		AdminSessionTTL: time.Hour, RecipientCooldown: 0,
+		Pepper:         []byte("01234567890123456789012345678901"),
+		EmailOutboxKey: bytes.Repeat([]byte{0x42}, 32),
+	})
+	originalKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchantID := activate(t, service, sender, crypto.PubkeyToAddress(originalKey.PublicKey).Hex(), originalKey)
+	sessionA := elevatedAdminSession(t, service, sender, "cooldown@example.com", merchantID, originalKey)
+	sessionB := elevatedAdminSession(t, service, sender, "cooldown@example.com", merchantID, originalKey)
+	keyA, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeA, err := service.WalletChallenge(ctx, merchantID, crypto.PubkeyToAddress(keyA.PublicKey).Hex(), "change-recipient", "change-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeB, err := service.WalletChallenge(ctx, merchantID, crypto.PubkeyToAddress(keyB.PublicKey).Hex(), "change-recipient", "change-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signatureA := signMessage(t, challengeA.Message, keyA)
+	signatureB := signMessage(t, challengeB.Message, keyB)
+	type result struct {
+		session AdminSession
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for _, attempt := range []struct {
+		session   AdminSession
+		challenge Challenge
+		signature string
+		requestID string
+	}{{sessionA, challengeA, signatureA, "verify-a"}, {sessionB, challengeB, signatureB, "verify-b"}} {
+		go func() {
+			<-start
+			results <- result{attempt.session, service.VerifyAdminRecipientChange(ctx, merchantID, attempt.session.Token,
+				attempt.challenge.ID, attempt.challenge.Message, attempt.signature, attempt.requestID)}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	var winner, loser result
+	if first.err == nil && errors.Is(second.err, ErrForbidden) {
+		winner, loser = first, second
+	} else if second.err == nil && errors.Is(first.err, ErrForbidden) {
+		winner, loser = second, first
+	} else {
+		t.Fatalf("concurrent recipient changes returned %v and %v", first.err, second.err)
+	}
+	winnerPrincipal, err := service.AuthenticateAdmin(ctx, winner.session.Token)
+	if err != nil || !winnerPrincipal.WalletAuthenticated {
+		t.Fatalf("winning session was not elevated: %+v %v", winnerPrincipal, err)
+	}
+	loserPrincipal, err := service.AuthenticateAdmin(ctx, loser.session.Token)
+	if err != nil || loserPrincipal.WalletAuthenticated {
+		t.Fatalf("losing session retained elevation: %+v %v", loserPrincipal, err)
+	}
+	var history int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM recipient_address_history WHERE merchant_id=$1`, merchantID).Scan(&history); err != nil {
+		t.Fatal(err)
+	}
+	if history != 2 {
+		t.Fatalf("concurrent recipient changes wrote %d history rows", history)
+	}
+}
+
+func TestAdminRecipientChangeUsesPostLockProofTime(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sender := &captureSender{}
+	service := New(pool, sender, Config{
+		BaseURL: "https://eth402.org", TermsVersion: "test-v1",
+		EmailTTL: time.Hour, Resend: time.Nanosecond, WalletTTL: time.Hour,
+		AdminSessionTTL: 2 * time.Hour, RecipientCooldown: 0,
+		Pepper:         []byte("01234567890123456789012345678901"),
+		EmailOutboxKey: bytes.Repeat([]byte{0x42}, 32),
+	})
+	originalKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchantID := activate(t, service, sender, crypto.PubkeyToAddress(originalKey.PublicKey).Hex(), originalKey)
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
+	service.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	changingSession := elevatedAdminSession(t, service, sender, "cooldown@example.com", merchantID, originalKey)
+	clock.Store(base.Add(time.Second).UnixNano())
+	otherSession := elevatedAdminSession(t, service, sender, "cooldown@example.com", merchantID, originalKey)
+	newKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := service.WalletChallenge(ctx, merchantID, crypto.PubkeyToAddress(newKey.PublicKey).Hex(), "change-recipient", "post-lock-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := signMessage(t, challenge.Message, newKey)
+
+	blocker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocker.Exec(ctx, `SELECT id FROM merchants WHERE id=$1 FOR UPDATE`, merchantID); err != nil {
+		_ = blocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- service.VerifyAdminRecipientChange(ctx, merchantID, changingSession.Token,
+			challenge.ID, challenge.Message, signature, "post-lock-verify")
+	}()
+	waitForChallengeLock(t, pool, challenge.ID)
+
+	// Simulate another browser proving the old wallet after this request began
+	// but before it acquired the merchant lock. The change proof must receive a
+	// strictly later timestamp so this other session becomes stale.
+	otherProof := base.Add(time.Minute)
+	if _, err = pool.Exec(ctx, `UPDATE merchant_admin_sessions SET wallet_verified_at=$3
+		WHERE merchant_id=$1 AND token_hash=$2`, merchantID, secret.Hash(otherSession.Token), otherProof); err != nil {
+		_ = blocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	clock.Store(base.Add(2 * time.Minute).UnixNano())
+	if err = blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-result; err != nil {
+		t.Fatalf("recipient change after lock wait: %v", err)
+	}
+	principal, err := service.AuthenticateAdmin(ctx, otherSession.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.WalletAuthenticated {
+		t.Fatal("old-recipient proof obtained during lock wait remained elevated")
+	}
+
+	// Expiry is also evaluated after acquiring the merchant/session locks. A
+	// request that waited past its challenge deadline must roll back without
+	// consuming the challenge.
+	expiredKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiring, err := service.WalletChallenge(ctx, merchantID, crypto.PubkeyToAddress(expiredKey.PublicKey).Hex(), "change-recipient", "expiring-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiringSignature := signMessage(t, expiring.Message, expiredKey)
+	blocker, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocker.Exec(ctx, `SELECT id FROM merchants WHERE id=$1 FOR UPDATE`, merchantID); err != nil {
+		_ = blocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	result = make(chan error, 1)
+	go func() {
+		result <- service.VerifyAdminRecipientChange(ctx, merchantID, changingSession.Token,
+			expiring.ID, expiring.Message, expiringSignature, "expired-after-lock")
+	}()
+	waitForChallengeLock(t, pool, expiring.ID)
+	clock.Store(expiring.ExpiresAt.Add(time.Second).UnixNano())
+	if err = blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-result; !errors.Is(err, ErrInvalid) {
+		t.Fatalf("challenge expiring during lock wait returned %v", err)
+	}
+	var consumedAt *time.Time
+	if err = pool.QueryRow(ctx, `SELECT consumed_at FROM wallet_verification_challenges WHERE id=$1`, expiring.ID).Scan(&consumedAt); err != nil {
+		t.Fatal(err)
+	}
+	if consumedAt != nil {
+		t.Fatal("expired challenge was consumed")
+	}
+
+	// The API-key recipient-change service path uses the same post-lock proof
+	// rule, even though it does not elevate an initiating browser session.
+	apiChangeKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiChange, err := service.WalletChallenge(ctx, merchantID, crypto.PubkeyToAddress(apiChangeKey.PublicKey).Hex(), "change-recipient", "api-post-lock-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiSignature := signMessage(t, apiChange.Message, apiChangeKey)
+	blocker, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocker.Exec(ctx, `SELECT id FROM merchants WHERE id=$1 FOR UPDATE`, merchantID); err != nil {
+		_ = blocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	apiResult := make(chan error, 1)
+	go func() {
+		_, verifyErr := service.VerifyWallet(ctx, merchantID, apiChange.ID, apiChange.Message,
+			apiSignature, "change-recipient", "api-post-lock-verify")
+		apiResult <- verifyErr
+	}()
+	waitForChallengeLock(t, pool, apiChange.ID)
+	proofBeforeAPIChange := apiChange.ExpiresAt.Add(-30 * time.Minute)
+	if _, err = pool.Exec(ctx, `UPDATE merchant_admin_sessions SET wallet_verified_at=$3
+		WHERE merchant_id=$1 AND token_hash=$2`, merchantID, secret.Hash(otherSession.Token), proofBeforeAPIChange); err != nil {
+		_ = blocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	clock.Store(proofBeforeAPIChange.Add(time.Minute).UnixNano())
+	if err = blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-apiResult; err != nil {
+		t.Fatalf("API recipient change after lock wait: %v", err)
+	}
+	principal, err = service.AuthenticateAdmin(ctx, otherSession.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.WalletAuthenticated {
+		t.Fatal("old-recipient proof remained elevated after API recipient change")
+	}
 }
 
 // TestRecipientCooldownIgnoresUnrelatedMerchantWrites pins the cooldown to the

@@ -69,6 +69,24 @@ func TestMerchantPanelIsSelfContainedAndPrivate(t *testing.T) {
 	}
 }
 
+func TestMerchantPanelSendsReplacementAddressOnlyWhilePending(t *testing.T) {
+	response := httptest.NewRecorder()
+	Dependencies{}.merchantPanelJS(response, httptest.NewRequest(http.MethodGet, "/merchant/app.js", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	script := response.Body.String()
+	for _, required := range []string{
+		"pending=merchant.status==='pending'",
+		"JSON.stringify(pending?{address:account}:{})",
+		"Connected wallet does not match the current recipient",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("merchant wallet flow omitted %q", required)
+		}
+	}
+}
+
 func TestMerchantAdminCookieIsHttpOnlyStrictAndSecure(t *testing.T) {
 	response := httptest.NewRecorder()
 	setMerchantAdminCookie(response, merchant.AdminSession{
