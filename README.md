@@ -10,9 +10,12 @@ signing boundary, and deployment operations. ETH402 exposes `/supported`,
 `/verify`, and — with a settlement signer enabled — `/settle` for exact
 EIP-3009 payments in native Ethereum-mainnet USDC. `/settle` requires a prior
 successful `/verify` for the same payment and broadcasts
-`transferWithAuthorization` once, returning the transaction hash; confirmation
-completes asynchronously at 12 confirmations by default, with a recovery worker
-reconciling ambiguous broadcasts, stuck pendings, nonce gaps, and reorgs.
+`transferWithAuthorization` once. After broadcast, the request waits for the
+configured confirmation depth (12 blocks by default) within a bounded response
+window. If that window elapses, it fails closed with
+`invalid_exact_evm_failed_to_get_receipt` and no transaction hash while a
+recovery worker continues reconciling confirmations, ambiguous broadcasts,
+stuck pendings, nonce gaps, and reorgs.
 Production is designed to use the KMS-fronted policy signer
 (`ETH402_SIGNER_MODE=policy`); direct GCP Cloud KMS access is also implemented,
 while disabled and raw-key modes cover safe defaults and local development.
@@ -22,10 +25,11 @@ EIP-3009 `transferWithAuthorization`; ETH402 never holds buyer or merchant
 USDC. The facilitator operator pays Ethereum gas, as required by the official
 exact-EVM scheme.
 
-The current build is not yet approved for public mainnet payment processing;
-independent review and the controlled funded dry run remain open. See the
-[public integration guide](docs/INTEGRATION.md) and
-[deployment status](docs/DEPLOYMENT.md).
+An independent review is recorded for the pre-release frozen target, and a
+signed immutable production deployment is live. The separately controlled
+first funded mainnet dry run has not yet been executed, so no successful
+real-USDC settlement is claimed. See the [public integration
+guide](docs/INTEGRATION.md) and [deployment status](docs/DEPLOYMENT.md).
 
 ## Scope
 

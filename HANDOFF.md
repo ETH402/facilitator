@@ -13,10 +13,15 @@ Last updated: 2026-08-05.
 ## Current status
 
 Milestones 0–4 are complete and the production service is live. Milestone 5's
-review gate is closed; the funded mainnet execution evidence is still pending:
+funded mainnet execution evidence is still pending:
 
-1. **Independent security review — done.** All findings were dispositioned and
-   the review updates are applied.
+1. **Independent security review — recorded.** John Doo of Pentest Company,
+   with no implementation or operations role, reported no unresolved
+   Critical/High findings and dispositioned all lower findings for commit
+   `5c30b799c6c5fa1c4f72f31c1a72823d038bae67` under signed report reference
+   `082026` on 2026-08-04. The later confirmation-wait and `/supported` deltas
+   passed the full release gates and adversarial agent review, but no separate
+   human delta disposition is claimed.
 2. **Controlled funded mainnet dry run — ready, not yet executed.** Signing is
    enabled in production, but no real USDC settlement has reached the required
    confirmation depth yet. Enabling the signer is a prerequisite, not evidence
@@ -25,22 +30,41 @@ review gate is closed; the funded mainnet execution evidence is still pending:
 Production is live and healthy:
 
 - Application host: `toufik@35.232.99.172`, Compose project `eth402prod`.
-- Running containers: app (`ghcr.io/eth402/facilitator:v0.1.0-rc.2`),
-  Caddy, PostgreSQL 17, Prometheus, Alertmanager. The policy signer is a
-  separate workload reached at `https://signer.eth402.org`.
+- Release `v0.1.0-rc.4`, source commit
+  `4a60841615d1864ed517e1f93aacdb20e70f2db5`, is signed and GitHub-verified.
+- App image:
+  `ghcr.io/eth402/facilitator@sha256:482a31427e4796a34d561d815db7aecdeaa58eab7cfa0e8cce0eb1c87a87af71`.
+- Policy-signer image:
+  `ghcr.io/eth402/policysigner@sha256:859af4e82401a65896c3621f98ff198d5f24b66be1c28bd041e9a6eabc39f3c5`.
+- Running services are app, Caddy, PostgreSQL 17, Prometheus, and Alertmanager.
+  The policy signer is a separate GCE workload reached at
+  `https://signer.eth402.org`.
 - `ETH402_SIGNER_MODE=policy`; `ETH402_ALLOW_UNSAFE_PRODUCTION_SIGNER=false`.
   Signing goes through the KMS-fronted policy-signer boundary; the
   facilitator holds no KMS grant.
 
+The rc4 rollout completed on 2026-08-05. Both workloads run the immutable
+digests above, `/supported` advertises the signer under `signers["eip155:*"]`,
+schema remains `000013_email_delivery_outbox`, and the signer nonce, payment
+count, and transaction count remain zero. Release evidence is stored read-only
+at `/opt/eth402/releases/v0.1.0-rc.4` on the application host. The verified
+pre-rc3 database backup is
+`/opt/eth402/backups/pre-rc3-20260805T0215Z.dump` with SHA-256
+`c9b223920d7177143ee8eccdc9d0f6867b070718d37f611a6fe2d07555ded10a`.
+
 ## Open follow-ups
 
-- **Deploy by digest, not tag.** Production currently runs the mutable tag
-  `v0.1.0-rc.2`; the release process (`docs/RELEASES.md`) requires
-  digest-pinned deployment tied to the reviewed source. Repin at the next
-  release.
-- **Stray foundry container on the production host** (`zealous_rubin`,
-  `ghcr.io/foundry-rs/foundry:stable`). A development tool that does not
-  belong in production; remove it unless it is serving a documented purpose.
+- **Fund and execute exactly one controlled mainnet dry run.** The KMS signer
+  address is `0xc6927a70468bd4ea24ca4beb7ff433122b877383`. At deployment verification it
+  held `600000000000000` wei (`0.0006 ETH`), below the `0.01 ETH`
+  `SignerBalanceLow` threshold. The payer must create the EIP-3009
+  authorization in its own wallet; never copy its private key to an ETH402
+  host, repository, log, or chat.
+- **Record the post-review delta decision.** The operator accepted the solo
+  maintainer model for the rc4 rollout. Before representing rc4 itself as
+  independently reviewed, obtain an explicit human disposition of commits
+  `2ab9526e70398f2dd1c4ef91a425046875d214ac` and
+  `4a60841615d1864ed517e1f93aacdb20e70f2db5`.
 
 The policy-signer bearer token exposed during inspection was rotated on
 2026-08-05. Secret Manager version 2 is active, version 1 is disabled, the old
@@ -99,11 +123,9 @@ commit; a previous green run is not transferable.
 
 ## Next actions
 
-1. Complete exactly one controlled funded mainnet settlement and retain the
-   evidence required by `docs/MAINNET_DRY_RUN.md`.
-2. Repin the production deployment to an immutable digest at the next release
-   (see Open follow-ups).
-3. Remove the stray foundry container from the production host.
-4. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
+1. Raise the bounded signer balance above the configured operational threshold,
+   then complete exactly one controlled funded mainnet settlement and retain
+   the evidence required by `docs/MAINNET_DRY_RUN.md`.
+2. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
    agreement in Prometheus/Alertmanager; follow `docs/RUNBOOKS.md` for
    settlement states.

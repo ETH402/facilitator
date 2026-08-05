@@ -1,16 +1,16 @@
 # Deployment
 
-The current build is not approved for mainnet payment processing.
-
-Before any first funded transaction, complete the
-[limited mainnet dry-run procedure](MAINNET_DRY_RUN.md). The procedure is
-currently blocked by the required independent security review, funded
-infrastructure, and operator approval.
+The production service is live on an immutable release for controlled
+operation. Before claiming successful mainnet payment processing or widening
+traffic, complete and preserve evidence for the first
+[limited mainnet dry run](MAINNET_DRY_RUN.md).
 
 The repository-owned [security-review packet](SECURITY_REVIEW.md) defines the
 frozen target, invariants, adversarial paths, evidence commands, and acceptance
 criteria. An independent reviewer must execute it; repository authors cannot
-approve their own payment-critical implementation.
+approve their own payment-critical implementation. The recorded review and any
+post-review deltas are identified in [Handoff](../HANDOFF.md); do not imply that
+review of one revision covers later code automatically.
 
 A production deployment should run the immutable application image
 behind Caddy or a managed TLS load balancer, use managed PostgreSQL with TLS

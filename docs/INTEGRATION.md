@@ -6,10 +6,11 @@ scheme, Ethereum mainnet (`eip155:1`), and native USDC using EIP-3009
 facilitator never takes custody of it; the facilitator operator pays the
 Ethereum gas.
 
-The current build is suitable for local and controlled test environments. It
-is **not yet approved for public mainnet payment processing** because the
-independent review and controlled funded dry run remain open. See
-[Deployment](DEPLOYMENT.md) before self-hosting.
+The production deployment is live for controlled operation. Its first funded
+mainnet dry run is still pending, so no successful real-USDC settlement is yet
+claimed. Operators must complete their own deployment and key-custody review
+and follow [Deployment](DEPLOYMENT.md) before self-hosting or accepting public
+payment traffic.
 
 The versioned wire contract is
 [`openapi/eth402.yaml`](../openapi/eth402.yaml). Treat it, rather than examples
