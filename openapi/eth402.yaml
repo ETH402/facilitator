@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ETH402 service API
-  version: 0.11.0
+  version: 0.12.0
   description: >-
     ETH402 merchant and operational APIs plus the standard x402 v2 facilitator
     verification and settlement surface. Merchant authentication is separate
@@ -57,14 +57,20 @@ paths:
         gated on the durable verification record, which is what binds the
         recipient to an active registered merchant (ADR-0004). The request
         shape is identical to /verify and is parsed by the same strict rules.
-        On success the facilitator has broadcast transferWithAuthorization and
-        returns its transaction hash; confirmation completes asynchronously
-        (12 confirmations by default). Calls never settle twice: a repeat
-        returns the recorded transaction hash once the broadcast is recorded,
-        and broadcast_failed while it is still in flight. Policy rejections
-        return HTTP 200 with success=false and a stable errorReason; a payment
-        /verify would have refused is rejected as invalid_request with the
-        specific verification reason in errorMessage.
+        Once the facilitator has broadcast transferWithAuthorization, the
+        response waits up to ETH402_SETTLE_RESPONSE_WAIT (180 seconds by
+        default) for the transaction to reach full confirmation depth (12
+        confirmations by default). Success means the payment reached that
+        finality depth. If the window elapses first, success=false carries
+        errorReason=confirmation_timed_out and the durable transaction hash
+        while confirmation continues asynchronously. A transaction confirmed
+        as reverted returns success=false with
+        errorReason=transaction_reverted and the transaction hash. Calls never settle twice: a repeat returns the
+        recorded outcome — the confirmed hash, transaction_reverted with the
+        reverted hash, or broadcast_failed while it is still in flight.
+        Policy rejections return HTTP 200 with success=false and a stable
+        errorReason; a payment /verify would have refused is rejected as
+        invalid_request with the specific verification reason in errorMessage.
       requestBody:
         required: true
         content:
@@ -828,13 +834,18 @@ components:
             - merchant_quota_exceeded
             - facilitator_quota_exceeded
             - simulation_reverted
+            - transaction_reverted
+            - confirmation_timed_out
             - broadcast_failed
             - settlement_unavailable
         errorMessage: { type: string }
         payer: { $ref: "#/components/schemas/EthereumAddress" }
         transaction:
           type: string
-          description: Broadcast transaction hash; empty when success is false.
+          description: >-
+            Settlement transaction hash. Empty when success is false, except
+            for transaction_reverted and confirmation_timed_out, which carry
+            the durable settlement hash.
           pattern: "^(0x[0-9a-f]{64})?$"
         network: { const: "eip155:1" }
         amount: { type: string, pattern: "^[0-9]+$" }

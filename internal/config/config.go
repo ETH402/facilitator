@@ -104,6 +104,12 @@ type Config struct {
 	// SettlementReplacementAfter is how long a broadcast may sit pending
 	// before recovery replaces it with a fee bump.
 	SettlementReplacementAfter time.Duration
+	// SettleResponseWait bounds how long /settle waits for its transaction to
+	// reach ETH402_REQUIRED_CONFIRMATIONS depth before responding. Within the
+	// window, success=true means the payment is final on chain; when the
+	// window elapses first, the response is confirmation_timed_out and durable
+	// confirmation tracking continues asynchronously.
+	SettleResponseWait time.Duration
 	// MerchantSettlementQuota bounds settlement intents per merchant per
 	// MerchantQuotaWindow. Quota × MaxGasLimit × MaxFeePerGasWei is the
 	// operator's worst-case gas exposure per merchant per window.
@@ -193,6 +199,7 @@ func Load() (Config, error) {
 		SettlementLeaseDuration:    l.duration("ETH402_SETTLEMENT_LEASE_DURATION", 2*time.Minute),
 		SettlementRecoveryGrace:    l.duration("ETH402_SETTLEMENT_RECOVERY_GRACE", 2*time.Minute),
 		SettlementReplacementAfter: l.duration("ETH402_SETTLEMENT_REPLACEMENT_AFTER", 5*time.Minute),
+		SettleResponseWait:         l.duration("ETH402_SETTLE_RESPONSE_WAIT", 3*time.Minute),
 		MerchantSettlementQuota:    l.int("ETH402_MERCHANT_SETTLEMENT_QUOTA", 1000),
 		GlobalSettlementQuota:      l.int("ETH402_GLOBAL_SETTLEMENT_QUOTA", 10_000),
 		MerchantQuotaWindow:        l.duration("ETH402_MERCHANT_QUOTA_WINDOW", 24*time.Hour),
@@ -279,8 +286,8 @@ func (c Config) Validate() error {
 	if c.SettlementExpiryMargin <= 0 || c.SigningTimeout <= 0 || c.SettlementLeaseDuration <= 0 {
 		errs = append(errs, errors.New("settlement expiry margin, signing timeout, and lease duration must be positive"))
 	}
-	if c.SettlementRecoveryGrace <= 0 || c.SettlementReplacementAfter <= 0 {
-		errs = append(errs, errors.New("settlement recovery grace and replacement delay must be positive"))
+	if c.SettlementRecoveryGrace <= 0 || c.SettlementReplacementAfter <= 0 || c.SettleResponseWait <= 0 {
+		errs = append(errs, errors.New("settlement recovery grace, replacement delay, and settle response wait must be positive"))
 	}
 	if len(c.APIKeyPepper) < 32 {
 		errs = append(errs, errors.New("API key pepper must be at least 32 bytes"))

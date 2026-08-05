@@ -137,20 +137,23 @@ func (settleFakeSigner) SignTransaction(_ context.Context, tx signer.Transaction
 	return signer.SignedTransaction{Raw: []byte("signed-raw-transaction")}, nil
 }
 
-type settleFakeChain struct{ txHash string }
+type settleFakeChain struct {
+	txHash    string
+	blockHash string
+}
 
 func (f settleFakeChain) SendRawTransaction(context.Context, string) (string, error) {
 	return f.txHash, nil
 }
 
 func (f settleFakeChain) TransactionReceipt(context.Context, string) (*ethereum.Receipt, error) {
-	return nil, nil
+	return &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: f.blockHash}, nil
 }
 
-func (f settleFakeChain) BlockNumber(context.Context) (uint64, error) { return 0, nil }
+func (f settleFakeChain) BlockNumber(context.Context) (uint64, error) { return 111, nil }
 
 func (f settleFakeChain) BlockByNumber(context.Context, *uint64) (*ethereum.Block, error) {
-	return &ethereum.Block{BaseFee: "1000000000"}, nil
+	return &ethereum.Block{Hash: f.blockHash, BaseFee: "1000000000"}, nil
 }
 
 func (f settleFakeChain) TransactionByHash(context.Context, string) (*ethereum.ChainTransaction, error) {
@@ -172,12 +175,14 @@ func settleTestService(txHash string) *settlement.Service {
 			Signature:   "0x" + strings.Repeat("11", 32) + strings.Repeat("22", 32) + "1b",
 		},
 	}
-	return settlement.NewService(settleFakeStore{work: work}, settleFakeSigner{}, settleFakeChain{txHash: txHash}, settlement.Config{
+	blockHash := "0x" + strings.Repeat("44", 32)
+	return settlement.NewService(settleFakeStore{work: work}, settleFakeSigner{}, settleFakeChain{txHash: txHash, blockHash: blockHash}, settlement.Config{
 		SignerAddress: "0x00000000000000000000000000000000000000b2",
 		ExpiryMargin:  time.Minute, SigningTimeout: 5 * time.Second,
 		MerchantQuota: 100, GlobalQuota: 10_000, QuotaWindow: 24 * time.Hour,
 		LeaseDuration: 2 * time.Minute, WorkerInterval: time.Second, Confirmations: 12,
 		GasLimit: 120000, MaxFeePerGas: "30000000000", MaxPriorityFeeGas: "2000000000",
+		ResponseWait: time.Second,
 	}, nil)
 }
 

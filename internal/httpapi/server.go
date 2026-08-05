@@ -55,6 +55,11 @@ type Dependencies struct {
 	Verification              *verification.Service
 	Settlement                *settlement.Service
 	MetricsEnabled            bool
+	// SettleResponseWait is how long the settle service may hold a response
+	// while waiting for on-chain confirmation. The handler extends the
+	// connection's write deadline past the server's global WriteTimeout so the
+	// long response is not cut off mid-wait. Zero disables the extension.
+	SettleResponseWait time.Duration
 	// TrustedProxies lists reverse proxies permitted to assert a client
 	// address through X-Forwarded-For. Empty means the direct peer is used.
 	TrustedProxies []netip.Prefix
@@ -147,6 +152,14 @@ func (d Dependencies) settle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Metrics.IncSettlement()
+	if d.SettleResponseWait > 0 {
+		// Settle may hold the response for the whole confirmation wait, well
+		// past the server's global WriteTimeout. Extend this connection's
+		// deadline; the margin covers writing the body after the wait ends.
+		// Writers that cannot take a deadline (test recorders) return an
+		// error, which is fine to ignore — production uses real connections.
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d.SettleResponseWait + 30*time.Second))
+	}
 	response, err := d.Settlement.Settle(r.Context(), request)
 	if err != nil {
 		d.Metrics.IncSettlementFailure()
@@ -298,6 +311,12 @@ type statusWriter struct {
 	http.ResponseWriter
 	status int
 }
+
+// Unwrap lets http.ResponseController reach the real connection through the
+// metrics wrapper. /settle relies on this to extend the write deadline for its
+// bounded confirmation wait; without it SetWriteDeadline returns
+// http.ErrNotSupported in production.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusWriter) WriteHeader(status int) {
 	w.status = status

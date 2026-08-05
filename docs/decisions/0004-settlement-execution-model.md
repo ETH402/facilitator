@@ -374,5 +374,32 @@ Resolved since:
   differing re-signature replacement-shaped (decision 4, migration `000006`).
   `TestCloudKMSSigHashStableAcrossSignatures` pins the property live.
 
+## Amendment: `/settle` waits for on-chain confirmation (2026-08)
+
+The original model answered `/settle` as soon as the broadcast was recorded,
+so `success=true` meant "broadcast", and a duplicate of a *reverted* payment
+also returned `success=true` with the reverted hash. The x402 v2 specification
+defines the SettleResponse's `success` as whether the payment settled, with the
+facilitator waiting for confirmation before responding.
+
+`/settle` now waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the
+broadcast transaction to reach `ETH402_REQUIRED_CONFIRMATIONS` depth before
+responding, applying the same canonical-block and depth rules as the
+confirmation worker but without writing state. A canonical receipt with
+`status=0` must reach the same depth before returning `success=false` with
+`errorReason=transaction_reverted` and the hash; a shallow failed receipt can
+still be removed by a reorg. A window that elapses without a final outcome
+returns `success=false`, `errorReason=confirmation_timed_out`, and the durable
+hash, with the confirmation worker still tracking. The HTTP handler and
+bundled reverse proxy allow the default wait to survive their write and
+upstream-read timeouts. Duplicates observe the recorded terminal outcome: the confirmed hash
+as a success, the reverted hash as `transaction_reverted` (the audit'd
+`duplicate` attempt row is unchanged).
+
+This changes no state machine, migration, or worker; it changes only what the
+HTTP response claims and when. The additive `transaction_reverted` and
+`confirmation_timed_out` enum values are documented in
+`openapi/eth402.yaml`.
+
 These configuration keys are deliberately **not** added ahead of the code that
 reads them, so that no documented option silently does nothing.

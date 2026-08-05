@@ -248,6 +248,44 @@ func TestCreateSettlementIntentReturnsTerminalHash(t *testing.T) {
 	if !retry.Duplicate || retry.TxHash != txHash || retry.TransactionID != first.TransactionID {
 		t.Fatalf("terminal retry = %+v", retry)
 	}
+	if retry.Reverted || !retry.Confirmed {
+		t.Fatalf("confirmed terminal retry has wrong outcome: %+v", retry)
+	}
+}
+
+func TestCreateSettlementIntentReturnsRevertedTerminalHash(t *testing.T) {
+	ctx := context.Background()
+	store := settlementTestStore(t)
+	identity := "pay_" + repeat("4", 64)
+	seedPayment(t, store, paymentFixture{identity: identity, state: "verified", registered: true})
+
+	first, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawHash := repeat("6", 64)
+	txHash := "0x" + rawHash
+	if err := store.MarkTxSigned(ctx, first.TransactionID, rawHash, repeat("7", 64),
+		120000, "30000000000", "2000000000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTxBroadcast(ctx, first.PaymentID, first.TransactionID, txHash, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTxReverted(ctx, first.PaymentID, first.TransactionID, 51000, "1000000000", "worker"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The duplicate must be told the terminal outcome was a revert, so the
+	// /settle response can report transaction_reverted with the same hash
+	// instead of a false success.
+	retry, err := store.CreateSettlementIntent(ctx, intentRequest(identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Duplicate || !retry.Reverted || retry.Confirmed || retry.TxHash != txHash {
+		t.Fatalf("reverted terminal retry = %+v", retry)
+	}
 }
 
 func TestCreateSettlementIntentRejectsUnregisteredRecipient(t *testing.T) {

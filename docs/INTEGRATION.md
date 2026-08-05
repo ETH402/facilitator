@@ -196,8 +196,13 @@ curl --fail-with-body \
 ```
 
 Continue only when the response has `"success": true` and a non-empty
-`transaction`. This means the transaction was broadcast, not finalized.
-Confirmation proceeds asynchronously and defaults to 12 confirmations.
+`transaction`. `/settle` waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m)
+for the transaction to reach full confirmation depth (12 confirmations by
+default). `success: true` therefore means the payment is final at that depth.
+If the window elapses first, `success: false` carries
+`confirmation_timed_out` and the durable transaction hash while confirmation
+continues asynchronously; a transaction confirmed as reverted returns
+`success: false` with `transaction_reverted` and the hash.
 Repeating the same verified payment is idempotent and returns the recorded
 transaction hash; never create a replacement payment merely because the HTTP
 client timed out.
@@ -213,6 +218,8 @@ A policy refusal uses HTTP `200`, `"success": false`, and a stable
 | `merchant_quota_exceeded` | Wait for the merchant quota window; do not retry in a loop. |
 | `facilitator_quota_exceeded` | Wait for operator capacity to reset or use another explicitly trusted facilitator. |
 | `simulation_reverted` | Treat the authorization as unsafe to broadcast and investigate its on-chain state. |
+| `transaction_reverted` | The broadcast transaction reverted on chain; inspect the returned hash. Do not retry the same authorization — its nonce may be consumed. |
+| `confirmation_timed_out` | Retry the identical payment to observe its durable outcome. Do not create a new authorization while the returned transaction remains unresolved. |
 | `broadcast_failed` | Query/retry the same payment; do not generate a second authorization until its state is known. |
 | `settlement_unavailable` | Stop automatic settlement and alert the operator. |
 

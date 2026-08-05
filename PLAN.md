@@ -173,11 +173,14 @@ Milestone 4 is complete.
       merchant activation, the verify/settle lifecycle, stable failure handling,
       security invariants, and the self-hosting gate; README and OpenAPI identify
       the implementation status and exact public contract
-- [x] limited mainnet dry runs — executed per the bounded procedure, abort
-      conditions, and evidence checklist in `docs/MAINNET_DRY_RUN.md`
+- [ ] limited mainnet dry runs — signing is enabled and the bounded procedure,
+      abort conditions, and evidence checklist are ready in
+      `docs/MAINNET_DRY_RUN.md`; no funded settlement has yet reached the
+      required confirmation depth
 - [x] independent security review — completed by a third party against the
       frozen target; all findings dispositioned and applied. `SECURITY.md`
       scopes reports and `docs/SECURITY_REVIEW.md` records the handoff,
       invariants, adversarial paths, evidence commands, and exit criteria
 
-Milestone 5 is complete. Production runs with `ETH402_SIGNER_MODE=policy`.
+Production runs with `ETH402_SIGNER_MODE=policy`; Milestone 5 completes after
+the controlled funded settlement evidence is captured.

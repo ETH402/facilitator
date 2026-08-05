@@ -27,6 +27,16 @@ const (
 	WireReasonGlobalQuotaExceeded   = ReasonGlobalQuotaExceeded
 	WireReasonSimulationReverted    = ReasonSimulationReverted
 
+	// WireReasonTransactionReverted means the settlement transaction was
+	// broadcast but executed with a revert on chain. The transaction hash is
+	// included in the response so the caller can inspect the failure.
+	WireReasonTransactionReverted = "transaction_reverted"
+
+	// WireReasonConfirmationTimedOut means the transaction was broadcast but
+	// did not reach the configured confirmation depth before the HTTP response
+	// deadline. The hash is included and the durable worker keeps tracking it.
+	WireReasonConfirmationTimedOut = "confirmation_timed_out"
+
 	// WireReasonSettlementUnavailable means the facilitator could not complete
 	// the request itself (database, signer, or RPC unavailable). Retrying is
 	// safe: settlement is idempotent per payment.

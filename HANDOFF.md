@@ -12,12 +12,15 @@ Last updated: 2026-08-05.
 
 ## Current status
 
-All milestones (0–5) are complete. Both Milestone 5 external gates are closed:
+Milestones 0–4 are complete and the production service is live. Milestone 5's
+review gate is closed; the funded mainnet execution evidence is still pending:
 
 1. **Independent security review — done.** All findings were dispositioned and
    the review updates are applied.
-2. **Controlled funded mainnet dry run — done.** Signing is enabled in
-   production.
+2. **Controlled funded mainnet dry run — ready, not yet executed.** Signing is
+   enabled in production, but no real USDC settlement has reached the required
+   confirmation depth yet. Enabling the signer is a prerequisite, not evidence
+   that the dry run completed.
 
 Production is live and healthy:
 
@@ -93,10 +96,12 @@ commit; a previous green run is not transferable.
 
 ## Next actions
 
-1. Repin the production deployment to an immutable digest at the next release
+1. Complete exactly one controlled funded mainnet settlement and retain the
+   evidence required by `docs/MAINNET_DRY_RUN.md`.
+2. Repin the production deployment to an immutable digest at the next release
    (see Open follow-ups).
-2. Remove the stray foundry container from the production host.
-3. Rotate the policy-signer bearer token.
-4. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
+3. Remove the stray foundry container from the production host.
+4. Rotate the policy-signer bearer token.
+5. Operate: watch signer balance/burn-rate alerts, worker liveness, and RPC
    agreement in Prometheus/Alertmanager; follow `docs/RUNBOOKS.md` for
    settlement states.

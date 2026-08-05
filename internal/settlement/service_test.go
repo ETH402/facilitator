@@ -282,6 +282,9 @@ func testConfig() Config {
 		MaxPriorityFeeGas: "2000000000",
 		RecoveryGrace:     2 * time.Minute,
 		ReplacementAfter:  5 * time.Minute,
+		// Tiny so tests exercise the wait's timeout fallback without stalling;
+		// wait-specific tests override it via the chain fake's receipts.
+		ResponseWait: 50 * time.Millisecond,
 	}
 }
 
@@ -617,7 +620,11 @@ func TestSettleBroadcastsInline(t *testing.T) {
 		work:   work,
 		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
 	}
-	chain := fakeChain{txHash: "0x" + keccakHex(raw)}
+	blockHash := "0x" + strings.Repeat("aa", 32)
+	chain := fakeChain{
+		txHash: "0x" + keccakHex(raw), block: 111, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: blockHash},
+	}
 	service := newTestService(store, fakeSigner{raw: raw}, chain)
 	response, err := service.Settle(context.Background(), settleRequest())
 	if err != nil {
@@ -635,7 +642,7 @@ func TestSettleReturnsTerminalHashIdempotently(t *testing.T) {
 	txHash := "0x" + strings.Repeat("dd", 32)
 	store := &fakeStore{intent: Intent{
 		PaymentID: "payment-1", TransactionID: "tx-1",
-		TxHash: txHash, Duplicate: true,
+		TxHash: txHash, Duplicate: true, Confirmed: true,
 	}}
 	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{
 		sendErr: errors.New("must not broadcast"),
@@ -646,6 +653,135 @@ func TestSettleReturnsTerminalHashIdempotently(t *testing.T) {
 	}
 	if !response.Success || response.Transaction != txHash {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestSettleReportsConfirmedTransaction(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	// Receipt at exactly the required depth: block 111 - 100 + 1 = 12. The
+	// fake's BlockByNumber ignores its argument, so the canonical hash is the
+	// one the receipt carries.
+	blockHash := "0x" + strings.Repeat("cc", 32)
+	chain := fakeChain{
+		txHash: txHash, block: 111, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 1, BlockNumber: 100, BlockHash: blockHash},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if !response.Success || response.Transaction != txHash {
+		t.Fatalf("response = %+v", response)
+	}
+	if elapsed := time.Since(start); elapsed > testConfig().ResponseWait {
+		t.Fatalf("confirmed transaction took %v; the wait should return immediately", elapsed)
+	}
+}
+
+func TestSettleReportsFinalizedRevertedTransaction(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	// A reverted receipt at exactly the configured depth is a final failure.
+	blockHash := "0x" + strings.Repeat("bb", 32)
+	chain := fakeChain{
+		txHash: txHash, block: 111, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 0, BlockNumber: 100, BlockHash: blockHash},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonTransactionReverted {
+		t.Fatalf("response = %+v", response)
+	}
+	if response.Transaction != txHash {
+		t.Fatalf("response = %+v, want the reverted hash", response)
+	}
+	if elapsed := time.Since(start); elapsed > testConfig().ResponseWait {
+		t.Fatalf("finalized reverted transaction took %v; response should be immediate", elapsed)
+	}
+}
+
+func TestSettleReportsConfirmationTimeout(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	// No receipt at all: the wait outlives ResponseWait and must not claim the
+	// payment settled. The durable hash lets the caller retry idempotently.
+	service := newTestService(store, fakeSigner{raw: raw}, fakeChain{txHash: txHash})
+	start := time.Now()
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonConfirmationTimedOut || response.Transaction != txHash {
+		t.Fatalf("response = %+v", response)
+	}
+	if elapsed := time.Since(start); elapsed < testConfig().ResponseWait {
+		t.Fatalf("unmined transaction answered in %v, before the wait elapsed", elapsed)
+	}
+}
+
+func TestSettleDoesNotFinalizeShallowRevert(t *testing.T) {
+	raw := []byte("raw-tx")
+	txHash := "0x" + keccakHex(raw)
+	work := pendingWork()
+	store := &fakeStore{
+		work:   work,
+		intent: Intent{PaymentID: work.PaymentID, PaymentIdentity: work.PaymentIdentity, TransactionID: work.TransactionID},
+	}
+	blockHash := "0x" + strings.Repeat("bb", 32)
+	chain := fakeChain{
+		txHash: txHash, block: 100, blockHash: blockHash,
+		receipt: &ethereum.Receipt{Status: 0, BlockNumber: 100, BlockHash: blockHash},
+	}
+	service := newTestService(store, fakeSigner{raw: raw}, chain)
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonConfirmationTimedOut || response.Transaction != txHash {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestSettleDuplicateRevertedReturnsFailure(t *testing.T) {
+	txHash := "0x" + strings.Repeat("ee", 32)
+	store := &fakeStore{intent: Intent{
+		PaymentID: "payment-1", TransactionID: "tx-1",
+		TxHash: txHash, Duplicate: true, Reverted: true,
+	}}
+	service := newTestService(store, fakeSigner{err: errors.New("must not sign")}, fakeChain{
+		sendErr: errors.New("must not broadcast"),
+	})
+	response, err := service.Settle(context.Background(), settleRequest())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if response.Success || response.ErrorReason != WireReasonTransactionReverted {
+		t.Fatalf("response = %+v", response)
+	}
+	if response.Transaction != txHash {
+		t.Fatalf("response = %+v, want the reverted hash", response)
 	}
 }
 

@@ -61,10 +61,12 @@ FOR UPDATE`, request.PaymentIdentity).Scan(&paymentID, &state, &merchantID, &val
 		return settlement.Intent{}, err
 	}
 
-	// A successful /settle response means the transaction was broadcast, not
-	// that it was already final. Preserve that response after asynchronous
-	// confirmation or reversion: callers retrying a lost response must observe
-	// the same hash rather than a misleading payment_not_verified rejection.
+	// A duplicate /settle must observe the terminal outcome, not a fresh
+	// attempt: confirmed payments return the recorded hash as a success,
+	// reverted payments return the same hash as transaction_reverted. Callers
+	// retrying a lost response therefore always see the true outcome rather
+	// than a misleading payment_not_verified rejection — or a success for a
+	// transaction that reverted.
 	if state == string(settlement.StateConfirmed) || state == string(settlement.StateReverted) {
 		var terminalID, terminalNonce, terminalSigner, terminalHash string
 		err = tx.QueryRow(ctx, `
@@ -93,6 +95,8 @@ VALUES ($1,$2,'duplicate')`, paymentID, request.PaymentIdentity); err != nil {
 				PaymentID: paymentID, PaymentIdentity: request.PaymentIdentity,
 				TransactionID: terminalID, SignerAddress: terminalSigner,
 				Nonce: nonce, TxHash: terminalHash, Duplicate: true,
+				Reverted:  state == string(settlement.StateReverted),
+				Confirmed: state == string(settlement.StateConfirmed),
 			}, nil
 		}
 	}

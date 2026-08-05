@@ -35,7 +35,23 @@ versioned where noted.
   `www.eth402.org`, redirects duplicate pages away from `api.eth402.org`, and
   keeps merchant authentication and machine APIs isolated on the API origin.
 
+- A duplicate `/settle` for a payment whose transaction reverted on chain no
+  longer reports `success=true` with the reverted hash; it now returns
+  `success=false` with `errorReason=transaction_reverted` and the hash, so a
+  retried response always reflects the true terminal outcome.
+
 ### Added
+
+- `/settle` now waits up to `ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the
+  settlement transaction to reach full confirmation depth
+  (`ETH402_REQUIRED_CONFIRMATIONS`, default 12) before responding, matching the
+  x402 v2 SettleResponse semantics: `success=true` means the payment reached
+  the configured finality depth, a confirmed revert returns
+  `transaction_reverted` with the hash, and an elapsed window returns
+  `confirmation_timed_out` with the hash while the confirmation worker keeps
+  tracking. The HTTP handler and bundled Caddy configuration allow the default
+  confirmation window to complete. The additive errorReason enum values and
+  behavior are documented in OpenAPI 0.12.0; see the ADR-0004 amendment.
 
 - Reproducible SSH/Docker production manifests and an explicit PostgreSQL
   owner/migration/runtime role model with authoritative least-privilege grants,

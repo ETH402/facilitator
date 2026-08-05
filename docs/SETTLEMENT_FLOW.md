@@ -65,12 +65,21 @@ payment lease and runs the pipeline inline — build the
 `transferWithAuthorization` calldata from the durable record, sign under
 `ETH402_SIGNING_TIMEOUT`, record the signed-transaction hash, broadcast once
 against the primary RPC, require its returned hash to equal the locally derived
-keccak of the signed bytes, record that local hash — and returns the official
-`SettleResponse` with the hash. A mismatched acknowledgement is treated like an
+keccak of the signed bytes, record that local hash. A mismatched acknowledgement
+is treated like an
 unknown send outcome and reconciled under the local hash rather than allowing
-provider-controlled identity into durable state. A duplicate call for an already-broadcast
-payment returns the recorded hash, including after it becomes terminally
-`confirmed` or `reverted`. If the inline attempt cannot finish (signer
+provider-controlled identity into durable state. The response then waits up to
+`ETH402_SETTLE_RESPONSE_WAIT` (default 3m) for the transaction's on-chain
+outcome: a canonical receipt reaching `ETH402_REQUIRED_CONFIRMATIONS` depth
+means the official `SettleResponse` reports a final, settled payment; a receipt
+with `status=0` at the same depth returns `success=false` with
+`errorReason=transaction_reverted` and the hash. A window that elapses without
+either returns `success=false`, `errorReason=confirmation_timed_out`, and the
+durable hash while the confirmation worker keeps tracking. The HTTP handler
+and reverse proxy allow the default wait to pass their write and upstream-read
+timeouts. A duplicate call for an already-broadcast
+payment observes the recorded outcome: the confirmed hash as a success, the
+reverted hash as `transaction_reverted`. If the inline attempt cannot finish (signer
 or RPC failure), the durable intent remains and the broadcast worker retries it
 on `ETH402_WORKER_INTERVAL`; a send whose outcome is unknown becomes
 `ambiguous` and moves the payment to `manual_review` for recovery — never a

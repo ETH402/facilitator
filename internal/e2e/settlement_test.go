@@ -267,6 +267,9 @@ func TestFacilitatorMovesRealUSDC(t *testing.T) {
 		Confirmations: 1, GasLimit: 250_000,
 		MaxFeePerGas: "500000000000", MaxPriorityFeeGas: "2000000000",
 		RecoveryGrace: 2 * time.Minute, ReplacementAfter: 5 * time.Minute,
+		// Anvil auto-mines, so the confirmation wait returns as soon as the
+		// transaction is mined at the configured depth of 1.
+		ResponseWait:  30 * time.Second,
 		MerchantQuota: 100, GlobalQuota: 10_000, QuotaWindow: 24 * time.Hour,
 	}, logger)
 	api := httpapi.New(httpapi.Dependencies{
