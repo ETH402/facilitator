@@ -88,3 +88,20 @@ func TestLandingPresentsTruthfulStatusAndOpenSourceEvidence(t *testing.T) {
 		t.Fatal("landing page claimed an operational network without available stats")
 	}
 }
+
+func TestSiteCSSKeepsHeadlineAndSmallTextReadable(t *testing.T) {
+	t.Parallel()
+	for _, required := range []string{
+		".hero h1 span{color:#82a8ff",
+		".metric-kicker,.metric-grid small{display:block;color:#8b9bb8",
+		".field input::placeholder,.field textarea::placeholder,.key-form input::placeholder{color:#8496b8",
+		"@media(prefers-contrast:more)",
+	} {
+		if !strings.Contains(siteCSSContent, required) {
+			t.Fatalf("site stylesheet omitted contrast safeguard %q", required)
+		}
+	}
+	if strings.Contains(siteCSSContent, "-webkit-text-stroke:1px #4778df") {
+		t.Fatal("hero headline still relies on a low-perceived-contrast outline")
+	}
+}
