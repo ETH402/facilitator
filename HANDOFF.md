@@ -1,6 +1,6 @@
 # Handoff
 
-Last updated: 2026-08-05.
+Last updated: 2026-08-07.
 
 ## Read first
 
@@ -30,10 +30,10 @@ funded mainnet execution evidence is still pending:
 Production is live and healthy:
 
 - Application host: `toufik@35.232.99.172`, Compose project `eth402prod`.
-- Facilitator release `v0.1.0-rc.5`, source commit
-  `71e03a9c0084005dff33b3a14445e32dba01100e`, is signed and GitHub-verified.
+- Facilitator release `v0.1.0-rc.6`, source commit
+  `03eaeb900f73776dea735b08d0f6c57989bff483`, is signed and GitHub-verified.
 - App image:
-  `ghcr.io/eth402/facilitator@sha256:80cbeb69c6aaa88a5351d5e2741c0d42396fe93608bdcec3c883d79f09534e44`.
+  `ghcr.io/eth402/facilitator@sha256:71d7f88289b19ec5393657a84d1509e58ebc18f4ab88d75879ae468f28384abe`.
 - Policy-signer image:
   `ghcr.io/eth402/policysigner@sha256:859af4e82401a65896c3621f98ff198d5f24b66be1c28bd041e9a6eabc39f3c5`.
 - Running services are app, Caddy, PostgreSQL 17, Prometheus, and Alertmanager.
@@ -43,15 +43,21 @@ Production is live and healthy:
   Signing goes through the KMS-fronted policy-signer boundary; the
   facilitator holds no KMS grant.
 
-The app-only rc5 rollout completed on 2026-08-05. It adds pending and active
-self-service recipient replacement to the merchant panel. The facilitator runs
-the immutable rc5 digest above; the unchanged policy signer remains on its rc4
-digest. `/supported` advertises the signer under `signers["eip155:*"]`, schema
-remains `000013_email_delivery_outbox`, and payment and transaction counts
-remain zero. Release evidence is stored read-only at
-`/opt/eth402/releases/v0.1.0-rc.5` on the application host. The pre-rc5 backup is
-`/opt/eth402/backups/eth402-20260805T195524Z.dump.gz` with SHA-256
-`0dca99ff59e456011dbef04495788ea9da509ae80482755b255d07ee205a39a7`.
+The app-only rc6 rollout completed on 2026-08-07. It transactionally revalidates
+wallet sessions and API keys at every protected mutation, closes recipient and
+suspension races, preserves one-time keys until acknowledgement, and hardens the
+public and merchant UI's mobile, accessibility, session-expiry, outage, and CSP
+behavior. The unchanged policy signer remains on its rc4 digest. `/supported`
+advertises the signer under `signers["eip155:*"]`, schema remains
+`000013_email_delivery_outbox`, and payment and transaction counts remain zero.
+Caddy serves the reviewed verification-page CSP, Prometheus loaded all 16 rules,
+and the recipient-change counters are being scraped. Release and deployment
+evidence is stored read-only at `/opt/eth402/releases/v0.1.0-rc.6`. The verified
+pre-rc6 backup is `/opt/eth402/backups/eth402-20260806T221207Z.dump.gz` with
+SHA-256 `65635c626857fb084c04443220da50c91dba4abf0335ae8bd23515e94a799275`.
+The daily backup entry was moved from the unprivileged `toufik` crontab to root
+after preflight proved that the former could not write the root-only backup
+directory.
 
 ## Open follow-ups
 
