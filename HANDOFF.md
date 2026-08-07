@@ -30,10 +30,10 @@ funded mainnet execution evidence is still pending:
 Production is live and healthy:
 
 - Application host: `toufik@35.232.99.172`, Compose project `eth402prod`.
-- Facilitator release `v0.1.0-rc.7`, source commit
-  `5fe88de4a661fb0e1768e5142426505480d93f14`, is signed and GitHub-verified.
+- Facilitator release `v0.1.0-rc.8`, source commit
+  `6e975e06f1ec2b533facb3ab702fe1c060a48d35`, is signed and GitHub-verified.
 - App image:
-  `ghcr.io/eth402/facilitator@sha256:d40a8802424ed69cd8c5c69d4739a0f83204ee8d4118d187073933fca844f61c`.
+  `ghcr.io/eth402/facilitator@sha256:88f71eadb3ea0f305aa55460cc9f5a15e00bad183d9558ccfcd468064cdf1c8a`.
 - Policy-signer image:
   `ghcr.io/eth402/policysigner@sha256:859af4e82401a65896c3621f98ff198d5f24b66be1c28bd041e9a6eabc39f3c5`.
 - Running services are app, Caddy, PostgreSQL 17, Prometheus, and Alertmanager.
@@ -43,17 +43,19 @@ Production is live and healthy:
   Signing goes through the KMS-fronted policy-signer boundary; the
   facilitator holds no KMS grant.
 
-The app-only rc7 rollout completed on 2026-08-07. It includes rc6's transactional
+The app-only rc8 rollout completed on 2026-08-07. It includes rc6's transactional
 wallet-session and API-key revalidation, recipient-race fixes, one-time-key
 handling, and UI hardening, then adds a truthful snapshot-backed landing-page
 status, an inspectable open-source capability section, clearer merchant security
 onboarding, neutral session-expiry guidance, and reviewed desktop/compact visual
-polish. The unchanged policy signer remains on its rc4 digest. `/supported`
+polish. Rc8 raises small-text contrast to at least 6.58:1 on audited surfaces,
+uses an 8.57:1 solid hero accent, and supports the increased-contrast preference.
+The unchanged policy signer remains on its rc4 digest. `/supported`
 advertises the signer under `signers["eip155:*"]`, schema remains
 `000013_email_delivery_outbox`, and payment and transaction counts remain zero.
 Caddy serves the reviewed verification-page CSP, Prometheus loaded all 16 rules,
 and the recipient-change counters are being scraped. Release and deployment
-evidence is stored read-only at `/opt/eth402/releases/v0.1.0-rc.7`. The verified
+evidence is stored read-only at `/opt/eth402/releases/v0.1.0-rc.8`. The verified
 pre-rc6 backup is `/opt/eth402/backups/eth402-20260806T221207Z.dump.gz` with
 SHA-256 `65635c626857fb084c04443220da50c91dba4abf0335ae8bd23515e94a799275`.
 The daily backup entry was moved from the unprivileged `toufik` crontab to root
