@@ -69,3 +69,22 @@ func TestPublicSiteHasMobileAndKeyboardNavigation(t *testing.T) {
 		}
 	}
 }
+
+func TestLandingPresentsTruthfulStatusAndOpenSourceEvidence(t *testing.T) {
+	t.Parallel()
+	var body strings.Builder
+	if err := landingPage.Execute(&body, publicSiteData{Year: 2026}); err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"status-unknown", "status unavailable", "OPEN BY DESIGN",
+		"https://github.com/ETH402/facilitator", "Apache-2.0 licensed",
+	} {
+		if !strings.Contains(body.String(), required) {
+			t.Fatalf("landing page omitted %q", required)
+		}
+	}
+	if strings.Contains(body.String(), "Ethereum mainnet · operational") {
+		t.Fatal("landing page claimed an operational network without available stats")
+	}
+}

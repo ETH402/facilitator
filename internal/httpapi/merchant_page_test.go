@@ -129,6 +129,23 @@ func TestMerchantPanelIncludesAccessibleNavigationAndLoadingStates(t *testing.T)
 	}
 }
 
+func TestMerchantPanelPresentsSecurityModelAndNeutralSessionExpiry(t *testing.T) {
+	t.Parallel()
+	page := httptest.NewRecorder()
+	Dependencies{}.merchantPanel(page, httptest.NewRequest(http.MethodGet, "/merchant", nil))
+	for _, required := range []string{"Email verified", "Wallet authorized", "Direct settlement", "No password to remember."} {
+		if !strings.Contains(page.Body.String(), required) {
+			t.Fatalf("merchant onboarding omitted %q", required)
+		}
+	}
+
+	script := httptest.NewRecorder()
+	Dependencies{}.merchantPanelJS(script, httptest.NewRequest(http.MethodGet, "/merchant/app.js", nil))
+	if !strings.Contains(script.Body.String(), "notice(message,false,false,!!message)") {
+		t.Fatal("an expired session is still presented as a form error")
+	}
+}
+
 func TestMerchantAdminCookieIsHttpOnlyStrictAndSecure(t *testing.T) {
 	response := httptest.NewRecorder()
 	setMerchantAdminCookie(response, merchant.AdminSession{

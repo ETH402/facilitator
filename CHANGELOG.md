@@ -7,6 +7,14 @@ versioned where noted.
 
 ### Fixed
 
+- The public site now derives its hero status from the real cached network
+  snapshot instead of always showing a green indicator, keeps the transaction
+  visual inside narrow mobile viewports, links directly to the open-source
+  implementation and integration guide, and presents the supported payment lane
+  in an inspectable capability panel. Merchant onboarding now explains its
+  email-plus-wallet security model and treats an expired session as neutral
+  guidance rather than a failed form action.
+
 - Wallet-gated merchant-panel operations and API-key-authenticated mutations now
   revalidate the current proof, key, and merchant status under database locks in
   the same transaction as protected work. Recipient rotation, suspension, or key
