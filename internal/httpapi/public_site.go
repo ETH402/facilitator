@@ -84,10 +84,10 @@ var landingPage = template.Must(template.New("landing").Funcs(publicSiteFuncs).P
 <main id="main-content">
 <section class="hero shell">
 <div class="hero-copy">
-<div class="eyebrow"><span class="live-dot"></span> Open payment infrastructure · Ethereum mainnet</div>
-<h1>Payments for the<br><span>machine economy.</span></h1>
-<p class="hero-lead">A focused, open-source x402 facilitator for AI agents and APIs. Verify signed payment authorizations and settle native USDC directly to merchants.</p>
-<div class="hero-actions"><a class="button" href="/merchant">Start accepting payments <span>→</span></a><a class="button button-ghost" href="/explore">Explore the network</a></div>
+<div class="eyebrow {{if .StatsAvailable}}{{statusClass .Snapshot.Status}}{{else}}status-unknown{{end}}"><span class="live-dot"></span> Ethereum mainnet · {{if .StatsAvailable}}{{.Snapshot.Status}}{{else}}status unavailable{{end}}</div>
+<h1>The payment layer<br><span>for machine commerce.</span></h1>
+<p class="hero-lead">Open-source x402 infrastructure for AI agents and APIs. Verify exact payment authorizations and settle native USDC directly from buyers to merchants.</p>
+<div class="hero-actions"><a class="button" href="/merchant">Start accepting payments <span>→</span></a><a class="button button-ghost" href="https://github.com/ETH402/facilitator" rel="noopener">View source <span aria-hidden="true">↗</span></a></div>
 <div class="trust-row"><span><i>✓</i> x402 v2</span><span><i>✓</i> Exact payments</span><span><i>✓</i> Native USDC</span><span><i>✓</i> Non-custodial</span></div>
 </div>
 <div class="hero-visual" aria-label="ETH402 transaction flow">
@@ -117,6 +117,19 @@ var landingPage = template.Must(template.New("landing").Funcs(publicSiteFuncs).P
 <div class="section-heading compact"><div><span class="overline">HOW IT MOVES</span><h2>From request to finality.</h2></div></div>
 <div class="protocol-flow"><div><b>01</b><strong>Request</strong><small>API returns HTTP 402</small></div><span>→</span><div><b>02</b><strong>Authorize</strong><small>Buyer signs exact USDC</small></div><span>→</span><div><b>03</b><strong>Verify</strong><small>ETH402 checks every bound</small></div><span>→</span><div><b>04</b><strong>Settle</strong><small>Transfer confirms onchain</small></div></div>
 </section>
+<section class="section shell open-section">
+<div class="open-copy"><span class="overline">OPEN BY DESIGN</span><h2>Trust the constraints.<br>Inspect the code.</h2><p>ETH402 takes one deliberately narrow payment lane and makes every boundary visible: x402 v2, exact payments, Ethereum mainnet, and native USDC. No custody, opaque routing, or proprietary client is required.</p><div class="proof-list"><span>Apache-2.0 licensed</span><span>Reproducible releases</span><span>Signed, attested images</span></div><div class="open-actions"><a class="button button-ghost" href="https://github.com/ETH402/facilitator" rel="noopener">Explore on GitHub <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/ETH402/facilitator/blob/main/docs/INTEGRATION.md" rel="noopener">Read integration guide →</a></div></div>
+<div class="capability-window" aria-label="ETH402 supported payment capability"><div class="window-bar"><span></span><span></span><span></span><b>GET /supported</b></div><pre><code><i>200 OK</i>
+{
+  <b>"x402Version"</b>: 2,
+  <b>"scheme"</b>: "exact",
+  <b>"network"</b>: "eip155:1",
+  <b>"extra"</b>: {
+    <b>"asset"</b>: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    <b>"assetTransferMethod"</b>: "eip3009"
+  }
+}</code></pre><div class="window-foot"><span><i></i> PRODUCTION API</span><span>INTEGER MONEY · IDEMPOTENT SETTLEMENT</span></div></div>
+</section>
 <section class="section shell merchant-showcase">
 <div class="section-heading compact"><div><span class="overline">NETWORK ACTIVITY</span><h2>Merchants building on ETH402.</h2></div><a class="text-link" href="/explore">View network stats →</a></div>
 {{if not .MerchantsAvailable}}<div class="empty-showcase"><span class="empty-orbit unavailable"></span><div><h3>Merchant directory temporarily unavailable.</h3><p>The payment API remains separate from this public directory. Refresh shortly for opted-in merchant activity.</p></div><a class="button button-ghost" href="/status">View status</a></div>
@@ -125,7 +138,7 @@ var landingPage = template.Must(template.New("landing").Funcs(publicSiteFuncs).P
 </section>
 <section class="cta shell"><div><span class="overline">READY TO BUILD?</span><h2>Give your API a payment layer.</h2><p>Register a recipient, verify your wallet, and integrate the exact x402 endpoints.</p></div><a class="button button-light" href="/merchant">Open merchant panel <span>→</span></a></section>
 </main>
-<footer class="site-footer shell"><a class="brand brand-small" href="/"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>ETH<span>402</span></span></a><p>Open infrastructure for standardized payments on Ethereum mainnet.</p><div><a href="/supported">Capabilities</a><a href="/stats">JSON stats</a><a href="/status">Status</a></div><small>© {{.Year}} ETH402</small></footer>
+<footer class="site-footer shell"><a class="brand brand-small" href="/"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>ETH<span>402</span></span></a><p>Open infrastructure for standardized payments on Ethereum mainnet.</p><div><a href="https://github.com/ETH402/facilitator" rel="noopener">GitHub</a><a href="/supported">Capabilities</a><a href="/stats">JSON stats</a><a href="/status">Status</a></div><small>© {{.Year}} ETH402</small></footer>
 </body></html>`))
 
 var explorePage = template.Must(template.New("explore").Funcs(publicSiteFuncs).Parse(`<!doctype html>
@@ -139,7 +152,7 @@ var explorePage = template.Must(template.New("explore").Funcs(publicSiteFuncs).P
 {{else if .TopMerchants}}<div class="leaderboard"><div class="leaderboard-head"><span>RANK / MERCHANT</span><span>LAST ACTIVITY</span><span>CONFIRMED</span><span></span></div>{{range $index,$merchant := .TopMerchants}}<article><div class="rank"><b>#{{rank $index}}</b><span class="merchant-avatar">{{initial $merchant.Name}}</span><strong>{{$merchant.Name}}</strong></div><span>{{date $merchant.LastConfirmedAt}}</span><strong>{{number $merchant.ConfirmedSettlements}}</strong>{{if $merchant.Website}}<a class="row-link" href="{{$merchant.Website}}" rel="nofollow noopener" aria-label="Visit {{$merchant.Name}} website">↗</a>{{else}}<span></span>{{end}}</article>{{end}}</div>
 {{else}}<div class="empty-showcase network-empty"><span class="empty-orbit"></span><div><h3>No public profiles yet.</h3><p>Merchant analytics are private by default. A wallet-authenticated merchant must separately opt into this leaderboard before its name and confirmed-payment count appear.</p></div></div>{{end}}
 </section><p class="privacy-note">Counts begin at each merchant’s public opt-in time and include only retained, attributable confirmed payments. No payment amounts, payer identities, recipient wallets, or emails are published. <a href="/stats">Machine-readable aggregate stats →</a></p></main>
-<footer class="site-footer shell"><a class="brand brand-small" href="/"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>ETH<span>402</span></span></a><p>Open infrastructure for standardized payments on Ethereum mainnet.</p><div><a href="/supported">Capabilities</a><a href="/stats">JSON stats</a><a href="/status">Status</a></div><small>© {{.Year}} ETH402</small></footer></body></html>`))
+<footer class="site-footer shell"><a class="brand brand-small" href="/"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>ETH<span>402</span></span></a><p>Open infrastructure for standardized payments on Ethereum mainnet.</p><div><a href="https://github.com/ETH402/facilitator" rel="noopener">GitHub</a><a href="/supported">Capabilities</a><a href="/stats">JSON stats</a><a href="/status">Status</a></div><small>© {{.Year}} ETH402</small></footer></body></html>`))
 
 func (d Dependencies) publicSiteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", d.landing)

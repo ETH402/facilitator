@@ -10,10 +10,10 @@ const merchantPanelHTML = `<!doctype html>
 <header class="app-header"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>ETH<span>402</span></span></a><div class="app-header-actions"><a class="button button-small button-secondary" href="/explore">Network</a><button id="logout" class="button button-small button-secondary hidden">Sign out</button></div></header>
 <main id="main-content" class="app-main">
 <section id="welcome">
-<div class="auth-intro"><span class="overline">MERCHANT CONSOLE</span><h1>Your payment infrastructure,<br>under control.</h1><p>Verify your recipient, manage integration credentials, understand payment activity, and choose what your public profile shares.</p></div>
+<div class="auth-intro"><span class="overline">MERCHANT CONSOLE</span><h1>Accept machine payments.<br>Stay in control.</h1><p>Route native USDC directly to your wallet, manage integration credentials, and understand payment activity from one secure workspace.</p><div class="auth-trust" aria-label="Merchant security model"><span><i>01</i>Email verified</span><span><i>02</i>Wallet authorized</span><span><i>03</i>Direct settlement</span></div></div>
 <div id="notice" class="notice" aria-live="polite"></div>
 <div class="auth-grid">
-<form id="signin" class="app-card auth-card"><span class="overline">WELCOME BACK</span><h2>Sign in</h2><p>We’ll send a one-time link to your registered business email. Your wallet is required for sensitive actions.</p><div class="field"><label for="signin-email">Business email</label><input id="signin-email" type="email" maxlength="320" autocomplete="email" placeholder="you@company.com" required></div><button class="button form-button" type="submit">Send secure sign-in link <span>→</span></button></form>
+<form id="signin" class="app-card auth-card"><span class="overline">WELCOME BACK</span><h2>Sign in securely</h2><p>We’ll send a one-time link to your registered business email. Your recipient wallet unlocks sensitive actions.</p><div class="field"><label for="signin-email">Business email</label><input id="signin-email" type="email" maxlength="320" autocomplete="email" placeholder="you@company.com" required></div><button class="button form-button" type="submit">Send secure sign-in link <span>→</span></button><div class="auth-assurance"><strong>No password to remember.</strong><span>Links expire after one use. API keys and analytics stay protected behind a fresh wallet signature.</span></div></form>
 <form id="register" class="app-card auth-card featured"><span class="overline">NEW MERCHANT</span><h2>Start accepting x402</h2><p>Create your merchant identity and route native USDC directly to your Ethereum recipient.</p><div class="dash-grid"><div class="field"><label for="name">Business name</label><input id="name" maxlength="200" autocomplete="organization" placeholder="Acme API" required></div><div class="field"><label for="email">Business email</label><input id="email" type="email" maxlength="320" autocomplete="email" placeholder="payments@acme.dev" required></div></div><div class="field"><label for="recipient">Ethereum recipient <span class="field-help">MAINNET</span></label><input id="recipient" class="code" pattern="0x[0-9a-fA-F]{40}" placeholder="0x…" aria-describedby="recipient-help" required><small id="recipient-help" class="field-help">You can replace this address before wallet activation.</small></div><div class="field"><label for="website">Website <span class="field-help">OPTIONAL</span></label><input id="website" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com" aria-describedby="website-help"><small id="website-help" class="field-help">Only HTTPS websites can be linked from the public directory.</small></div><label class="check-row"><input id="terms" type="checkbox" required><span>I accept the current ETH402 terms and understand the facilitator supports only x402 v2 exact native-USDC payments on Ethereum mainnet.</span></label><button class="button form-button" type="submit">Create merchant <span>→</span></button></form>
 </div></section>
 
@@ -42,10 +42,10 @@ const merchantPanelScript = `'use strict';
 const $=id=>document.getElementById(id);
 let merchant=null,walletAuthenticated=false,latestSecret='',secretRefresh=null,activeView='overview';
 
-function notice(message,bad=false,auth=false){
+function notice(message,bad=false,auth=false,info=false){
   const el=$(auth?'notice-auth':'notice');
   el.textContent=message;
-  el.className='notice'+(bad?' bad':'');
+  el.className='notice'+(bad?' bad':info?' info':'');
   el.setAttribute('aria-live',bad?'assertive':'polite');
   if(bad)el.setAttribute('role','alert');else el.removeAttribute('role');
 }
@@ -54,7 +54,7 @@ function showSignedOut(message=''){
   merchant=null;walletAuthenticated=false;clearSecret();
   $('welcome').classList.remove('hidden');$('account').classList.add('hidden');$('logout').classList.add('hidden');
   $('dashboard').classList.add('hidden');$('verification').classList.add('hidden');$('account-state').classList.add('hidden');
-  notice(message,!!message,false);setView('overview');
+  notice(message,false,false,!!message);setView('overview');
 }
 async function api(path,options={}){
   options.headers={...(options.headers||{}),'Content-Type':'application/json'};
