@@ -177,7 +177,7 @@ Milestone 4 is complete.
 - [ ] limited mainnet dry runs — signing is enabled and the bounded procedure,
       abort conditions, and evidence checklist are ready in
       `docs/MAINNET_DRY_RUN.md`; no funded settlement has yet reached the
-      required confirmation depth. Signed release `v0.1.0-rc.6` is deployed for
+      required confirmation depth. Signed release `v0.1.0-rc.7` is deployed for
       the facilitator and the unchanged policy signer remains on its immutable
       rc4 digest; `/supported` advertises the configured signer and production
       remains at nonce zero
