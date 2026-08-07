@@ -177,9 +177,10 @@ Milestone 4 is complete.
 - [ ] limited mainnet dry runs — signing is enabled and the bounded procedure,
       abort conditions, and evidence checklist are ready in
       `docs/MAINNET_DRY_RUN.md`; no funded settlement has yet reached the
-      required confirmation depth. Signed release `v0.1.0-rc.4` is deployed by
-      immutable facilitator and policy-signer digests; `/supported` advertises
-      the configured signer and production remains at nonce zero
+      required confirmation depth. Signed release `v0.1.0-rc.6` is deployed for
+      the facilitator and the unchanged policy signer remains on its immutable
+      rc4 digest; `/supported` advertises the configured signer and production
+      remains at nonce zero
 - [x] independent security review — completed by a third party against the
       frozen target; all findings dispositioned and applied. `SECURITY.md`
       scopes reports and `docs/SECURITY_REVIEW.md` records the handoff,
