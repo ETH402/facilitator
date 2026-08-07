@@ -7,6 +7,12 @@ versioned where noted.
 
 ### Fixed
 
+- Small labels, field hints, placeholders, metric captions, and secondary copy
+  now use WCAG-compliant contrast against their actual dark surfaces. The hero
+  accent is a solid high-contrast color instead of a thin outline, font
+  rasterization is tuned for legibility, and users requesting increased contrast
+  receive stronger text and boundary colors.
+
 - The public site now derives its hero status from the real cached network
   snapshot instead of always showing a green indicator, keeps the transaction
   visual inside narrow mobile viewports, links directly to the open-source
