@@ -16,14 +16,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/eth402 
 # separate workload with a separate identity, and an image containing both invites a
 # deployment that runs the wrong binary under the wrong service account — which
 # silently collapses the boundary it is meant to create.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35 AS policysigner
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a AS policysigner
 WORKDIR /app
 COPY --from=build /out/policysigner /usr/local/bin/policysigner
 USER nonroot:nonroot
 EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/policysigner"]
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
 WORKDIR /app
 COPY --from=build /out/eth402 /usr/local/bin/eth402
 COPY --from=build /out/migrate /usr/local/bin/migrate
